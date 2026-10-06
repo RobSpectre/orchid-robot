@@ -14,6 +14,7 @@ from . import dial
 from .controls import CATALOG, group_members
 from .devices import HardwareArm, SimulatedArm, available_ports
 from .storage import Repository
+from .telemetry import motor_status, pose_angles
 
 RANGE_MOTORS = tuple(name for name in m.MOTORS if name != "wrist_roll")
 REQUIRED_TRIALS = 3
@@ -60,6 +61,8 @@ class Engine:
         self.arm = self.controller = self.log = None
         self.current = self.torque = None
         self.feedback_at = None
+        self.diagnostics = None
+        self.diagnostics_error = None
         self.selected = "C"
         self.capture = self.draft = None
         self.touch_index = None
@@ -138,6 +141,10 @@ class Engine:
 
     def publish(self):
         with self.lock:
+            reference_ready = self.calibrated or (self.calibrating and self.offsets is not None
+                                                   and self.phase != "calibration_midpoint")
+            target = (self.controller.previous if self.controller and self.controller.enabled
+                      and self.phase != "fault" else None)
             self.export_data = {"schema_version": 2, "application": "orchid-demo", "mode": self.mode,
                                 "units": m.UNITS, "exported_at": m.stamp(), "calibration": deepcopy(self.calibration),
                                 "fixture": deepcopy(self.fixture), "keys": deepcopy(self.notes),
@@ -149,6 +156,13 @@ class Engine:
                 "fixture": deepcopy(self.fixture), "selected": self.selected,
                 "position": deepcopy(self.current), "torque": deepcopy(self.torque),
                 "feedback_at": self.feedback_at, "heartbeat": time.time(),
+                "motor_status": motor_status(self.current, self.torque, self.calibration, self.ranges,
+                                             reference_ready=reference_ready, recording=self.calibrating,
+                                             target=target, diagnostics=self.diagnostics),
+                "pose_angles": pose_angles(self.current, self.calibration if self.calibrated else None, reference_ready),
+                "pose_reference_ready": reference_ready,
+                "diagnostics_at": (self.diagnostics or {}).get("sampled_at"),
+                "diagnostics_error": self.diagnostics_error,
                 "voltage": self.arm.voltage if self.arm else None,
                 "keys": self.key_statuses(), "required_trials": REQUIRED_TRIALS,
                 "controls": self.statuses(self.controls), "catalog": deepcopy(CATALOG),
@@ -360,6 +374,7 @@ class Engine:
             try:
                 candidate.open()
                 self.arm = candidate
+                self.diagnostics = self.diagnostics_error = None
                 self.calibrated = bool(self.calibration) and getattr(candidate, "calibration_matches", True)
                 self.transition("connected", "Follower connected. Check motor state, then calibrate or register notes.")
                 self.sample()
@@ -369,6 +384,17 @@ class Engine:
                 self.calibrated = False
                 self.phase = "disconnected"
                 raise
+        elif action == "refresh_diagnostics":
+            self.require_phase("connected", "ready")
+            self.guard()
+            try:
+                values = self.arm.read_diagnostics()
+                self.diagnostics = {"sampled_at": time.time(), "motors": values}
+                self.diagnostics_error = None
+            except Exception as exc:
+                self.diagnostics = None
+                self.diagnostics_error = str(exc)
+                raise m.SafetyError(f"Motor health read unavailable: {exc}") from exc
         elif action == "calibrate":
             self.require_phase("connected", "ready")
             self.supported(args)
@@ -379,6 +405,8 @@ class Engine:
             backup = self.arm.begin_calibration()
             self.repo.put("calibration_backup", {"at": m.stamp(), "hardware": backup, "saved": self.calibration})
             self.calibrated = False
+            self.offsets = None
+            self.ranges, self.range_index = {}, 0
             self.transition("calibration_midpoint", "Support the arm. Center all six joints and half-open the gripper, then capture the midpoint.")
         elif action == "calibration_center":
             self.require_phase("calibration_midpoint")
@@ -395,8 +423,10 @@ class Engine:
             m.require(self.mode == "simulation", "Simulation actions cannot operate hardware.")
             motor = RANGE_MOTORS[self.range_index]
             for value in (2047, 1800, 1400, 1000, 1400, 2047, 2600, 3100, 2047):
+                self.guard()
                 self.arm.current[motor] = value
                 self.sample()
+                self.sleep(0.12)
         elif action == "calibration_next":
             self.require_phase("calibration_range")
             m.require(args.get("range_complete") is True, "Confirm both ends of this joint's usable travel were recorded.")
@@ -584,6 +614,7 @@ class Engine:
                 self.arm = None
                 self.current = self.torque = None
                 self.feedback_at = None
+                self.diagnostics = self.diagnostics_error = None
                 self.calibrated = False
                 self.transition("disconnected", "Follower disconnected after supported torque release. Saved registrations are retained.")
             else:

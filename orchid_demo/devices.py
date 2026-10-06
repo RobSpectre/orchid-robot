@@ -41,6 +41,10 @@ class SimulatedArm(m.Arm):
     def torque_status(self):
         return dict.fromkeys(m.MOTORS, int(self.enabled))
 
+    def read_diagnostics(self):
+        self.require_torque(False)
+        return {name: {"voltage_v": self.voltage, "temperature_c": 25} for name in m.MOTORS}
+
     def send(self, pose):
         self.check_pose(pose)
         if not self.jammed:
@@ -112,6 +116,16 @@ class HardwareArm(m.Arm):
         m.require(self.calibration is not None and self.calibration_matches,
                   "Complete and verify motor calibration before any note motion.")
         super().check_pose(pose)
+
+    def read_diagnostics(self):
+        # Explicit idle-only read. Extra bus traffic never runs in a motion tick.
+        self.require_torque(False)
+        volts = self.bus.sync_read("Present_Voltage", normalize=False, num_retry=0)
+        temperatures = self.bus.sync_read("Present_Temperature", normalize=False, num_retry=0)
+        m.require(set(volts) == set(temperatures) == set(m.MOTORS), "Incomplete motor health readback.")
+        m.require(all(type(v) is int and 0 <= v <= 255 for v in [*volts.values(), *temperatures.values()]),
+                  "Invalid motor health readback.")
+        return {name: {"voltage_v": volts[name] / 10, "temperature_c": temperatures[name]} for name in m.MOTORS}
 
     def begin_calibration(self):
         self.require_torque(False)

@@ -22,6 +22,20 @@ Choose a placement name. “Unchanged” means the same physical setup, not just
 
 The app backs up the previous motor calibration before homing changes. A normal abort or software fault attempts restoration and verifies it. If serial communication or power is lost, restoration may be unverified. Secure the arm, reconnect, and perform a full calibration before teaching; do not assume either the old or new references are usable.
 
+The eight-step tracker stays above the current instruction. During each sweep, the active joint is highlighted in the model and motor cards. Minimum, current, and maximum encoder readings update continuously. **Save range & continue** becomes available once travel exceeds the software's minimum sample spread and you confirm both directions; this is not an instruction to force extra travel. Existing calibrated limits are hidden while new references are being recorded. The preparation checklist, optional spoken cues, and capture delay keep the workflow in the browser.
+
+## Reading motor status and the 3D view
+
+Each of the six motor cards shows the measured encoder ticks, torque readback, angle from the captured midpoint, and position within the recorded range. A near-limit or outside-range label calls attention to the calibrated bounds. During a powered hold/test, the card also shows the commanded target and signed measured-minus-target difference. Unknown or stale torque is labeled **UNKNOWN**, not OFF. Old encoder values may remain visible as dimmed last readings.
+
+Voltage and temperature are explicit snapshots. Use **Refresh volts & temperature** when the app is ready and all six motors report torque off. The button is unavailable during calibration, capture, holds, and tests, so health reads cannot slow those control loops. The timestamp tells you when the snapshot was taken; the supply shown in Arm status is the connection-time reading. Health measurements are diagnostics, not a force sensor or thermal protection system.
+
+The 3D view shows simplified SO101 links using the manufacturer's joint model. Drag to orbit, select a camera preset, or focus the canvas and use arrow keys; `+` and `-` zoom. Camera controls do not send motor commands. Outside calibration, select a motor card to highlight that joint. During calibration, the current step determines the highlight.
+
+Before midpoint capture, the view is a **reference model**, not a measured pose. Afterward, encoder angles drive the model. A disconnected or stale view never claims a live pose. The view does not know the exact physical midpoint, mounting orientation, instrument location, pad thickness, glove fit, or slippage. The jaw is an estimated opening based on the recorded gripper range. Use the physical arm to assess clearance, and compare the model's direction and alignment joint by joint during commissioning. It is not an automatic motion planner.
+
+References: [SO101 calibration guide](https://huggingface.co/docs/lerobot/en/so101) and [manufacturer's joint model](https://github.com/TheRobotStudio/SO-ARM100/blob/385e8d7c68e24945df6c60d9bd68837a4b7411ae/Simulation/SO101/so101_new_calib.urdf).
+
 ## Register each of the 12 notes
 
 Select a key when the console is ready and choose **Teach** while supporting the arm. The active note is shown above the capture steps.

@@ -28,6 +28,7 @@ class Bus:
         self.values = {"Torque_Enable": dict.fromkeys(m.MOTORS, 0), "Lock": dict.fromkeys(m.MOTORS, 1),
                        "Present_Voltage": dict.fromkeys(m.MOTORS, 120), "Operating_Mode": dict.fromkeys(m.MOTORS, 0),
                        "Present_Position": dict.fromkeys(m.MOTORS, 2047)}
+        self.values["Present_Temperature"] = dict.fromkeys(m.MOTORS, 28)
         self.writes = []
         self.corrupt_readback = False
 
@@ -136,3 +137,21 @@ def test_calibration_refuses_any_enabled_motor(arm):
     with pytest.raises(m.SafetyError, match="torque off"):
         arm.begin_calibration()
     assert arm.bus.writes == []
+
+
+def test_health_readback_is_read_only_and_requires_all_torque_off(arm):
+    arm.open()
+    values = arm.read_diagnostics()
+    assert all(value == {"voltage_v": 12.0, "temperature_c": 28} for value in values.values())
+    assert not arm.bus.writes
+    arm.bus.values["Torque_Enable"]["gripper"] = 1
+    with pytest.raises(m.SafetyError, match="torque off"):
+        arm.read_diagnostics()
+    assert not arm.bus.writes
+
+
+def test_incomplete_health_readback_is_rejected(arm):
+    del arm.bus.values["Present_Temperature"]["wrist_roll"]
+    with pytest.raises(m.SafetyError, match="Incomplete"):
+        arm.read_diagnostics()
+    assert not arm.bus.writes

@@ -112,8 +112,10 @@ function workflow() {
   } else if (p === "calibration_midpoint") {
     html = intro("Center the six joints.", "Keep the arm supported and clear of the instrument. Place each joint near the middle of its mechanical travel; half-open the gripper. Do not force a joint against a stop.") + support() + actions(button("calibration_center", "Capture midpoint →")) + '<p class="hint">The app checks a steady pose and reads back the new motor references. It does not drive to the midpoint.</p>';
   } else if (p === "calibration_range") {
-    html = intro(`${s.range_index + 1} of 5 · ${esc(motors[s.range_motor])}`, "Support the arm. Slowly move only this joint through both ends of its usable travel, then return to a comfortable supported position. Stop before mechanical strain or cable tension.") +
-      '<div class="range-panel"><div class="range-values"><span>Minimum <b id="range-min">—</b></span><span>Maximum <b id="range-max">—</b></span></div><progress id="range-progress" max="4095" value="0" aria-label="Recorded joint travel"></progress><p class="hint">Raw encoder ticks · recorded continuously</p></div>' +
+    const instruction = window.OrchidPanels.guidance[s.range_motor];
+    html = intro(`${s.range_index + 1} of 5 · ${esc(motors[s.range_motor])}`, instruction[1]) +
+      `<div class="joint-instruction"><span>MOVE BY HAND · TORQUE OFF</span><strong>${instruction[0]}</strong><p>The highlighted joint in the 3D view is this step’s joint. Other joints may move as needed to support the arm.</p></div>` +
+      '<div class="range-panel"><div class="range-values"><span>Minimum <b id="range-min">—</b></span><span>Current <b id="range-current">—</b></span><span>Maximum <b id="range-max">—</b></span></div><progress id="range-progress" max="4095" value="0" aria-label="Recorded joint travel"></progress><p id="range-span" class="range-span">Waiting for movement</p><p id="range-readiness" class="hint">Move gently in both directions.</p></div>' +
       (sim ? actions(button("simulate_sweep", "Simulate joint sweep", true)) : "") + confirm("range_complete", "Both ends of the usable travel are recorded.") + actions(button("calibration_next", s.range_index === 4 ? "Review calibration →" : "Save range & continue →"));
   } else if (p === "calibration_review") {
     html = intro("Review the measured travel.", "Confirm these ranges reflect deliberate sweeps. Wrist rotation uses the full encoder range; there is no cable-twisting sweep.") +
@@ -142,6 +144,8 @@ function workflow() {
     if (p === "saved") html += trials() + (s.trials >= 3 ? support() + actions(button("next", "Release & continue →")) : hands() + actions(button("test", "Test again →")));
     if (p.startsWith("note_")) html += `<p class="hint">${sim ? "Simulation places the virtual arm at each capture." : "Move gently. A large jump, changed grip, or stale reading stops capture."}</p>`;
   }
+  if (p.startsWith("calibration_") || (p === "connected" && !s.calibrated)) html = window.OrchidPanels.calibration(s) + html;
+  if (p === "connected" && !s.calibrated) html += '<div class="setup-checklist"><strong>Before starting</strong><ul><li>Secure the base and reseated joints; keep the instrument outside the arm’s reach.</li><li>Support the full arm weight before torque releases.</li><li>Use the delay and optional spoken cues to keep both hands available.</li></ul><p>Calibration stays torque off. OFF flags do not remove gearbox drag.</p></div>';
   $("workflow").innerHTML = html;
   if (p === "disconnected") getPorts();
 }
@@ -161,6 +165,9 @@ function render() {
   $("connection-warning").hidden = online && owns;
   $("connection-warning").textContent = !online ? "Connection to the local Python app was lost. Controls are disabled. If a physical arm is active, support it and use the power stop if needed." : "Another browser owns operator control. This window shows status only.";
   const section = p === "disconnected" ? "connect" : p.startsWith("calibration") || (!s.calibrated && ["connected", "fault"].includes(p)) ? "calibration" : "notes";
+  document.body.classList.toggle("calibrating", section === "calibration");
+  document.querySelector(".page-heading h1").textContent = section === "calibration" ? "Give the arm its bearings." : "Teach the instrument.";
+  document.querySelector(".page-heading p").textContent = section === "calibration" ? "Guided calibration. Six motors. One joint at a time." : "Twelve keys. Eight chord buttons. Two voicing gestures.";
   for (const name of ["connect", "calibration", "notes"]) {
     $("nav-" + name).classList.toggle("active", name === section);
     $("nav-" + name).querySelector("b").textContent = name === "connect" && s.connected || name === "calibration" && s.calibrated || name === "notes" && count === 22 ? "✓" : "";
@@ -184,14 +191,15 @@ function render() {
   }
   // Clicking a key selects a label only; torque release always needs the supported action.
   $("keyboard-hint").textContent = ["ready", "connected"].includes(p) && s.calibrated ? "Select a key, chord button, or dial direction. Support the arm, then choose Teach below." : "12 keys · 8 chord buttons · 2 voicing directions. Each motion is taught and verified separately.";
-  $("motors").innerHTML = Object.entries(motors).map(([name,label],i) => `<div class="motor ${s.range_motor === name ? "active" : ""}"><span class="motor-id">${String(i+1).padStart(2,"0")}</span><span>${label}</span><span class="position">${s.position?.[name] ?? "—"}</span><span class="torque">${s.torque?.[name] === 0 ? "OFF" : s.torque?.[name] === 1 ? "ON" : "?"}</span></div>`).join("");
-  const flags = Object.values(s.torque || {});
+  window.OrchidPanels.update(s, online);
+  const fresh = online && s.connected && s.feedback_at && Date.now()/1000 - s.feedback_at < 1.5 && p !== "fault";
+  const flags = fresh ? Object.values(s.torque || {}) : [];
   const off = flags.length === 6 && flags.every(v => v === 0), on = flags.length === 6 && flags.every(v => v === 1);
-  $("torque-summary").textContent = off ? "6 / 6 TORQUE OFF" : on ? "TORQUE ON · HOLD" : "UNVERIFIED";
+  $("torque-summary").textContent = off ? "6 / 6 TORQUE OFF" : on ? (p === "testing" ? "TORQUE ON · MOVING" : "TORQUE ON · HOLD") : "UNVERIFIED";
   $("torque-summary").className = `badge ${on ? "powered" : "neutral"}`;
   $("feedback-age").textContent = s.feedback_at ? `Last read ${Math.max(0, (Date.now()/1000 - s.feedback_at)).toFixed(1)}s ago · raw ticks` : "No current motor feedback";
   $("voltage").textContent = s.voltage ? `${s.voltage.toFixed(1)} V` : "—";
-  $("feedback").textContent = s.feedback_at && online ? (isSim() ? "Simulated" : "Live") : "Unknown";
+  $("feedback").textContent = fresh ? (isSim() ? "Simulated" : "Live") : "Unavailable";
   $("recovery").hidden = !s.connected;
   if ($("range-min")) {
     const range = s.ranges[s.range_motor];
@@ -215,6 +223,8 @@ function updateButtons() {
     let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.dataset.confirm !== "fixture_unchanged").every(c => c.checked);
     if (b.dataset.recovery) valid = $("recovery-supported").checked;
     if (["simulate_sweep", "fail"].includes(b.dataset.action)) valid = true;
+    if (b.dataset.diagnostics) valid = state.connected && ["connected", "ready"].includes(state.phase) && Object.values(state.torque || {}).length === 6 && Object.values(state.torque).every(v => v === 0);
+    if (b.dataset.action === "calibration_next") { const range = state.ranges[state.range_motor]; valid = valid && range && range.max - range.min > 32; }
     b.disabled = blocked || !valid;
   });
   document.querySelectorAll("[data-note]").forEach(b => b.disabled = blocked || !state.calibrated || !["ready", "connected"].includes(state.phase));
@@ -232,7 +242,7 @@ function dispatchButton(b) {
   const action = b.dataset.action;
   const args = {};
   const scope = b.dataset.recovery ? $("recovery") : $("workflow");
-  scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = c.checked);
+  if (!b.dataset.diagnostics) scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = c.checked);
   if (b.dataset.recovery) args.supported = $("recovery-supported").checked;
   if (action === "connect") { args.fixture = $("fixture").value; args.port = $("port").value; args.tool = $("contact-tool").value; }
   if (action === "control_start") args.control = b.dataset.control;

@@ -49,6 +49,16 @@ Enable **5-second delay** to free both hands before capture or torque release. I
 
 Detailed instructions: [Operator guide](docs/operator-guide.md).
 
+## Calibration and live arm view
+
+The calibration screen has an eight-step tracker, joint-specific handling instructions, a live minimum/current/maximum display, and an automatically highlighted joint in the **3D arm view**. The instrument map moves out of the way during calibration. Five joint sweeps are recorded; wrist rotation is not swept.
+
+**Motor status** shows all six encoder positions, torque readbacks, angles from the captured midpoint, recorded ranges, and powered target/tracking differences. Select a motor to highlight it in 3D. **Refresh volts & temperature** takes a separate health snapshot only while idle with torque off; it adds no diagnostic reads to powered motion. Each snapshot is timestamped.
+
+The orbitable 3D view uses locally bundled SO101 joint geometry and simplified links. Drag to orbit, choose front/side/top views, or focus the canvas and use the arrow keys and `+`/`-`. These are view controls only. Before the midpoint is captured, the view explicitly shows a reference shape. Referenced encoder data drives the model afterward; stale feedback is labeled and the last pose freezes. Model alignment, mounting position, and rubber-tip dimensions still need physical verification, so the view is not a clearance or collision check.
+
+![Guided calibration with motor status and 3D view](docs/calibration-preview.jpg)
+
 ## When the physical arm returns
 
 Use the repaired SO101 follower with securely fitted rubber-covered tips or a padded gripper, Linux serial permissions, Python 3.12, and the pinned LeRobot interface:
@@ -78,6 +88,8 @@ Finish the [hardware commissioning checklist](docs/operator-guide.md#commissioni
 python -m pip install -r requirements-dev.txt -c constraints-web.txt
 python -m pytest -q
 python -m ruff check .
+# Optional JavaScript geometry checks (Node 22+; no packages to install):
+node tests/arm_model.test.cjs
 ```
 
 For the tested web dependency snapshot, add `-c constraints-web.txt` when installing the web or development requirements. Hardware dependencies have their own requirement file; do not apply the web-only snapshot to LeRobot's separate dependency stack.
@@ -90,6 +102,7 @@ orchid_demo/
   api.py                  Local HTTP interface and ownership
   engine.py               Calibration/registration state machine
   devices.py              Simulated and physical motor adapters
+  telemetry.py            Read-only joint status and display-angle conversion
   motion.py               Bounded stroke controller and validation
   controls.py             Keyboard, chord, and dial motion catalog
   dial.py                 Bounded forward dial loop and validation
@@ -98,5 +111,7 @@ orchid_demo/
 tests/                    Motion, workflow, API, and adapter tests
 docs/                     Operator and developer documentation
 ```
+
+The 3D geometry's pinned upstream source and license are listed in [third-party notices](THIRD_PARTY_NOTICES.md). Node is used only for development checks; running the app still requires only Python and a browser.
 
 The original replay and terminal utilities remain for development/history: [legacy replay guide](docs/legacy-replay.md), [first-key notes](ORCHID_FIRST_KEY.md), `replay_lw.py`, `find_ports.py`, `orchid_key.py`, `orchid_session.py`, and `orchid_calibrate.py`. Do not run a legacy controller concurrently with the web app. `repair_leader_voltage.py` is a one-off diagnostic/repair utility, not part of normal operation.
