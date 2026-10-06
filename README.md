@@ -55,9 +55,11 @@ The calibration screen has an eight-step tracker, joint-specific handling instru
 
 **Motor status** shows all six encoder positions, torque readbacks, angles from the captured midpoint, recorded ranges, and powered target/tracking differences. Select a motor to highlight it in 3D. **Refresh volts & temperature** takes a separate health snapshot only while idle with torque off; it adds no diagnostic reads to powered motion. Each snapshot is timestamped.
 
-The orbitable 3D view uses locally bundled SO101 joint geometry and simplified links. Drag to orbit, choose front/side/top views, or focus the canvas and use the arrow keys and `+`/`-`. These are view controls only. Before the midpoint is captured, the view explicitly shows a reference shape. Referenced encoder data drives the model afterward; stale feedback is labeled and the last pose freezes. Model alignment, mounting position, and rubber-tip dimensions still need physical verification, so the view is not a clearance or collision check.
+The orbitable 3D view uses locally bundled manufacturer SO101 CAD: the base, brackets, six servo housings, wrist, and moving gripper jaw. Each calibration sweep automatically frames and highlights the target servo and moving link in cyan, with a numbered marker, direction arc, physical landmark, and handling cue. Midpoint capture identifies all six joints; the gripper sweep is motor **6**, because motor **5** is not swept. The guide stays beside the workflow on wide screens and appears first on narrow screens.
 
-![Guided calibration with motor status and 3D view](docs/calibration-preview.jpg)
+Drag to orbit, choose front/side/top views, or use **Show target motor** to restore the step’s view. Arrow keys and `+`/`-` also adjust the camera. These are view controls only. Before midpoint capture, the view explicitly shows a reference shape. Referenced encoder data drives the model afterward; stale feedback is labeled and the last pose freezes. WebGL renders the bundled CAD offline, with a labeled joint schematic if unavailable. Model alignment, mounting position, and rubber-tip dimensions still need physical verification, so the view is not a clearance or collision check.
+
+![SO101 CAD guide highlighting the elbow during calibration](docs/so101-calibration-preview.jpg)
 
 ## When the physical arm returns
 
@@ -89,7 +91,7 @@ python -m pip install -r requirements-dev.txt -c constraints-web.txt
 python -m pytest -q
 python -m ruff check .
 # Optional JavaScript geometry checks (Node 22+; no packages to install):
-node tests/arm_model.test.cjs
+node --test tests/*.test.cjs
 ```
 
 For the tested web dependency snapshot, add `-c constraints-web.txt` when installing the web or development requirements. Hardware dependencies have their own requirement file; do not apply the web-only snapshot to LeRobot's separate dependency stack.

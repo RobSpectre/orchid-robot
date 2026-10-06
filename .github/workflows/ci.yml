@@ -20,5 +20,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node tests/arm_model.test.cjs
-      - run: node --check orchid_demo/static/app.js && node --check orchid_demo/static/arm-view.js && node --check orchid_demo/static/operator-panels.js
+      - run: node --test tests/*.test.cjs
+      - run: node --check orchid_demo/static/app.js && node --check orchid_demo/static/arm-view.js && node --check orchid_demo/static/arm-renderer.js && node --check orchid_demo/static/operator-panels.js

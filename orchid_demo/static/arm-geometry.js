@@ -1,5 +1,5 @@
 // SO101 joint transforms, TheRobotStudio, Apache-2.0. See THIRD_PARTY_NOTICES.md.
-// Simplified links are drawn locally; no CAD meshes or network runtime are required.
+// Paired with the locally bundled CAD visuals in arm-visuals.js.
 (function(root) {
   const joints = [
   {

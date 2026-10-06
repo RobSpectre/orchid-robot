@@ -1273,13 +1273,33 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 
 /* Calibration, measured telemetry, and the read-only 3D companion. */
 .calibrating .instrument-shell { display: none; }
+.calibrating .work-grid { align-items: start; }
+.calibrating .arm-column { display: contents; }
+.calibrating .arm-view { grid-column:2; grid-row:1; position:sticky; top:90px; align-self:start; padding:16px; }
+.calibrating .arm-column .telemetry { grid-column:1 / -1; }
+.calibrating #arm-canvas { height:300px; }
+.calibrating .pose-footer { display:none; }
+.calibrating .pose-status { margin-bottom:9px; }
+.calibrating .arm-view .physical-note { font-size:9px; margin-top:10px; padding-top:8px; }
+.calibrating .pose-target { padding:11px; }
+.calibrating .pose-target-location { margin:8px 0; }
 .work-grid { grid-template-columns: minmax(0,1.15fr) minmax(0,1fr); margin-bottom: 24px; }
 .arm-column { display: grid; gap: 18px; min-width: 0; }
 .arm-view { overflow: hidden; padding: 22px; }
 .arm-view .section-line { margin-bottom: 9px; }
 .pose-status { color: #edc987; font-size: 10px; margin: 0 0 14px; }
 .pose-status.stale { color: #ada898; }
-#arm-canvas { display: block; width: 100%; height: 330px; border: 1px solid #585440; border-radius: 8px; touch-action: none; cursor: grab; }
+#arm-canvas { display: block; width: 100%; height: 380px; border: 1px solid #585440; border-radius: 8px; touch-action: none; cursor: grab; }
+.pose-target { display:flex; align-items:center; gap:13px; padding:15px; border:1px solid #658c7d; border-radius:8px; background:#263d34; }
+.pose-target-number { display:grid; place-items:center; flex-shrink:0; min-width:48px; height:48px; padding:5px; background:#84ddc8; color:#183129; border-radius:8px; font-size:23px; font-weight:700; }
+.pose-target[data-mode=prepare] .pose-target-number { font-size:13px; }
+.pose-target-kind { font-size:8px; letter-spacing:1px; color:#a4dccc; }
+.pose-target h3 { font-size:17px; line-height:1.35; letter-spacing:0; font-weight:650; margin:4px 0; }
+.pose-target p { font-size:12px; line-height:1.5; margin:0; color:#d1eee3; }
+.pose-target-location { margin:10px 0 14px; color:#c3c5b8; font-size:11px; line-height:1.6; }
+.pose-target[data-mode=paused] { background:#3b3028; border-color:#aa7860; }
+.pose-target[data-mode=paused] .pose-target-number { background:#dfb089; font-size:11px; }
+#pose-focus { border-color:#72cbb4; color:#b4f5e5; min-height:40px; }
 #arm-canvas:active { cursor: grabbing; }
 #arm-canvas:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
 .view-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
@@ -1342,5 +1362,5 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .motor-error { margin-left: auto; color: #aba58f; font-size: 8px; }
 #diagnostics-age { margin: 18px 0 0; font-size: 10px; }
 .motor-status .hint { margin-bottom: 0; }
-@media(max-width:1100px) { .motor-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .work-grid { grid-template-columns: minmax(0,1fr); } .arm-column { grid-template-columns: minmax(0,1.2fr) minmax(0,1fr); align-items: start; } }
+@media(max-width:1100px) { .motor-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .work-grid { grid-template-columns: minmax(0,1fr); } .arm-column { grid-template-columns: minmax(0,1.2fr) minmax(0,1fr); align-items: start; } .calibrating .arm-view { position:static; grid-column:1; grid-row:1; } .calibrating .workflow { grid-row:2; } }
 @media(max-width:640px) { .arm-column { grid-template-columns: minmax(0,1fr); } .motor-grid { grid-template-columns: minmax(0,1fr); } .motor-status { padding: 20px; } .motor-status .section-line { align-items: flex-start; flex-wrap: wrap; } .motor-status h2 .subtle { display: inline; margin-left: 10px; } .calibration-steps { gap: 13px 5px; } .calibration-steps li { font-size: 9px; gap: 4px; } .calibration-steps b { width: 18px; height: 18px; font-size: 8px; } #arm-canvas { height: 300px; } .arm-view { padding: 18px; } .view-controls label { margin-left: 0; } .range-values { gap: 8px; } }

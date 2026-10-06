@@ -141,7 +141,7 @@ function workflow() {
   } else if (p === "calibration_range") {
     const instruction = window.OrchidPanels.guidance[s.range_motor];
     html = intro(`${s.range_index + 1} of 5 · ${esc(motors[s.range_motor])}`, instruction[1]) +
-      `<div class="joint-instruction"><span>MOVE BY HAND · TORQUE OFF</span><strong>${instruction[0]}</strong><p>The highlighted joint in the 3D view is this step’s joint. Other joints may move as needed to support the arm.</p></div>` +
+      `<div class="joint-instruction"><span>MOTOR ${s.motor_status[s.range_motor].id} · MATCH THE CYAN HIGHLIGHT IN 3D</span><strong>${instruction[0]}</strong><p>Move this joint by hand with torque off. The 3D guide marks its servo and moving link; other joints may move as needed for support.</p></div>` +
       '<div class="range-panel"><div class="range-values"><span>Minimum <b id="range-min">—</b></span><span>Current <b id="range-current">—</b></span><span>Maximum <b id="range-max">—</b></span></div><progress id="range-progress" max="4095" value="0" aria-label="Recorded joint travel"></progress><p id="range-span" class="range-span">Waiting for movement</p><p id="range-readiness" class="hint">Move gently in both directions.</p></div>' +
       (sim ? actions(button("simulate_sweep", "Simulate joint sweep", true)) : "") + confirm("range_complete", "Both ends of the usable travel are recorded.") + actions(button("calibration_next", s.range_index === 4 ? "Review calibration →" : "Save range & continue →"));
   } else if (p === "calibration_review") {

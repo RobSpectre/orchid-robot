@@ -23,11 +23,13 @@
   function update(s,online) {
     window.OrchidPanels.last=[s,online];
     const fresh=online&&s.connected&&s.phase!=='fault'&&s.feedback_at&&Date.now()/1000-s.feedback_at<1.5;
+    const target=window.OrchidArmGuide.target(s,selected);
     $('motor-status-label').textContent=fresh?(s.mode==='simulation'?'Simulated readback':'Live readback'):'Readback unavailable';
     for(const [name,label] of Object.entries(names)) {
       const row=$('motor-'+name),data=s.motor_status?.[name]||{};
-      row.classList.toggle('active',(s.range_motor||selected)===name);row.classList.toggle('stale',!fresh);
-      row.querySelector('.motor-select').setAttribute('aria-pressed',String((s.range_motor||selected)===name));
+      row.classList.toggle('active',target.active===name);row.classList.toggle('stale',!fresh);
+      row.querySelector('.motor-select').setAttribute('aria-pressed',String(target.active===name));
+      row.querySelector('.motor-select').disabled=s.phase?.startsWith('calibration_');
       const torque=row.querySelector('.motor-torque');torque.textContent=!fresh||data.torque_enabled===null||data.torque_enabled===undefined?'UNKNOWN':data.torque_enabled?'ON':'OFF';torque.classList.toggle('on',fresh&&data.torque_enabled===true);
       row.querySelector('.motor-ticks').textContent=data.position_ticks??'—';
       row.querySelector('.motor-angle').textContent=data.degrees_from_midpoint!==null&&data.degrees_from_midpoint!==undefined?`${data.degrees_from_midpoint.toFixed(1)}° from midpoint`:'No midpoint reference';
@@ -42,7 +44,7 @@
       row.querySelector('.motor-error').textContent=fresh&&Number.isFinite(data.tracking_error_ticks)?`Goal ${data.target_ticks} · Δ ${data.tracking_error_ticks} ticks`:'No live powered target';
     }
     $('diagnostics-age').textContent=s.diagnostics_error?`Health read unavailable: ${s.diagnostics_error}`:s.diagnostics_at?`Voltage / temperature snapshot · ${new Date(s.diagnostics_at*1000).toLocaleTimeString()} · ${Math.floor(Math.max(0,Date.now()/1000-s.diagnostics_at))}s ago`:'Voltage and temperature have not been sampled. Refresh while idle with torque off.';
-    $('arm-canvas').setAttribute('aria-label',`Read-only 3D SO101 arm view. ${fresh&&s.pose_angles?'Encoder-based pose estimate.':'No live referenced pose.'} Drag to orbit, or use arrow keys. Plus and minus zoom. Camera controls never move the arm.`);
+    $('arm-canvas').setAttribute('aria-label',`Read-only 3D SO101 arm view. ${target.title}. ${fresh&&s.pose_angles?'Encoder-based pose estimate.':'No live referenced pose.'} Drag to orbit, or use arrow keys. Plus and minus zoom. Camera controls never move the arm.`);
     window.OrchidArmView?.update(s,online,selected);
     const range=s.ranges?.[s.range_motor];
     if($('range-span'))$('range-span').textContent=range?`${range.max-range.min} ticks recorded`:'Waiting for movement';
