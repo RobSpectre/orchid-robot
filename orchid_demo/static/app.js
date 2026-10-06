@@ -13,7 +13,7 @@ const statusText = value => value.status === "registered" ? "✓ REGISTERED" : v
 const confirmationTitles = {supported: "Arm this step", hands_clear: "Arm test", prepared: "Arm connection",
   fixture_unchanged: "Keep saved placement", range_complete: "Confirm joint travel", fixed_pad: "Confirm fixed tips",
   direction_verified: "Confirm dial direction", rim_clear: "Confirm rim is clear", reference_reset: "Confirm reference reset",
-  effect_verified: "Confirm expected effect"};
+  effect_verified: "Confirm expected effect", calibration_unchanged: "Confirm same arm & joints"};
 const confirmed = b => b?.getAttribute("aria-pressed") === "true";
 const confirm = (name, text) => `<button type="button" class="confirmation" data-confirm="${name}" aria-pressed="false"><span class="confirmation-icon" aria-hidden="true">○</span><span class="confirmation-copy"><strong>${confirmationTitles[name] || "Confirm this step"}</strong><span>${text}</span><small class="confirmation-state">Tap to confirm · no motor command</small></span></button>`;
 function setConfirmation(b, enabled) {
@@ -28,6 +28,20 @@ function clearConfirmations(scope = document) {
 }
 const button = (action, text, secondary = false, attrs = "") => `<button data-action="${action}" class="${secondary ? "secondary" : "primary"}" ${attrs}>${text}</button>`;
 const support = () => confirm("supported", "I am supporting the arm’s weight; it is safe to release or hold here.");
+const calibrationPhases = ["connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review"];
+const actionScope = b => b.dataset.recovery ? $("recovery") : b.dataset.calibration ? $("calibration-tools") : $("workflow");
+function calibrationTools() {
+  const s = state, available = calibrationPhases.includes(s.phase);
+  const status = s.calibrating ? "New calibration in progress" : s.calibrated ? "Saved calibration is active" : "Saved calibration is not active";
+  $("calibration-tools-content").innerHTML = `<div class="calibration-saved"><span class="eyebrow">SAVED REFERENCE</span><strong>${s.calibration ? esc(status) : "No saved calibration yet"}</strong><p>${s.calibration ? `Six motors · reference <code>${esc(s.calibration_id || "saved")}</code>` : "Complete and save the guided calibration to enable reload."}</p></div>` +
+    `<p class="hint">Reset restarts the midpoint and all joint sweeps. Your last saved calibration and registered motions stay saved.</p>` +
+    (!available ? `<p class="hint">${s.connected ? "Finish this control or use Release or disconnect → Release torque to return to setup." : "Connect the follower to reset or reload its calibration."}</p>` : support() +
+      actions(button("calibration_reset", "Reset calibration", true, 'data-calibration="true"')) +
+      `<div class="calibration-reload"><p class="hint">Reload discards the unfinished calibration and verifies the saved settings on all six motors. Use reset after replacing or reseating a motor or joint.</p>` +
+      (s.calibration ? confirm("calibration_unchanged", "This is the same arm; no motors or joints have been replaced or reseated since this calibration was saved.") : "") +
+      actions(button("calibration_reload", "Reload saved calibration", true, 'data-calibration="true"')) + '</div>') +
+    '<p class="hint">Both actions keep torque off. Reloading does not restore an earlier arm position. Motions still need the same calibration, fixture and contact tips.</p>';
+}
 const hands = () => confirm("hands_clear", "My hands are clear of the arm and key path.");
 const intro = (title, description) => `<h3>${title}</h3><p class="description">${description}</p>`;
 const actions = (html) => `<div class="actions">${html}</div>`;
@@ -178,9 +192,9 @@ function workflow() {
 function render() {
   if (!state) return;
   const s = state, p = s.phase;
-  const key = [s.instance_id, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated].join(":");
+  const key = [s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated].join(":");
   if (key !== renderKey) {
-    cancelCountdown(); clearConfirmations(); renderKey = key; workflow();
+    cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools();
     say(["dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_pressed", "note_touch", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
   }
   renderPorts();
@@ -247,9 +261,13 @@ function updateButtons() {
   const blocked = !online || !owns || state?.worker_alive === false || sending || state?.pending || !!timer;
   document.querySelectorAll("[data-confirm]").forEach(b => { b.disabled = blocked; });
   document.querySelectorAll("[data-action]").forEach(b => {
-    const scope = b.dataset.recovery ? $("recovery") : $("workflow");
+    const scope = actionScope(b);
     let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.dataset.confirm !== "fixture_unchanged").every(confirmed);
     if (b.dataset.recovery) valid = confirmed($("recovery-supported"));
+    if (b.dataset.calibration) {
+      valid = calibrationPhases.includes(state.phase) && confirmed(scope.querySelector('[data-confirm="supported"]'));
+      if (b.dataset.action === "calibration_reload") valid = valid && !!state.calibration && confirmed(scope.querySelector('[data-confirm="calibration_unchanged"]'));
+    }
     if (["simulate_sweep", "fail", "refresh_ports"].includes(b.dataset.action)) valid = true;
     if (b.dataset.action === "connect") valid = valid && state.discovery?.ports.some(p => p.path === $("port")?.value && p.connectable);
     if (b.dataset.diagnostics) valid = state.connected && ["connected", "ready"].includes(state.phase) && Object.values(state.torque || {}).length === 6 && Object.values(state.torque).every(v => v === 0);
@@ -272,7 +290,7 @@ async function submit(action, args = {}, revision = state.revision) {
 function dispatchButton(b) {
   const action = b.dataset.action;
   const args = {};
-  const scope = b.dataset.recovery ? $("recovery") : $("workflow");
+  const scope = actionScope(b);
   if (!b.dataset.diagnostics) scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = confirmed(c));
   if (b.dataset.recovery) args.supported = confirmed($("recovery-supported"));
   if (action === "connect") { args.fixture = $("fixture").value; args.port = $("port").value; args.tool = $("contact-tool").value; }
@@ -281,7 +299,7 @@ function dispatchButton(b) {
   // Consent is for this attempt only, including canceled countdowns and errors.
   if (!b.dataset.diagnostics && action !== "refresh_ports") clearConfirmations(scope);
   const revision = state.revision;
-  const delayed = ["calibrate","calibration_center","control_start","dial_capture_start","dial_capture_contact","dial_capture_turn","dial_capture_lift","dial_capture_return","capture_pressed","capture_touch","capture_clear","next","release","disconnect","retry"].includes(action);
+  const delayed = ["calibrate","calibration_reset","calibration_reload","calibration_center","control_start","dial_capture_start","dial_capture_contact","dial_capture_turn","dial_capture_lift","dial_capture_return","capture_pressed","capture_touch","capture_clear","next","release","disconnect","retry"].includes(action);
   if ($("delay").checked && delayed) {
     let left = 5;
     const title = b.textContent;

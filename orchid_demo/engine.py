@@ -12,7 +12,7 @@ import uuid
 from . import motion as m
 from . import dial
 from .controls import CATALOG, group_members
-from .devices import HardwareArm, SimulatedArm
+from .devices import HardwareArm, SimulatedArm, validate_calibration
 from .discovery import discover_arms, follower_problem
 from .storage import Repository
 from .telemetry import motor_status, pose_angles
@@ -20,6 +20,7 @@ from .telemetry import motor_status, pose_angles
 RANGE_MOTORS = tuple(name for name in m.MOTORS if name != "wrist_roll")
 REQUIRED_TRIALS = 3
 LEASE_SECONDS = 5.0
+CALIBRATION_SETUP_PHASES = ("connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review")
 
 
 class GuardedController(m.Controller):
@@ -160,6 +161,8 @@ class Engine:
                 "instance_id": self.instance_id, "revision": self.revision, "mode": self.mode,
                 "phase": self.phase, "message": self.message, "error": self.error,
                 "connected": self.arm is not None, "calibrated": self.calibrated,
+                "calibrating": self.calibrating,
+                "calibration_id": m.fingerprint(self.calibration)[:12] if self.calibration else None,
                 "discovery": deepcopy(self.discovery),
                 "fixture": deepcopy(self.fixture), "selected": self.selected,
                 "position": deepcopy(self.current), "torque": deepcopy(self.torque),
@@ -326,6 +329,17 @@ class Engine:
             self.log.close()
             self.log = None
 
+    def clear_calibration_capture(self):
+        self.offsets = None
+        self.ranges, self.range_index = {}, 0
+        # A reference change invalidates the previous encoder/3D sample.
+        self.current = self.feedback_at = self.last_read = None
+
+    def begin_calibration(self):
+        backup = self.arm.begin_calibration()
+        self.calibrating = True
+        self.repo.put("calibration_backup", {"at": m.stamp(), "hardware": backup, "saved": self.calibration})
+
     def establish_hold(self, draft, planned):
         self.repo.put("draft", {"key": self.selected, "entry": draft})
         self.draft = draft
@@ -347,6 +361,7 @@ class Engine:
         if self.controller:
             self.controller.stop()
         if self.calibrating:
+            self.calibrated = False
             try:
                 self.arm.abort_calibration()
                 self.calibrating = False
@@ -431,19 +446,35 @@ class Engine:
                 self.diagnostics = None
                 self.diagnostics_error = str(exc)
                 raise m.SafetyError(f"Motor health read unavailable: {exc}") from exc
-        elif action == "calibrate":
-            self.require_phase("connected", "ready")
+        elif action in ("calibrate", "calibration_reset", "calibration_reload"):
+            self.require_phase(*(("connected", "ready") if action == "calibrate" else CALIBRATION_SETUP_PHASES))
             self.supported(args)
+            reload_saved = action == "calibration_reload"
+            if reload_saved:
+                # Validate before releasing torque or discarding an active sweep.
+                validate_calibration(self.calibration)
+                m.require(args.get("calibration_unchanged") is True,
+                          "Confirm this is the same arm and no motors or joints have been replaced or reseated since saving.")
             self.guard()
             self.actuating = True
             self.arm.release()
-            self.calibrating = True
-            backup = self.arm.begin_calibration()
-            self.repo.put("calibration_backup", {"at": m.stamp(), "hardware": backup, "saved": self.calibration})
             self.calibrated = False
-            self.offsets = None
-            self.ranges, self.range_index = {}, 0
-            self.transition("calibration_midpoint", "Support the arm. Center all six joints and half-open the gripper, then capture the midpoint.")
+            if self.calibrating:
+                self.arm.abort_calibration()
+                self.calibrating = False
+            self.reset_note()
+            self.clear_calibration_capture()
+            self.guard()
+            self.begin_calibration()
+            if reload_saved:
+                self.arm.commit_calibration(self.calibration, guard=self.guard)
+                self.calibrated, self.calibrating = True, False
+                self.event("calibration_reloaded", "Saved calibration reloaded and verified on all six motors; torque remains off.")
+                self.transition("ready", "Saved calibration is active. Registered motions retain their original fixture and calibration checks.")
+            else:
+                if action == "calibration_reset":
+                    self.event("calibration_reset", "Calibration restarted at midpoint. Saved calibration and registrations retained.")
+                self.transition("calibration_midpoint", "Support the arm. Center all six joints and half-open the gripper, then capture the midpoint.")
         elif action == "calibration_center":
             self.require_phase("calibration_midpoint")
             self.supported(args)
@@ -488,7 +519,7 @@ class Engine:
                              "range_min": span["min"], "range_max": span["max"]}
             self.guard()
             self.actuating = True
-            self.arm.commit_calibration(new)
+            self.arm.commit_calibration(new, guard=self.guard)
             self.repo.put("calibration", new)
             self.calibration, self.calibrated, self.calibrating = new, True, False
             self.event("calibration_saved", "All six motors calibrated; torque remains off.", new)
@@ -643,6 +674,7 @@ class Engine:
                 self.arm.abort_calibration()
                 self.calibrating = False
                 self.calibrated = bool(self.calibration) and getattr(self.arm, "calibration_matches", True)
+                self.clear_calibration_capture()
             self.reset_note()
             self.stop_event.clear()
             if action == "disconnect":

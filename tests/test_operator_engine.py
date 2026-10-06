@@ -73,6 +73,129 @@ def held(e):
     teach(e)
 
 
+def reject(e, action, **args):
+    e.heartbeat("operator")
+    receipt = e.submit("operator", uuid.uuid4().hex, action, e.revision, args)
+    e.step()
+    result = e.receipts[receipt["id"]]
+    assert result["status"] == "rejected", result
+    return result
+
+
+@pytest.mark.parametrize("stage", ["connected", "ready", "midpoint", "range", "review"])
+def test_reset_clears_only_unsaved_calibration_and_returns_to_midpoint(engine, stage):
+    connect(engine)
+    if stage != "connected":
+        calibrate(engine)
+    saved = deepcopy(engine.calibration)
+    if stage in ("midpoint", "range", "review"):
+        command(engine, "calibrate", supported=True)
+    if stage in ("range", "review"):
+        command(engine, "calibration_center", supported=True)
+        command(engine, "simulate_sweep")
+    if stage == "review":
+        for _ in range(5):
+            command(engine, "simulate_sweep")
+            command(engine, "calibration_next", range_complete=True)
+    command(engine, "calibration_reset", supported=True)
+    assert engine.phase == "calibration_midpoint"
+    assert engine.ranges == {} and engine.range_index == 0 and engine.offsets is None
+    assert engine.calibrating and not engine.calibrated
+    assert not engine.snapshot()["pose_reference_ready"]
+    assert engine.snapshot()["pose_angles"] is None
+    assert not engine.arm.enabled
+    assert engine.repo.get("calibration") == engine.calibration == saved
+    command(engine, "release", supported=True)
+    assert engine.arm.calibration == saved
+    assert engine.calibrated == bool(saved)
+
+
+def test_reload_during_sweep_preserves_registered_motion_and_fixture(engine):
+    held(engine)
+    for _ in range(3):
+        accept_trial(engine)
+    command(engine, "release", supported=True)
+    saved, notes, fixture = deepcopy(engine.calibration), deepcopy(engine.notes), deepcopy(engine.fixture)
+    command(engine, "calibrate", supported=True)
+    command(engine, "calibration_center", supported=True)
+    command(engine, "simulate_sweep")
+    command(engine, "calibration_reload", supported=True, calibration_unchanged=True)
+    assert engine.phase == "ready" and engine.calibrated and not engine.calibrating
+    assert engine.ranges == {} and engine.offsets is None
+    assert engine.arm.calibration == engine.calibration == engine.repo.get("calibration") == saved
+    assert engine.notes == notes and engine.fixture == fixture
+    assert engine.key_statuses()["C"]["status"] == "registered"
+    assert not engine.arm.enabled and engine.snapshot()["pose_reference_ready"]
+    assert engine.events[1]["kind"] == "calibration_reloaded"
+
+
+@pytest.mark.parametrize("action,args", [
+    ("calibration_reset", {}), ("calibration_reload", {"calibration_unchanged": True}),
+    ("calibration_reload", {"supported": True}),
+])
+def test_calibration_management_requires_explicit_confirmations(engine, action, args):
+    connect(engine)
+    calibrate(engine)
+    release = engine.arm.release
+    engine.arm.release = lambda: pytest.fail("Released without confirmation")
+    reject(engine, action, **args)
+    assert engine.phase == "ready"
+    engine.arm.release = release
+
+
+@pytest.mark.parametrize("invalid", [None, {}, {"shoulder_pan": {}}])
+def test_reload_without_complete_saved_calibration_does_not_touch_arm(engine, invalid):
+    connect(engine)
+    engine.calibration = invalid
+    engine.arm.release = lambda: pytest.fail("Released before validating saved calibration")
+    reject(engine, "calibration_reload", supported=True, calibration_unchanged=True)
+    assert engine.phase == "connected"
+
+
+@pytest.mark.parametrize("action", ["calibration_reset", "calibration_reload"])
+def test_calibration_management_cannot_interrupt_a_powered_hold(engine, action):
+    held(engine)
+    before = dict(engine.arm.current)
+    reject(engine, action, supported=True, calibration_unchanged=True)
+    assert engine.phase == "holding" and engine.arm.enabled
+    assert engine.arm.current == before
+
+
+def test_failed_reload_restores_previous_hardware_without_claiming_active_calibration(engine):
+    connect(engine)
+    calibrate(engine)
+    saved = deepcopy(engine.calibration)
+    previous_hardware = deepcopy(saved)
+    previous_hardware["elbow_flex"]["homing_offset"] = 19
+    engine.arm.calibration = deepcopy(previous_hardware)
+    def fail_write(calibration, *, guard):
+        guard()
+        engine.arm.calibration = deepcopy(calibration)
+        raise m.SafetyError("Calibration write verification failed")
+    engine.arm.commit_calibration = fail_write
+    reject(engine, "calibration_reload", supported=True, calibration_unchanged=True)
+    assert engine.phase == "fault" and not engine.calibrated
+    assert not engine.snapshot()["pose_reference_ready"]
+    assert engine.arm.calibration == previous_hardware
+    assert engine.repo.get("calibration") == saved
+    assert not engine.arm.enabled
+
+
+def test_reset_stops_when_rollback_cannot_be_verified(engine):
+    connect(engine)
+    calibrate(engine)
+    command(engine, "calibrate", supported=True)
+    command(engine, "calibration_center", supported=True)
+    def fail_restore():
+        raise m.SafetyError("Unable to verify calibration rollback")
+    engine.arm.abort_calibration = fail_restore
+    engine.arm.begin_calibration = lambda: pytest.fail("Overwrote backup after failed rollback")
+    reject(engine, "calibration_reset", supported=True)
+    assert engine.phase == "fault" and not engine.calibrated
+    assert engine.repo.get("calibration") == engine.calibration
+    engine.calibrating = False  # Do not repeat the injected failure during fixture cleanup.
+
+
 def test_complete_twelve_notes_and_resume(engine, tmp_path):
     connect(engine)
     calibrate(engine)

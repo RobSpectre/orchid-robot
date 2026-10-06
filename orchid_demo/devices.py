@@ -9,6 +9,22 @@ import time
 from . import motion as m
 
 
+def validate_calibration(calibration):
+    """Accept only the six-motor raw calibration format written by this app."""
+    m.require(isinstance(calibration, dict) and set(calibration) == set(m.MOTORS),
+              "A complete saved calibration for all six motors is required.")
+    fields = {"id", "drive_mode", "homing_offset", "range_min", "range_max"}
+    for i, name in enumerate(m.MOTORS, 1):
+        value = calibration[name]
+        m.require(isinstance(value, dict) and set(value) == fields
+                  and all(type(v) is int for v in value.values()), f"Invalid saved calibration for {name}.")
+        m.require(value["id"] == i and value["drive_mode"] == 0
+                  and -2047 <= value["homing_offset"] <= 2047
+                  and 0 <= value["range_min"] < value["range_max"] <= 4095
+                  and value["range_max"] - value["range_min"] > 2 * m.JOINT_MARGIN,
+                  f"Invalid saved calibration for {name}; perform a full calibration.")
+
+
 class SimulatedArm(m.Arm):
     version = "simulator-1"
 
@@ -70,7 +86,9 @@ class SimulatedArm(m.Arm):
         self.current = dict.fromkeys(m.MOTORS, 2047)
         return dict.fromkeys(m.MOTORS, 0)
 
-    def commit_calibration(self, calibration):
+    def commit_calibration(self, calibration, *, guard=lambda: None):
+        validate_calibration(calibration)
+        guard()
         self.require_torque(False)
         self.calibration = deepcopy(calibration)
         self.backup = None
@@ -131,10 +149,12 @@ class HardwareArm(m.Arm):
 
     def begin_calibration(self):
         self.require_torque(False)
-        self.backup = self.bus.read_calibration()
-        self.locks = self.bus.sync_read("Lock", normalize=False, num_retry=0)
-        m.require(set(self.locks) == set(m.MOTORS) and all(v in (0, 1) for v in self.locks.values()),
+        backup = self.bus.read_calibration()
+        m.require(set(backup) == set(m.MOTORS), "Incomplete calibration backup")
+        locks = self.bus.sync_read("Lock", normalize=False, num_retry=0)
+        m.require(set(locks) == set(m.MOTORS) and all(v in (0, 1) for v in locks.values()),
                   "Incomplete EEPROM lock readback")
+        self.backup, self.locks = backup, locks
         return {name: asdict(value) for name, value in self.backup.items()}
 
     def center(self, *, guard=lambda: None, sleep=time.sleep):
@@ -201,14 +221,35 @@ class HardwareArm(m.Arm):
         self.require_torque(False)
         for name, value in (self.locks or {}).items():
             self.bus.write("Lock", name, value, normalize=False, num_retry=0)
+        if self.locks is not None:
+            m.require(self.bus.sync_read("Lock", normalize=False, num_retry=0) == self.locks,
+                      "Unable to verify EEPROM lock restoration")
 
-    def commit_calibration(self, calibration):
+    def commit_calibration(self, calibration, *, guard=lambda: None):
         from lerobot.motors import MotorCalibration
+        validate_calibration(calibration)
+        guard()
         self.require_torque(False)
+        m.require(self.backup is not None and self.locks is not None, "Calibration backup is missing")
         expected = {name: MotorCalibration(**value) for name, value in calibration.items()}
-        self.bus.write_calibration(expected)
+        # Reload can start with EEPROM locked and without a midpoint capture.
+        # Keep the backup live before the first write, including partial failure.
+        for name in m.MOTORS:
+            guard()
+            self.bus.write("Lock", name, 0, normalize=False, num_retry=0)
+        self.homing_changed = True
+        self.calibration_matches = False
+        self.bus.calibration = {}
+        for name, entry in expected.items():
+            guard()
+            self.require_torque(False)
+            for register, field in (("Homing_Offset", "homing_offset"), ("Min_Position_Limit", "range_min"),
+                                    ("Max_Position_Limit", "range_max")):
+                self.bus.write(register, name, getattr(entry, field), normalize=False, num_retry=0)
+        guard()
         m.require(self.bus.read_calibration() == expected, "Calibration write verification failed")
         self.restore_locks()
+        self.bus.calibration = expected
         self.calibration = deepcopy(calibration)
         self.signature = m.fingerprint(calibration)
         self.calibration_matches = True
@@ -216,11 +257,18 @@ class HardwareArm(m.Arm):
         self.backup = None
 
     def abort_calibration(self):
+        from lerobot.motors import MotorCalibration
         self.require_torque(False)
         if self.homing_changed and self.backup is not None:
+            # A failed lock restoration may have already locked some motors.
+            for name in m.MOTORS:
+                self.bus.write("Lock", name, 0, normalize=False, num_retry=0)
             self.bus.write_calibration(self.backup)
             m.require(self.bus.read_calibration() == self.backup, "Unable to verify calibration rollback")
         self.restore_locks()
         self.homing_changed = False
         self.backup = None
-        self.calibration_matches = bool(self.calibration) and self.bus.is_calibrated
+        # The backed-up hardware settings may already have differed from the
+        # saved app calibration. Never treat that rollback as a verified match.
+        self.bus.calibration = {name: MotorCalibration(**value) for name, value in (self.calibration or {}).items()}
+        self.calibration_matches = bool(self.calibration) and self.bus.read_calibration() == self.bus.calibration

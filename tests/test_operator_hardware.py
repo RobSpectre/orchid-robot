@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from orchid_demo import motion as m
-from orchid_demo.devices import HardwareArm
+from orchid_demo.devices import HardwareArm, validate_calibration
 
 
 @dataclass
@@ -136,6 +136,94 @@ def test_successful_calibration_readback_and_no_torque_enable(arm):
     assert arm.signature == m.fingerprint(changed)
     assert arm.calibration_matches
     assert all(register in ("Lock", "Homing_Offset", "Min_Position_Limit", "Max_Position_Limit") for register, _, _ in arm.bus.writes)
+
+
+def enforce_eeprom_locks(arm):
+    write = arm.bus.write
+    def locked_write(register, name, value, **kwargs):
+        if register in ("Homing_Offset", "Min_Position_Limit", "Max_Position_Limit"):
+            assert arm.bus.values["Lock"][name] == 0, "Wrote locked EEPROM"
+        write(register, name, value, **kwargs)
+    arm.bus.write = locked_write
+
+
+def test_reload_without_midpoint_unlocks_verifies_and_restores_mixed_locks(arm):
+    arm.open()
+    arm.bus.values["Lock"]["elbow_flex"] = 0
+    locks = dict(arm.bus.values["Lock"])
+    enforce_eeprom_locks(arm)
+    arm.begin_calibration()
+    saved = {name: {**cal, "homing_offset": 99} for name, cal in arm.calibration.items()}
+    arm.commit_calibration(saved)
+    assert arm.calibration == saved and arm.calibration_matches
+    assert arm.bus.values["Lock"] == locks
+    assert arm.bus.read_calibration() == arm.bus.calibration
+    assert not any(r in ("Goal_Position", "Torque_Enable") for r, _, _ in arm.bus.writes)
+
+
+@pytest.mark.parametrize("failure", ["partial_write", "readback", "stop", "lock_restore"])
+def test_reload_failure_restores_original_hardware_even_after_partial_lock_restore(arm, failure):
+    arm.open()
+    enforce_eeprom_locks(arm)
+    before = arm.bus.read_calibration()
+    saved = deepcopy(arm.calibration)
+    saved["elbow_flex"]["homing_offset"] = 99
+    arm.begin_calibration()
+    write = arm.bus.write
+    failed = False
+    def fail_once(register, name, value, **kwargs):
+        nonlocal failed
+        if not failed and name == "elbow_flex" and (
+            (failure == "partial_write" and register == "Homing_Offset")
+            or (failure == "lock_restore" and register == "Lock" and value == 1)
+        ):
+            failed = True
+            raise m.SafetyError("Injected failure")
+        write(register, name, value, **kwargs)
+    arm.bus.write = fail_once
+    if failure == "readback":
+        arm.bus.corrupt_readback = True
+    def guard():
+        if failure == "stop" and arm.homing_changed:
+            raise m.SafetyError("Stop requested")
+    with pytest.raises(m.SafetyError):
+        arm.commit_calibration(saved, guard=guard)
+    arm.abort_calibration()
+    assert arm.bus.read_calibration() == before
+    assert arm.bus.values["Lock"] == dict.fromkeys(m.MOTORS, 1)
+    assert arm.calibration_matches
+    assert not any(r in ("Goal_Position", "Torque_Enable") for r, _, _ in arm.bus.writes)
+
+
+def test_rollback_does_not_confuse_previous_hardware_settings_with_saved_reference(arm):
+    arm.open()
+    arm.calibration["elbow_flex"]["homing_offset"] = 88  # Saved reference differs from hardware.
+    arm.begin_calibration()
+    arm.bus.corrupt_readback = True
+    with pytest.raises(m.SafetyError):
+        arm.commit_calibration(arm.calibration)
+    arm.abort_calibration()
+    assert not arm.calibration_matches
+    assert arm.bus.calibration["elbow_flex"].homing_offset == 88
+    assert arm.bus.hardware_calibration["elbow_flex"].homing_offset == 10
+
+
+@pytest.mark.parametrize("field,value", [("id", 99), ("id", True), ("drive_mode", 1), ("homing_offset", 2048),
+                                        ("range_min", -1), ("range_max", 5000), ("range_max", 1001)])
+def test_reload_rejects_invalid_saved_values_before_any_write(arm, field, value):
+    saved = deepcopy(arm.calibration)
+    saved["elbow_flex"][field] = value
+    with pytest.raises(m.SafetyError):
+        validate_calibration(saved)
+    with pytest.raises(m.SafetyError):
+        arm.commit_calibration(saved)
+    assert arm.bus.writes == []
+
+
+@pytest.mark.parametrize("value", [None, {}, "broken", [], {"shoulder_pan": {}}])
+def test_saved_calibration_requires_complete_mapping(value):
+    with pytest.raises(m.SafetyError):
+        validate_calibration(value)
 
 
 def test_calibration_refuses_any_enabled_motor(arm):

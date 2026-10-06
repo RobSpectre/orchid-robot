@@ -1312,6 +1312,14 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .arm-view .physical-note { margin: 12px 0 0; padding-top: 12px; }
 .arm-column .telemetry { padding: 22px; }
 .calibration-guide { margin: 0 0 26px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+.calibration-tools { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 16px; }
+.calibration-tools > summary { min-height: 48px; align-content: center; cursor: pointer; color: var(--ink); font-size: 14px; }
+.calibration-tools > summary:focus-visible { outline: 2px solid #f6d69a; outline-offset: 4px; }
+.calibration-saved { border-left: 3px solid #c4af7f; padding: 2px 0 2px 16px; margin: 12px 0 18px; }
+.calibration-saved strong { display: block; margin-top: 8px; font-size: 15px; }
+.calibration-saved p { color: var(--muted); font-size: 12px; margin: 8px 0; }
+.calibration-reload { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 10px; }
+.calibration-tools .actions button { min-height: 52px; flex: 1; }
 .guide-heading { display: flex; justify-content: space-between; font-size: 8px; letter-spacing: 1px; color: #bea771; margin-bottom: 17px; }
 .guide-heading strong { color: #f0d399; font-weight: 500; letter-spacing: 0; }
 .calibration-steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px 8px; }

@@ -17,16 +17,22 @@ function consoleHarness() {
   const action = button('calibrate', {action:'calibrate'});
   const disconnect = button('disconnect', {action:'disconnect', recovery:'true'});
   const optional = button('placement', {confirm:'fixture_unchanged'});
+  const calibrationSupport = button('calibration-support', {confirm:'supported'});
+  const unchanged = button('unchanged', {confirm:'calibration_unchanged'});
+  const reset = button('reset', {action:'calibration_reset', calibration:'true'});
+  const reload = button('reload', {action:'calibration_reload', calibration:'true'});
   Object.assign(elements, {
     'workflow':{querySelectorAll:()=>[consent, optional]},
     'recovery':{querySelectorAll:()=>[recovery]},
+    'calibration-tools':{querySelectorAll:()=>[calibrationSupport,unchanged],
+      querySelector:s=>s.includes('calibration_unchanged') ? unchanged : calibrationSupport},
     'recovery-supported':recovery, 'stop':button('stop'),
     'delay':{checked:false}, 'speech':{checked:false}, 'countdown':{}, 'error':{}
   });
   const document = {
     getElementById:id=>elements[id], addEventListener:(event,fn)=>listeners[event]=fn,
-    querySelectorAll:selector=>selector === '[data-action]' ? [action,disconnect]
-      : selector === '[data-confirm]' ? [consent,optional,recovery] : []
+    querySelectorAll:selector=>selector === '[data-action]' ? [action,disconnect,reset,reload]
+      : selector === '[data-confirm]' ? [consent,optional,recovery,calibrationSupport,unchanged] : []
   };
   let fail = false;
   const context = vm.createContext({document, crypto:webcrypto, AbortSignal,
@@ -41,7 +47,7 @@ function consoleHarness() {
   vm.runInContext(readFileSync('orchid_demo/static/app.js','utf8'),context);
   vm.runInContext(`state={phase:'connected',connected:true,calibrated:false,worker_alive:true,revision:1,pending:false};
     token='test-token';online=true;owns=true;updateButtons();`,context);
-  return {consent,optional,recovery,action,disconnect,elements,commands,context,
+  return {consent,optional,recovery,action,disconnect,calibrationSupport,unchanged,reset,reload,elements,commands,context,
     fail:()=>{fail=true;}, click:b=>listeners.click({target:b})};
 }
 
@@ -103,4 +109,50 @@ test('read-only or unavailable console disables confirmation buttons',()=>{
   ui.click(ui.consent);
   assert.equal(ui.consent.getAttribute('aria-pressed'),'false');
   assert.equal(ui.commands.length,0);
+});
+
+test('reset has independent support consent and does not require the reload confirmation',async()=>{
+  const ui = consoleHarness();
+  ui.click(ui.consent);
+  assert.equal(ui.reset.disabled,true);
+  ui.click(ui.calibrationSupport);
+  assert.equal(ui.reset.disabled,false);
+  assert.equal(ui.reload.disabled,true); // No saved calibration.
+  ui.click(ui.reset);
+  await new Promise(setImmediate);
+  assert.equal(ui.commands[0].action,'calibration_reset');
+  assert.equal(ui.commands[0].args.supported,true);
+  assert.equal(ui.calibrationSupport.getAttribute('aria-pressed'),'false');
+});
+
+test('reload requires a saved reference and both confirmations, consumed after rejection',async()=>{
+  const ui = consoleHarness();
+  vm.runInContext('state.calibration={saved:true};updateButtons();',ui.context);
+  ui.click(ui.calibrationSupport);
+  assert.equal(ui.reload.disabled,true);
+  ui.click(ui.unchanged);
+  assert.equal(ui.reload.disabled,false);
+  ui.fail();
+  ui.click(ui.reload);
+  await new Promise(setImmediate);
+  assert.equal(ui.commands[0].action,'calibration_reload');
+  assert.equal(ui.commands[0].args.calibration_unchanged,true);
+  assert.equal(ui.reload.disabled,true);
+  assert.equal(ui.unchanged.getAttribute('aria-pressed'),'false');
+});
+
+test('reset and reload cannot run during holds and honor a canceled support countdown',()=>{
+  const ui = consoleHarness();
+  vm.runInContext('state.phase="holding";state.calibration={saved:true};updateButtons();',ui.context);
+  ui.click(ui.calibrationSupport); ui.click(ui.unchanged);
+  assert.equal(ui.reset.disabled,true);
+  assert.equal(ui.reload.disabled,true);
+  vm.runInContext('state.phase="calibration_range";updateButtons();',ui.context);
+  ui.elements.delay.checked=true;
+  ui.click(ui.reload);
+  assert.equal(ui.commands.length,0);
+  assert.equal(ui.calibrationSupport.disabled,true);
+  ui.click({id:'cancel-countdown',closest(){return this;}});
+  assert.equal(ui.reload.disabled,true);
+  assert.equal(ui.calibrationSupport.disabled,false);
 });
