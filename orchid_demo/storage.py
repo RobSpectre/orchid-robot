@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from .motion import KEYS, stamp
+from .controls import EXTRA_CONTROLS
 
 
 class Repository:
@@ -17,16 +18,19 @@ class Repository:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise RuntimeError(f"Unsupported database version {version}; restore with a compatible application.")
         self.db.executescript("""
+            BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS documents (name TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS notes (note TEXT PRIMARY KEY, entry TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS controls (control TEXT PRIMARY KEY, entry TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY, created TEXT NOT NULL, kind TEXT NOT NULL,
                 message TEXT NOT NULL, detail TEXT NOT NULL
             );
-            PRAGMA user_version=1;
+            PRAGMA user_version=2;
+            COMMIT;
         """)
 
     def get(self, name, default=None):
@@ -52,6 +56,19 @@ class Repository:
             self.db.execute("INSERT INTO events(created,kind,message,detail) VALUES (?,?,?,?)",
                             (stamp(), "note_saved", f"{note} trial accepted", json.dumps(entry)))
 
+    def controls(self):
+        saved = {name: json.loads(entry) for name, entry in self.db.execute("SELECT control,entry FROM controls")}
+        return {name: saved.get(name) for name in EXTRA_CONTROLS}
+
+    def save_control(self, name, entry):
+        if name not in EXTRA_CONTROLS:
+            raise ValueError("Unknown instrument control")
+        with self.db:
+            self.db.execute("INSERT INTO controls VALUES (?,?) ON CONFLICT(control) DO UPDATE SET entry=excluded.entry",
+                            (name, json.dumps(entry, allow_nan=False)))
+            self.db.execute("INSERT INTO events(created,kind,message,detail) VALUES (?,?,?,?)",
+                            (stamp(), "control_saved", f"{name} trial reviewed", json.dumps(entry, allow_nan=False)))
+
     def event(self, kind, message, detail=None):
         with self.db:
             self.db.execute("INSERT INTO events(created,kind,message,detail) VALUES (?,?,?,?)",
@@ -62,9 +79,10 @@ class Repository:
                 for row in self.db.execute("SELECT id,created,kind,message FROM events ORDER BY id DESC LIMIT ?", (limit,))]
 
     def export(self):
-        return {"schema_version": 1, "application": "orchid-demo", "mode": self.mode,
+        return {"schema_version": 2, "application": "orchid-demo", "mode": self.mode,
                 "exported_at": stamp(), "calibration": self.get("calibration"),
-                "fixture": self.get("fixture"), "keys": self.notes(), "events": self.events(1000)}
+                "fixture": self.get("fixture"), "keys": self.notes(), "controls": self.controls(),
+                "events": self.events(1000)}
 
     def close(self):
         self.db.close()

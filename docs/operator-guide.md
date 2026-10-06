@@ -1,16 +1,16 @@
 # Operator guide
 
-Run `python app.py` in the prepared Python environment and open http://127.0.0.1:8080. A green **SIMULATION · NO HARDWARE** badge means every motion is virtual. Hardware requires launching with `--enable-hardware` and has a distinct badge.
+Run `python app.py` in the prepared Python environment and open http://127.0.0.1:8080. The **SIMULATION · NO HARDWARE** badge means every motion is virtual. Hardware requires launching with `--enable-hardware` and has a distinct badge.
 
 ## Preparation
 
-Secure the arm base and synthesizer to reproducible marks. Fit the padded contact surface and inspect the gripper attachment. Keep the opening fixed during a note's teaching and tests. There is no fingertip force sensor: use the minimum press that sounds the note, and watch for pad compression or key bottoming out.
+Secure the arm base and synthesizer to reproducible marks. Fit the rubber tip gloves or padded contact surface, inspect the attachment, and select the matching **Contact tool** in the console. Check the gloves cannot slide or bunch up. Keep the opening fixed during teaching and tests. There is no fingertip force sensor: use the minimum effective contact, and watch for compression or key bottoming out.
 
 Support the arm's full weight before any torque release. Six OFF readings mean motor drive is disabled, not that the gearbox is frictionless. Do not overcome significant resistance by forcing a joint. Keep an accessible physical power stop and a safe resting support available.
 
 Choose the follower port by device description; `/dev/ttyACM` numbers can change after reconnecting. Connection reads motor state without configuring the robot or enabling torque. Low supply voltage, missing motors, and the wrong operating mode are rejected.
 
-Choose a placement name. “Unchanged” means the same physical setup, not just the same name. Leave it unchecked after moving anything, changing pad thickness, adjusting the gripper, or repairing a joint. Previous records remain on disk but no longer count as registered for the new fixture.
+Choose a placement name. “Unchanged” means the same physical setup, not just the same name. Leave it unchecked after moving anything, changing pad thickness or glove fit, adjusting the gripper, or repairing a joint. Selecting a different contact tool creates a new fixture even if “unchanged” is checked. Previous records remain on disk but no longer count as registered for the new fixture.
 
 ## Motor calibration
 
@@ -37,9 +37,35 @@ Select a key when the console is ready and choose **Teach** while supporting the
 
 Small pauses while deciding what to do next are fine with the page connected. During manual release-path recording, keep movements gentle and local. If a pose is near a limit, a sample jumps, or the grip changes, correct the physical setup and re-teach. Do not increase software limits to get a bad path accepted.
 
-**Reject & re-teach** clears the trial count for that attempt. The keyboard's green registered state means three accepted trials with the current fixture/calibration. A simulation never counts as hardware registration. There is no autonomous travel from one key to another in this release.
+**Reject & re-teach** clears the trial count for that attempt. A control's **REGISTERED** or checkmark state means three accepted trials with the current fixture/calibration. A simulation never counts as hardware registration. There is no autonomous travel between controls in this release.
 
 For both-hand handling, leave the five-second delay enabled. Pressing a delayed control starts a visible countdown; support and position the arm before it reaches zero. Captures also require a brief steady reading. Optional spoken cues can help, but always check the visible status; browser speech can be muted.
+
+## Register the eight chord buttons
+
+Select a button on the left of the instrument map. The upper row is **Dim, Min, Maj, Sus**; the lower row is **6, m7, M7, 9**. Lowercase m7 and uppercase M7 are separate buttons. Use the same light press → first contact → clearance → three tests sequence as the keyboard.
+
+Set up a reference chord and keep Orchid's playstyle consistent. A chord button is not necessarily a standalone note trigger: extensions require a chord, and chord-type behavior depends on playstyle. Review the display and musical response as well as the clean physical release. The app records individual button motions; it does not coordinate simultaneous key/button combinations. **Release & continue** advances within the chord group. After the group is complete, select another group on the map.
+
+## Register the large voicing dial
+
+Train **CW** and **CCW** separately. This first workflow uses a fixed rubber-covered or padded tip to nudge the rim. It does not squeeze, clamp, or press down on the dial. If the tips cannot reliably move the rim without slipping, reject the attempt and revise the contact setup before powered testing.
+
+Before capture, describe the **reference chord and starting voicing** (the instrument's Geek Out view can help) and the **expected change** from this small gesture. This dial controls relative voicing changes; the number of clicks per inversion depends on the chord. Do not assume a gesture reaches an absolute setting or always changes one inversion.
+
+| Step | Operator action |
+| --- | --- |
+| Start | Support the arm with torque off, set the reference voicing, and capture a position just clear of the rim. |
+| Contact | Bring the fixed tip into light rim contact without turning or pressing down. Capture. |
+| Turn | Make a small turn in the selected direction. Observe the expected change, confirm it, and capture. |
+| Lift off | Lift completely clear without reversing the turn or dragging the rim. Confirm clearance and capture. |
+| Return | Stay clear of the instrument and return near the initial clearance. Watch the live return error (target ≤ 6 encoder ticks). Confirm the whole return was clear, support the arm, and capture to establish a hold. |
+| Test | With the tip held clear, manually restore the reference chord/voicing. Confirm that reset and hands clear, then test one gesture. |
+| Review | Accept only the intended direction and expected effect, with no slipping, downward press, or reverse turn during return. Reset the reference and repeat until three trials pass. |
+
+The powered trial follows the recorded loop forward, including the lift-off and separate clear return. It does not replay the turning stroke backward as it does for a key release. Clearance and musical effect remain operator observations: encoder checks cannot detect rim contact or count dial detents. Teaching the two directions adds two motions to the twelve keys and eight chord buttons, for **22 registered motions** total.
+
+Instrument references: [Playstyles](https://support.telepathicinstruments.com/hc/en-us/articles/15280843614863-What-s-the-Difference-Between-Playstyles), [chord extensions](https://support.telepathicinstruments.com/hc/en-us/articles/16576229505167-Chord-Extensions-Explained), and [voicing and inversions](https://support.telepathicinstruments.com/hc/en-us/articles/15292199149839-Voicing-Engine-and-Inversions).
 
 ## Recovery and closing
 
@@ -66,6 +92,7 @@ This new web workflow has not yet been validated on the repaired physical arm. B
 3. Complete the full calibration and restart/reconnect once to verify saved calibration matches motor readback.
 4. Teach C with minimal contact depth. Watch the handover hold, each of the three test presses, and release. Confirm the intended note, full key release, repeatability, and no excessive pressure.
 5. Test software stop and browser-loss behavior while holding at a safe clearance. Verify supported recovery and the independently accessible physical stop. Do not test failures with the pad pressing the key.
-6. Repeat registration for the other 11 notes. Save fixture marks, pad details, date, and the exported session. Re-test after any hardware or placement change.
+6. Repeat registration for the other 11 notes and eight chord buttons. Commission one small dial direction before attempting the other; verify tip grip, actual voicing change, lift-off clearance, and repeatability from the same reference. The dial workflow also needs physical validation.
+7. Save fixture marks, glove/pad details, date, and the exported session. Re-teach after contact-tool, glove-fit, opening, hardware, or placement changes.
 
 Encoder position and tracking checks cannot measure force, detect every collision, or guarantee safety after mechanical slippage. Automatic performances, travel between keys, force sensing, and velocity-sensitive playing are future work.

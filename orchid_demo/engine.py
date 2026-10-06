@@ -10,6 +10,8 @@ import time
 import uuid
 
 from . import motion as m
+from . import dial
+from .controls import CATALOG, group_members
 from .devices import HardwareArm, SimulatedArm, available_ports
 from .storage import Repository
 
@@ -50,6 +52,7 @@ class Engine:
         self.calibration = self.repo.get("calibration")
         self.fixture = self.repo.get("fixture", {"label": "Orchid demo", "id": ""})
         self.notes = self.repo.notes()
+        self.controls = self.repo.controls()
         self.events = self.repo.events()
         self.instance_id = uuid.uuid4().hex
         self.revision, self.phase = 0, "disconnected"
@@ -95,9 +98,12 @@ class Engine:
         self.publish()
 
     def key_statuses(self):
+        return self.statuses(self.notes)
+
+    def statuses(self, entries):
         signature = m.fingerprint(self.calibration or {})
         result = {}
-        for name, entry in self.notes.items():
+        for name, entry in entries.items():
             valid = bool(entry and entry.get("calibration_sha256") == signature
                          and entry.get("fixture_id") == self.fixture["id"]
                          and entry.get("mode") == self.mode)
@@ -106,11 +112,36 @@ class Engine:
                             "trials": trials, "saved_at": entry.get("saved_at") if entry else None}
         return result
 
+    @property
+    def control(self):
+        return CATALOG[self.selected]
+
+    @property
+    def is_dial(self):
+        return self.control["kind"] == "dial"
+
+    def save_entry(self, entry):
+        if self.selected in m.KEYS:
+            self.repo.save_note(self.selected, entry)
+            self.notes = self.repo.notes()
+        else:
+            self.repo.save_control(self.selected, entry)
+            self.controls = self.repo.controls()
+        self.events = self.repo.events()
+
+    def ready_message(self):
+        if self.is_dial:
+            return "Torque OFF. Start just clear of the large voicing dial; teach a small turn, lift-off, and clear return."
+        if self.control["kind"] == "button":
+            return f"Torque OFF. Support the arm and gently actuate {self.control['label']}. Observe Orchid's response; modifiers may not sound alone."
+        return f"Torque OFF. Support the arm and gently press {self.selected} only until it sounds."
+
     def publish(self):
         with self.lock:
-            self.export_data = {"schema_version": 1, "application": "orchid-demo", "mode": self.mode,
+            self.export_data = {"schema_version": 2, "application": "orchid-demo", "mode": self.mode,
                                 "units": m.UNITS, "exported_at": m.stamp(), "calibration": deepcopy(self.calibration),
-                                "fixture": deepcopy(self.fixture), "keys": deepcopy(self.notes), "events": deepcopy(self.events)}
+                                "fixture": deepcopy(self.fixture), "keys": deepcopy(self.notes),
+                                "controls": deepcopy(self.controls), "events": deepcopy(self.events)}
             self.public = {
                 "instance_id": self.instance_id, "revision": self.revision, "mode": self.mode,
                 "phase": self.phase, "message": self.message, "error": self.error,
@@ -120,6 +151,12 @@ class Engine:
                 "feedback_at": self.feedback_at, "heartbeat": time.time(),
                 "voltage": self.arm.voltage if self.arm else None,
                 "keys": self.key_statuses(), "required_trials": REQUIRED_TRIALS,
+                "controls": self.statuses(self.controls), "catalog": deepcopy(CATALOG),
+                "selected_control": deepcopy(self.control),
+                "dial_reference": (self.draft or self.capture or {}).get("reference"),
+                "dial_expected_effect": (self.draft or self.capture or {}).get("expected_effect"),
+                "dial_return_error": (m.distance(self.capture["path"][0], self.current)
+                                      if self.is_dial and self.capture and self.current else None),
                 "trials": self.trials, "motion_stage": self.stage,
                 "capture_samples": len(self.capture["path"]) if self.capture else 0,
                 "range_motor": RANGE_MOTORS[self.range_index] if self.phase == "calibration_range" else None,
@@ -204,8 +241,15 @@ class Engine:
             return
         self.arm.require_torque(False)
         target = dict.fromkeys(m.MOTORS, 2047)
-        target["shoulder_pan"] += m.KEYS.index(self.selected) * 20
-        target["wrist_flex"] += {"pressed": 36, "touch": 24, "clear": 0}[label]
+        if self.is_dial:
+            target["shoulder_pan"] -= 240
+            target["wrist_flex"] += 12 if label in ("dial_contact", "dial_turn") else 0
+            if label in ("dial_turn", "dial_lift"):
+                target["wrist_roll"] += 12 if self.control["direction"] == "cw" else -12
+        else:
+            target["shoulder_pan"] += (m.KEYS.index(self.selected) * 20 if self.selected in m.KEYS
+                                       else -80 - group_members(self.selected).index(self.selected) * 20)
+            target["wrist_flex"] += {"pressed": 36, "touch": 24, "clear": 0}[label]
         while self.arm.current != target:
             self.guard()
             for name in m.MOTORS:
@@ -224,8 +268,9 @@ class Engine:
             m.require(all(v == 0 for v in torque.values()), "Unexpected enabled motor during manual teaching")
         now = self.clock()
         m.require(now - start <= m.MAX_IO_TIME, "Motor feedback is stale. No new movement will be issued.")
-        if self.phase in ("note_pressed", "note_touch") and self.last_read is not None:
-            m.require(now - self.last_read <= m.MAX_IO_TIME, "Recording has a gap. Retry this note.")
+        recording = self.phase in ("note_pressed", "note_touch", "dial_approach", "dial_contact", "dial_turned", "dial_lifted")
+        if recording and self.last_read is not None:
+            m.require(now - self.last_read <= m.MAX_IO_TIME, "Recording has a gap. Re-teach this control.")
         self.current, self.torque = current, torque
         self.last_read, self.feedback_at = now, time.time()
         if self.phase == "calibration_range":
@@ -233,9 +278,12 @@ class Engine:
             span = self.ranges.setdefault(motor, {"min": current[motor], "max": current[motor]})
             span["min"] = min(span["min"], current[motor])
             span["max"] = max(span["max"], current[motor])
-        if self.phase in ("note_pressed", "note_touch"):
+        if recording:
             self.arm.check_pose(current)
             m.append_capture(self.capture, current, previous_observation=previous)
+            if self.is_dial:
+                # Validate even samples omitted by path decimation.
+                dial.validate({**self.capture, "path": self.capture["path"] + [current]})
         self.publish()
 
     def feedback(self, current, stage):
@@ -253,6 +301,22 @@ class Engine:
         if self.log:
             self.log.close()
             self.log = None
+
+    def establish_hold(self, draft, planned):
+        self.repo.put("draft", {"key": self.selected, "entry": draft})
+        self.draft = draft
+        self.log = (self.repo.directory / f"trial-{uuid.uuid4().hex}.jsonl").open("x")
+        self.controller = GuardedController(self.arm, planned, self.log, clock=self.clock, sleep=self.sleep,
+                                            guard=self.guard, feedback=self.feedback)
+        self.transition("arming", "Keep supporting while the motors establish a hold at this captured position.")
+        try:
+            self.guard()
+            self.controller.arm_here()
+            self.controller.tick(self.controller.previous, "hold_verified")
+        except Exception as exc:
+            self.fault(exc)
+            raise
+        self.transition("holding", "Holding position, torque ON. Gently clear your hands before testing.")
 
     def fault(self, exc):
         message = str(exc) or type(exc).__name__
@@ -281,8 +345,11 @@ class Engine:
             m.require(args.get("prepared") is True, "Confirm the pad, mounting, clear workspace, and accessible power stop.")
             label = str(args.get("fixture", "")).strip()
             m.require(1 <= len(label) <= 120, "Give this fixture a short placement name.")
-            if not (args.get("fixture_unchanged") is True and label == self.fixture["label"]):
-                self.fixture = {"label": label, "id": uuid.uuid4().hex}
+            tool = args.get("tool", self.fixture.get("tool", "padded_gripper"))
+            m.require(tool in ("padded_gripper", "rubber_gloved_tips"), "Choose the fitted gripper contact surface.")
+            if not (args.get("fixture_unchanged") is True and label == self.fixture["label"]
+                    and tool == self.fixture.get("tool", "padded_gripper")):
+                self.fixture = {"label": label, "id": uuid.uuid4().hex, "tool": tool}
                 self.repo.put("fixture", self.fixture)
             if self.mode == "hardware":
                 port = args.get("port")
@@ -360,25 +427,73 @@ class Engine:
             self.calibration, self.calibrated, self.calibrating = new, True, False
             self.event("calibration_saved", "All six motors calibrated; torque remains off.", new)
             self.transition("ready", "Calibration verified. Fix the padded gripper opening and begin with C.")
-        elif action == "note_start":
+        elif action in ("note_start", "control_start"):
             self.require_phase("connected", "ready", "saved")
             self.supported(args)
             m.require(self.calibrated, "Complete motor calibration first.")
-            selected = args.get("key", self.selected)
-            m.require(selected in m.KEYS, "Choose one of the twelve notes.")
+            selected = args.get("control", args.get("key", self.selected))
+            m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
+            if action == "note_start":
+                m.require(selected in m.KEYS, "Choose one of the twelve notes.")
             self.actuating = True
             self.arm.release()
             if self.controller:
                 self.controller.enabled = False
             self.reset_note()
             self.selected = selected
-            self.transition("note_ready", f"Support the arm's weight. Gently press {selected} only until it sounds, then hold steady.")
+            self.transition("dial_ready" if self.is_dial else "note_ready", self.ready_message())
+        elif action == "dial_capture_start":
+            self.require_phase("dial_ready")
+            settings = {field: str(args.get(field, "")).strip() for field in ("reference", "expected_effect")}
+            m.require(all(1 <= len(value) <= 160 for value in settings.values()),
+                      "Describe the reference chord/view and expected voicing change.")
+            m.require(args.get("fixed_pad") is True, "Confirm a fixed padded rim contact; no gripping or squeezing the dial.")
+            self.simulate_pose("dial_start")
+            current = self.stable()
+            self.capture = {**m.teaching_entry(self.arm, True, self.fixture["label"], current), **settings,
+                            "direction": self.control["direction"], "contact_method": "fixed_pad",
+                            "contact_surface": self.fixture.get("tool", "padded_gripper")}
+            self.transition("dial_approach", "Start clearance captured. Gently bring the fixed pad to the dial rim without rotating it.")
+        elif action in ("dial_capture_contact", "dial_capture_turn", "dial_capture_lift"):
+            expected_phase, marker, pose, following, message = {
+                "dial_capture_contact": ("dial_approach", "contact_index", "dial_contact", "dial_contact",
+                                         "Contact captured. Make a small turn in the selected direction, then hold steady."),
+                "dial_capture_turn": ("dial_contact", "turn_index", "dial_turn", "dial_turned",
+                                      "Turn captured. Lift the pad completely away from the rim without turning back."),
+                "dial_capture_lift": ("dial_turned", "release_index", "dial_lift", "dial_lifted",
+                                      "Lift-off captured. Stay clear of the dial and return near the initial clearance; watch the return error."),
+            }[action]
+            self.require_phase(expected_phase)
+            if action == "dial_capture_turn":
+                m.require(args.get("direction_verified") is True, "Confirm the selected direction and intended voicing change.")
+            if action == "dial_capture_lift":
+                m.require(args.get("rim_clear") is True, "Confirm the pad is completely clear of the dial rim.")
+            self.simulate_pose(pose)
+            current = self.stable()
+            m.append_capture(self.capture, current, force=True)
+            prior = 0 if marker == "contact_index" else self.capture["contact_index" if marker == "turn_index" else "turn_index"]
+            m.require(m.distance(self.capture["path"][prior], current) > 0, "Move to the next dial stage before capturing.")
+            candidate = {**self.capture, marker: len(self.capture["path"]) - 1}
+            dial.validate(candidate)
+            self.capture = candidate
+            self.transition(following, message)
+        elif action == "dial_capture_return":
+            self.require_phase("dial_lifted")
+            self.supported(args)
+            m.require(args.get("rim_clear") is True, "Confirm the entire return path stayed clear of the dial.")
+            self.simulate_pose("dial_start")
+            current = self.stable()
+            m.append_capture(self.capture, current, force=True)
+            draft = {**self.capture, "complete": True, "mode": self.mode, "fixture_id": self.fixture["id"],
+                     "control_id": self.selected, "teaching_mode": "web_dial_forward_loop"}
+            self.establish_hold(draft, dial.plan(draft))
         elif action == "capture_pressed":
             self.require_phase("note_ready")
             self.simulate_pose("pressed")
             current = self.stable()
             self.capture = m.teaching_entry(self.arm, True, self.fixture["label"], current)
-            self.transition("note_pressed", "Pressed captured. Slowly lift until the key has released but the pad still barely touches it.")
+            self.capture["contact_surface"] = self.fixture.get("tool", "padded_gripper")
+            self.transition("note_pressed", "Press captured. Slowly lift until the control has released but the pad still barely touches it.")
         elif action == "capture_touch":
             self.require_phase("note_pressed")
             self.simulate_pose("touch")
@@ -396,69 +511,61 @@ class Engine:
             path = list(reversed(self.capture["path"]))
             draft = {**self.capture, "path": path, "touch_index": len(path) - 1 - self.touch_index,
                      "complete": True, "mode": self.mode, "fixture_id": self.fixture["id"],
-                     "teaching_mode": "web_release_path"}
+                     "control_id": self.selected, "teaching_mode": "web_release_path"}
             m.validate_entry(draft, complete=True)
             m.require(m.distance(path[0], path[draft["touch_index"]]) > 0, "Lift clear of the contact pose before capturing.")
             planned = m.plan(draft)
             m.require(m.routine_budget(planned, .2) <= m.MAX_RUN_TIME, "This path is too long; retry with a smaller local stroke.")
-            self.repo.put("draft", {"key": self.selected, "entry": draft})
-            self.draft = draft
-            self.log = (self.repo.directory / f"trial-{uuid.uuid4().hex}.jsonl").open("x")
-            self.controller = GuardedController(self.arm, planned, self.log, clock=self.clock, sleep=self.sleep,
-                                                 guard=self.guard, feedback=self.feedback)
-            self.transition("arming", "Keep supporting while the motors establish a hold at this captured position.")
-            try:
-                self.guard()
-                self.controller.arm_here()
-                self.controller.tick(self.controller.previous, "hold_verified")
-            except Exception as exc:
-                self.fault(exc)
-                raise
-            self.transition("holding", "Holding position, torque ON. Gently clear your hands before testing one press.")
+            self.establish_hold(draft, planned)
         elif action == "test":
             self.require_phase("holding", "saved")
             m.require(args.get("hands_clear") is True, "Confirm hands are clear of the motion path.")
-            self.transition("testing", f"Testing {self.selected}: one press and release, then a hold at hover.")
+            if self.is_dial:
+                m.require(args.get("reference_reset") is True, "Restore the reference chord and voicing before each dial trial.")
+            self.transition("testing", f"Testing {self.control['name']}: " +
+                            ("one forward nudge, lift-off, and clear return." if self.is_dial else "one press and release, then a hold at hover."))
             try:
-                self.controller.run(.2, already_holding=True)
+                if self.is_dial:
+                    dial.run(self.controller, self.draft)
+                else:
+                    self.controller.run(.2, already_holding=True)
                 self.controller.started = None
-                self.transition("result", "Did the intended key sound once and release cleanly? Review this trial before continuing.")
+                self.transition("result", "Review the observed instrument response and clean release before accepting this trial.")
             except Exception as exc:
                 self.fault(exc)
                 raise
         elif action == "pass":
             self.require_phase("result")
+            if self.is_dial:
+                m.require(args.get("effect_verified") is True, "Verify the dial direction, expected effect, and clear return without slip.")
             self.trials += 1
             entry = {**self.draft, "saved_at": m.stamp(), "verification": {
                 "successful_trials": self.trials,
                 "method": "simulated operator trial" if self.mode == "simulation" else "operator observed powered trial"}}
-            self.repo.save_note(self.selected, entry)
-            self.notes = self.repo.notes()
-            self.events = self.repo.events()
+            self.save_entry(entry)
             self.transition("saved", f"{self.selected}: {self.trials}/{REQUIRED_TRIALS} accepted trials. " +
-                            ("Support and move to the next note when ready." if self.trials >= REQUIRED_TRIALS else "Test again from this held position."))
+                            ("Support and move to the next control when ready." if self.trials >= REQUIRED_TRIALS else "Test again from this held position."))
         elif action == "fail":
             self.require_phase("result")
             # A later failure invalidates previous passes from this attempt.
             self.trials = 0
-            self.repo.save_note(self.selected, {**self.draft, "saved_at": m.stamp(), "verification": {"successful_trials": 0}})
-            self.notes = self.repo.notes()
-            self.transition("failed", "Trial rejected. Support the arm, release, and re-teach this note.")
+            self.save_entry({**self.draft, "saved_at": m.stamp(), "verification": {"successful_trials": 0}})
+            self.transition("failed", "Trial rejected. Support the arm, release, and re-teach this control.")
         elif action == "next":
             self.require_phase("saved")
-            m.require(self.trials >= REQUIRED_TRIALS, "Accept three trials before moving to the next note.")
+            m.require(self.trials >= REQUIRED_TRIALS, "Accept three trials before moving to the next control.")
             self.supported(args)
             self.actuating = True
             self.arm.release()
             self.controller.enabled = False
             self.reset_note()
-            statuses = self.key_statuses()
-            missing = [name for name in m.KEYS if statuses[name]["status"] != "registered"]
+            statuses = {**self.key_statuses(), **self.statuses(self.controls)}
+            missing = [name for name in group_members(self.selected) if statuses[name]["status"] != "registered"]
             if missing:
                 self.selected = missing[0]
-                self.transition("note_ready", f"Torque OFF. Move by hand to {self.selected}, then gently press until it sounds.")
+                self.transition("dial_ready" if self.is_dial else "note_ready", self.ready_message())
             else:
-                self.transition("ready", "All twelve notes registered. Rest the arm safely; export the session for your demo records.")
+                self.transition("ready", "This control group is registered. Rest the arm safely or select another group on the instrument.")
         elif action in ("release", "disconnect", "retry"):
             m.require(self.arm is not None, "No arm is connected")
             self.supported(args)
@@ -478,10 +585,11 @@ class Engine:
                 self.current = self.torque = None
                 self.feedback_at = None
                 self.calibrated = False
-                self.transition("disconnected", "Follower disconnected after supported torque release. Saved notes are retained.")
+                self.transition("disconnected", "Follower disconnected after supported torque release. Saved registrations are retained.")
             else:
-                self.transition("note_ready" if action == "retry" and self.calibrated else "connected",
-                                f"Torque OFF. {'Gently press ' + self.selected + ' and capture again.' if action == 'retry' and self.calibrated else 'Rest the arm safely or continue setup.'}")
+                retry = action == "retry" and self.calibrated
+                self.transition(("dial_ready" if self.is_dial else "note_ready") if retry else "connected",
+                                self.ready_message() if retry else "Torque OFF. Rest the arm safely or continue setup.")
         else:
             raise m.SafetyError("Unknown action")
 

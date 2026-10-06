@@ -41,6 +41,10 @@ The exact phases and guards are in `engine.py`. Calibration snapshots hardware a
 
 Each taught stroke stores six raw encoder positions per waypoint, a contact index, calibration fingerprint, fixture identity, mode, and verification count. Teaching records the release from minimum sounding press to first contact to clearance. The reverse path becomes the downstroke. The gripper goal stays fixed. There is no Cartesian planner, collision model, force feedback, automatic key-to-key route, or powered approach from an arbitrary pose.
 
+`controls.py` defines twelve keyboard targets, eight case-sensitive chord-button targets, and two relative dial directions. Chord buttons reuse the bounded press controller. The UI selects a target without moving hardware; starting any target requires supported torque release. Advancing stays within its group. Contact-tool selection is part of fixture identity, so changing between a pad and rubber-covered tips invalidates prior registrations.
+
+`dial.py` validates and executes a forward loop: start clearance → rim contact → turn → lift-off → clear return. Explicit ordered contact/turn/release markers are required. The return must end within six ticks of the initial clearance before supported torque enable. Contact-to-lift motion stays within the existing 36-tick contact bound; grip, adjacent sample, calibrated range, local envelope, tracking, I/O, lease, and trial-duration checks also apply. The controller aligns at clearance and follows this loop once, never automatically reversing the turn path. Direction, rim clearance, reference reset before each trial, and observed musical effect require operator confirmation. There is no dial-angle/detent sensor or automatic gripper-closing sequence. Both directions need three accepted trials.
+
 ## Motion limits
 
 `motion.py` contains the original tested position controller. Current defaults are conservative software bounds, not physically certified limits:
@@ -62,9 +66,9 @@ A stop attempts a measured-position hold using fresh feedback inside the taught 
 
 ## Persistence and migration
 
-SQLite runs in WAL mode with synchronous FULL. Note replacement and the corresponding archive event are transactional. Simulation and hardware use separate databases; API commands cannot switch mode. A process starts disconnected, even with saved notes. Fixture or calibration mismatches mark registrations for re-teaching.
+SQLite runs in WAL mode with synchronous FULL. Note/control replacement and the corresponding archive event are transactional. Simulation and hardware use separate databases; API commands cannot switch mode. A process starts disconnected, even with saved registrations. Fixture or calibration mismatches mark registrations for re-teaching.
 
-The database stores calibration, a pre-calibration backup, fixture identity, the latest draft, accepted note revisions, and event history. A JSONL file records targets and feedback for a note's powered trials/holds. Export contains the current calibration, fixture, 12 note slots, and recent activity. Full historical revisions and trial logs remain in the local directory; export is not a restoration interface. Schema version 1 is checked on startup; unknown versions fail rather than being overwritten.
+The database stores calibration, a pre-calibration backup, fixture identity/contact tool, the latest draft, accepted control revisions, and event history. A JSONL file records targets and feedback for powered trials/holds. Export contains the current calibration, fixture, 12 note slots, ten additional control slots, and recent activity. Full historical revisions and trial logs remain in the local directory; export is not a restoration interface. Schema version 2 adds a separate `controls` table, preserving the twelve-slot `notes` contract. Version 1 upgrades in a transaction without rewriting note/history records; unknown versions fail rather than being overwritten. An old version-1 app cannot read a version-2 database.
 
 If Python is killed mid-calibration, automatic rollback cannot be guaranteed. The backup remains on disk and motor mismatch prevents note use; operators should complete a new calibration before teaching. Never restore an old database and assume its calibration still matches motor EEPROM.
 
@@ -72,4 +76,4 @@ Existing terminal tools import `orchid_key` through a compatibility wrapper arou
 
 ## Validation boundaries
 
-Tests cover the original motion limits plus the full 12-key/36-trial simulated workflow, command freshness/idempotency, lost leases, tracking failures, interrupted handover, calibration rollback, invalidated records, restart, mode isolation, local HTTP security, and no automatic hardware connection. Browser checks cover the actual calibration and note registration flow. Hardware adapter tests use a fake bus; passing them does not validate physical timing, loads, clearance, or contact pressure.
+Tests cover the original motion limits plus the full 12-key/36-trial simulated workflow, all eight chord buttons, both dial directions, forward-loop ordering, missing lift-off, unsafe return/contact paths, changed grips, required reset/effect confirmations, command freshness/idempotency, lost leases, tracking failures, interrupted handover, calibration rollback, changed contact tools, invalidated records, restart, schema-1 migration, mode isolation, local HTTP security, and no automatic hardware connection. Browser checks cover calibration, press registration, dial capture/review, and responsive layout. Hardware adapter tests use a fake bus; passing them does not validate physical timing, loads, clearance, or contact pressure.
