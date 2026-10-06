@@ -567,15 +567,29 @@ main {
 
 .confirmation {
   display:flex;
-  gap:10px;
-  align-items:flex-start;
-  font-size:12px;
-  line-height:1.6;
-  padding:13px 14px;
-  background:#333129;
-  border-radius:7px;
+  width:100%;
+  min-height:100px;
+  gap:16px;
+  align-items:center;
+  text-align:left;
+  line-height:1.5;
+  padding:20px;
+  background:#292a24;
+  border:2px solid #83704a;
+  color:var(--ink);
+  border-radius:10px;
   margin:16px 0;
+  touch-action:manipulation;
 }
+.confirmation-copy { display:grid; gap:5px; }
+.confirmation-copy strong { font-size:18px; font-weight:650; }
+.confirmation-copy > span { font-size:14px; font-weight:400; }
+.confirmation-state { font-size:11px; color:#c4baa4; font-weight:400; }
+.confirmation-icon { display:grid; place-items:center; flex:none; width:44px; height:44px; border:2px solid #b79b5f; border-radius:50%; font-size:27px; color:#efd391; }
+button.confirmation:hover:enabled { background:#343429; }
+button.confirmation[aria-pressed=true] { background:#48402c; border-color:#f0ce83; }
+.confirmation[aria-pressed=true] .confirmation-icon { background:#f0ce83; color:#26251f; }
+.confirmation[aria-pressed=true] .confirmation-state { color:#ffe2a8; }
 
 input[type=checkbox] {
   accent-color:var(--accent);
@@ -592,6 +606,7 @@ input[type=checkbox] {
   gap:10px;
   margin-top:20px;
 }
+.actions button { min-height:56px; font-size:15px; touch-action:manipulation; }
 
 .hint {
   font-size:11px;
@@ -756,10 +771,7 @@ details button {
   min-height:38px;
 }
 
-details .confirmation {
-  font-size:10px;
-  padding:10px;
-}
+details .confirmation { padding:16px; }
 
 details .actions {
   gap:6px;

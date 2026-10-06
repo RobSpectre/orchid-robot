@@ -254,8 +254,10 @@ class Engine:
                 self.arm.check_pose(self.current)
             samples.append(dict(self.current))
             self.sleep(0.1)
-        m.require(all(max(p[n] for p in samples) - min(p[n] for p in samples) <= 2 for n in m.MOTORS),
-                  "The arm is still moving. Hold steady and try this capture again.")
+        spread = {n: max(p[n] for p in samples) - min(p[n] for p in samples) for n in m.MOTORS}
+        unsettled = [f"{n}: {span} ticks" for n, span in spread.items() if span > 2]
+        m.require(not unsettled, "Encoder readings did not stay within the 2-tick capture window ("
+                  + "; ".join(unsettled) + "). Keep supporting the arm and retry when steady.")
         return samples[-1]
 
     def simulate_pose(self, label):
@@ -448,7 +450,7 @@ class Engine:
             self.stable(enforce_limits=False)
             self.guard()
             self.actuating = True
-            self.offsets = self.arm.center()
+            self.offsets = self.arm.center(guard=self.guard, sleep=self.sleep)
             self.ranges, self.range_index = {}, 0
             self.transition("calibration_range", "Slowly move the base rotation through its usable travel in both directions. Do not force the stops.")
             self.sample()

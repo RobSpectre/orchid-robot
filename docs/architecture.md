@@ -41,6 +41,10 @@ stateDiagram-v2
 
 The exact phases and guards are in `engine.py`. Calibration snapshots hardware and EEPROM lock state before changes; failed writes attempt rollback/readback. Wrist-roll range is 0..4095; five other joint ranges are recorded individually. The hardware adapter uses `FeetechMotorsBus.connect()`, not `robot.connect()` or `robot.configure()` (which could enable torque).
 
+Midpoint capture uses the Feetech relationship `Present_Position = Actual_Position - Homing_Offset`: `(present + old_offset) % 4096 - 2047` yields the new offset without resetting the reference and immediately reading in a potentially transitional frame. It verifies all offset registers, then checks at most twelve position samples 50 ms apart. Three consecutive samples must stay within the original ±3 tick midpoint bound and a 2-tick span. Torque-off readback, feedback deadlines, and operator/stop guards remain active; mismatches identify the joint, value, and spread before rollback. Hardware adapters are tested with delayed feedback, offset write failure, motion, and cancellation; physical commissioning is still required.
+
+The browser's safety confirmations use native `aria-pressed` toggle buttons with large touch targets. They do not submit commands. The action below consumes confirmation into its existing boolean command arguments; cancellation or rejection requires a new confirmation. Workflow changes, lost ownership, and lost connectivity reset confirmations, including recovery consent. Server-side support and workflow checks remain authoritative.
+
 The calibration presentation adds a preparation/midpoint/five-sweep/verification tracker and per-joint guidance without moving calibration into the browser. Recalibration clears the previous midpoint/range presentation before capture. Simulation sweeps expose intermediate virtual positions so the view updates during a rehearsal.
 
 ## Telemetry and 3D presentation

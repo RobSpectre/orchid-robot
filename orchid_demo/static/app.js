@@ -10,7 +10,22 @@ const isSim = () => state?.mode === "simulation";
 const activeControl = () => state.catalog[selectedNote || state.selected];
 const allStatuses = () => ({...state.keys, ...state.controls});
 const statusText = value => value.status === "registered" ? "✓ REGISTERED" : value.status === "needs_reteach" ? "RE-TEACH" : value.trials ? `${value.trials}/3 TRIALS` : "—";
-const confirm = (name, text) => `<label class="confirmation"><input type="checkbox" data-confirm="${name}"> ${text}</label>`;
+const confirmationTitles = {supported: "Arm this step", hands_clear: "Arm test", prepared: "Arm connection",
+  fixture_unchanged: "Keep saved placement", range_complete: "Confirm joint travel", fixed_pad: "Confirm fixed tips",
+  direction_verified: "Confirm dial direction", rim_clear: "Confirm rim is clear", reference_reset: "Confirm reference reset",
+  effect_verified: "Confirm expected effect"};
+const confirmed = b => b?.getAttribute("aria-pressed") === "true";
+const confirm = (name, text) => `<button type="button" class="confirmation" data-confirm="${name}" aria-pressed="false"><span class="confirmation-icon" aria-hidden="true">○</span><span class="confirmation-copy"><strong>${confirmationTitles[name] || "Confirm this step"}</strong><span>${text}</span><small class="confirmation-state">Tap to confirm · no motor command</small></span></button>`;
+function setConfirmation(b, enabled) {
+  b.setAttribute("aria-pressed", String(enabled));
+  b.querySelector(".confirmation-icon").textContent = enabled ? "✓" : "○";
+  b.querySelector(".confirmation-state").textContent = enabled ? "Confirmed · tap again to cancel" : "Tap to confirm · no motor command";
+}
+function clearConfirmations(scope = document) {
+  scope.querySelectorAll("[data-confirm]").forEach(b => {
+    if (b.dataset.confirm !== "fixture_unchanged") setConfirmation(b, false);
+  });
+}
 const button = (action, text, secondary = false, attrs = "") => `<button data-action="${action}" class="${secondary ? "secondary" : "primary"}" ${attrs}>${text}</button>`;
 const support = () => confirm("supported", "I am supporting the arm’s weight; it is safe to release or hold here.");
 const hands = () => confirm("hands_clear", "My hands are clear of the arm and key path.");
@@ -115,7 +130,7 @@ function workflow() {
       (s.fixture.id ? confirm("fixture_unchanged", "Arm, keyboard, contact tips, and gripper opening have not changed since this saved fixture.") : "") +
       confirm("prepared", sim ? "I understand this is a simulation; no physical notes are verified." : "Mounting and pad are secure, the workspace is clear, and I can reach the power stop.") +
       actions(button("connect", sim ? "Connect practice arm →" : "Connect follower →")) +
-      '<p class="hint">Changed placement or pad? Leave “unchanged” unchecked. Saved notes will require teaching again.</p>';
+      '<p class="hint">Changed placement or pad? Leave “Keep saved placement” unconfirmed. Saved notes will require teaching again.</p>';
   } else if (["connected", "ready"].includes(p)) {
     html = intro(complete ? "The instrument is registered." : s.calibrated ? `Ready to teach ${esc(chosen.name)}.` : "Give the arm its reference points.", complete ? "All 22 motions have three accepted trials. Rest the arm safely and export your session. Changing the fixture or pad requires re-teaching." : s.calibrated ? (chosen.kind === "dial" ? "Teach a small turn of the large voicing dial, then lift off and return clear. Each direction has its own path and verification trials." : chosen.kind === "button" ? "Teach this chord button’s lightest reliable press and release. Its musical effect depends on Orchid’s playstyle and reference chord; the button may not sound alone." : "Choose any key or control above. Teach its local motion by hand, then test it three times.") : "With torque off, capture a supported midpoint, then measure each joint’s usable range. Keep the arm clear of Orchid for the whole calibration.") +
       support() + actions((s.calibrated ? button("control_start", `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}"`) : "") + button("calibrate", s.calibrated ? "Recalibrate motors" : "Begin motor calibration →", s.calibrated));
@@ -165,7 +180,7 @@ function render() {
   const s = state, p = s.phase;
   const key = [s.instance_id, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated].join(":");
   if (key !== renderKey) {
-    cancelCountdown(); renderKey = key; workflow();
+    cancelCountdown(); clearConfirmations(); renderKey = key; workflow();
     say(["dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_pressed", "note_touch", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
   }
   renderPorts();
@@ -230,10 +245,11 @@ function render() {
 let selectedNote = null;
 function updateButtons() {
   const blocked = !online || !owns || state?.worker_alive === false || sending || state?.pending || !!timer;
+  document.querySelectorAll("[data-confirm]").forEach(b => { b.disabled = blocked; });
   document.querySelectorAll("[data-action]").forEach(b => {
     const scope = b.dataset.recovery ? $("recovery") : $("workflow");
-    let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.dataset.confirm !== "fixture_unchanged").every(c => c.checked);
-    if (b.dataset.recovery) valid = $("recovery-supported").checked;
+    let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.dataset.confirm !== "fixture_unchanged").every(confirmed);
+    if (b.dataset.recovery) valid = confirmed($("recovery-supported"));
     if (["simulate_sweep", "fail", "refresh_ports"].includes(b.dataset.action)) valid = true;
     if (b.dataset.action === "connect") valid = valid && state.discovery?.ports.some(p => p.path === $("port")?.value && p.connectable);
     if (b.dataset.diagnostics) valid = state.connected && ["connected", "ready"].includes(state.phase) && Object.values(state.torque || {}).length === 6 && Object.values(state.torque).every(v => v === 0);
@@ -257,11 +273,13 @@ function dispatchButton(b) {
   const action = b.dataset.action;
   const args = {};
   const scope = b.dataset.recovery ? $("recovery") : $("workflow");
-  if (!b.dataset.diagnostics) scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = c.checked);
-  if (b.dataset.recovery) args.supported = $("recovery-supported").checked;
+  if (!b.dataset.diagnostics) scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = confirmed(c));
+  if (b.dataset.recovery) args.supported = confirmed($("recovery-supported"));
   if (action === "connect") { args.fixture = $("fixture").value; args.port = $("port").value; args.tool = $("contact-tool").value; }
   if (action === "control_start") args.control = b.dataset.control;
   if (action === "dial_capture_start") { args.reference = $("dial-reference").value; args.expected_effect = $("dial-effect").value; }
+  // Consent is for this attempt only, including canceled countdowns and errors.
+  if (!b.dataset.diagnostics && action !== "refresh_ports") clearConfirmations(scope);
   const revision = state.revision;
   const delayed = ["calibrate","calibration_center","control_start","dial_capture_start","dial_capture_contact","dial_capture_turn","dial_capture_lift","dial_capture_return","capture_pressed","capture_touch","capture_clear","next","release","disconnect","retry"].includes(action);
   if ($("delay").checked && delayed) {
@@ -283,6 +301,7 @@ document.addEventListener("click", event => {
   const b = event.target.closest("button"); if (!b || b.disabled) return;
   if (b.id === "cancel-countdown") { cancelCountdown(); updateButtons(); }
   else if (b.id === "stop") { cancelCountdown(); say("Stop requested"); submit("stop"); }
+  else if (b.dataset.confirm) { setConfirmation(b, !confirmed(b)); updateButtons(); }
   else if (b.dataset.action) dispatchButton(b);
   else if (b.dataset.note) { selectedNote = b.dataset.note; render(); }
 });
@@ -294,11 +313,11 @@ async function poll() {
     if (instance && instance !== session.state.instance_id) { cancelCountdown(); selectedNote = null; }
     instance = session.state.instance_id; token = session.token; state = session.state; online = state.worker_alive !== false;
     try { await request("/api/heartbeat", {}); owns = true; }
-    catch { owns = false; cancelCountdown(); }
+    catch { owns = false; cancelCountdown(); clearConfirmations(); }
     if (firstLoad) { $("delay").checked = !isSim(); firstLoad = false; }
     render();
   } catch {
-    online = false; owns = false; cancelCountdown();
+    online = false; owns = false; cancelCountdown(); clearConfirmations();
     if (state) render(); else { $("connection-warning").hidden = false; $("connection-warning").textContent = "Cannot reach the local Python app. Start python app.py, then keep this page open to reconnect."; }
   } finally { setTimeout(poll, 500); }
 }

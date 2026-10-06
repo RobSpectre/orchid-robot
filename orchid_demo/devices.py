@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict
 import importlib.metadata
+import time
 
 from . import motion as m
 
@@ -63,7 +64,8 @@ class SimulatedArm(m.Arm):
         self.backup = deepcopy(self.calibration)
         return deepcopy(self.backup)
 
-    def center(self):
+    def center(self, *, guard=lambda: None, sleep=time.sleep):
+        guard()
         self.require_torque(False)
         self.current = dict.fromkeys(m.MOTORS, 2047)
         return dict.fromkeys(m.MOTORS, 0)
@@ -135,19 +137,65 @@ class HardwareArm(m.Arm):
                   "Incomplete EEPROM lock readback")
         return {name: asdict(value) for name, value in self.backup.items()}
 
-    def center(self):
+    def center(self, *, guard=lambda: None, sleep=time.sleep):
+        guard()
         self.require_torque(False)
         m.require(self.backup is not None, "Calibration backup is missing")
+        previous_offsets = self.bus.sync_read("Homing_Offset", normalize=False, num_retry=0)
+        m.require(set(previous_offsets) == set(m.MOTORS)
+                  and all(type(v) is int and -2047 <= v <= 2047 for v in previous_offsets.values()),
+                  "Invalid homing-offset readback; midpoint was not written.")
+        before = self.read_raw()
+        # Feetech: Present_Position = Actual_Position - Homing_Offset.
+        # Compute from the existing reference. Resetting offsets to zero and
+        # immediately sampling position can mix two encoder reference frames.
+        offsets = {name: (before[name] + previous_offsets[name]) % 4096 - 2047 for name in m.MOTORS}
+        m.require(all(-2047 <= v <= 2047 for v in offsets.values()),
+                  "Midpoint is on the encoder wrap boundary. Reposition slightly while supported and retry.")
         for name in m.MOTORS:
+            guard()
             self.bus.write("Lock", name, 0, normalize=False, num_retry=0)
         self.homing_changed = True
         self.calibration_matches = False
-        offsets = self.bus.set_half_turn_homings()
-        self.require_torque(False)
-        centered = self.read_raw()
-        m.require(all(abs(v - 2047) <= 3 for v in centered.values()),
-                  "Midpoint moved during calibration. Keep the arm supported.")
-        return offsets
+        self.bus.calibration = {}
+        for name, offset in offsets.items():
+            guard()
+            self.bus.write("Homing_Offset", name, offset, normalize=False, num_retry=0)
+            self.bus.write("Min_Position_Limit", name, 0, normalize=False, num_retry=0)
+            self.bus.write("Max_Position_Limit", name, 4095, normalize=False, num_retry=0)
+        guard()
+        actual_offsets = self.bus.sync_read("Homing_Offset", normalize=False, num_retry=0)
+        mismatches = [f"{name}: wrote {offset}, read {actual_offsets.get(name, 'missing')}"
+                      for name, offset in offsets.items() if actual_offsets.get(name) != offset]
+        m.require(not mismatches, "Midpoint offset write verification failed: " + "; ".join(mismatches))
+        # Allow a bounded interval for the new reference to reach feedback, then
+        # require three steady samples. Keep the original ±3 tick midpoint bound.
+        samples = []
+        for attempt in range(12):
+            guard()
+            started = time.monotonic()
+            self.require_torque(False)
+            centered = self.read_raw()
+            m.require(time.monotonic() - started <= m.MAX_IO_TIME, "Midpoint feedback is stale; calibration was not accepted.")
+            samples = (samples + [centered])[-3:]
+            if len(samples) == 3 and all(
+                all(abs(p[name] - 2047) <= 3 for p in samples)
+                and max(p[name] for p in samples) - min(p[name] for p in samples) <= 2
+                for name in m.MOTORS
+            ):
+                guard()
+                return offsets
+            if attempt < 11:
+                sleep(0.05)
+        detail = "; ".join(
+            f"{name}: {centered[name]} ticks ({centered[name] - 2047:+d} from midpoint), "
+            f"spread {max(p[name] for p in samples) - min(p[name] for p in samples)}"
+            for name in m.MOTORS
+            if any(abs(p[name] - 2047) > 3 for p in samples)
+            or max(p[name] for p in samples) - min(p[name] for p in samples) > 2
+        )
+        raise m.SafetyError("Midpoint readback did not settle at 2047 ±3 ticks: " + detail
+                            + ". This can be a reference/readback issue or movement; calibration was not accepted.")
 
     def restore_locks(self):
         self.require_torque(False)

@@ -8,11 +8,13 @@ Secure the arm base and synthesizer to reproducible marks. Fit the rubber tip gl
 
 Support the arm's full weight before any torque release. Six OFF readings mean motor drive is disabled, not that the gearbox is frictionless. Do not overcome significant resistance by forcing a joint. Keep an accessible physical power stop and a safe resting support available.
 
+Safety confirmations are large touchscreen buttons. Tap **Arm this step** (or the named confirmation), check its highlighted **Confirmed** state, then press the action below it. Confirming alone sends no motor command. Tap again to cancel. Each attempt consumes its confirmations, including canceled countdowns and rejected captures; you must confirm again to retry. The optional saved-placement choice remains separate. Recovery has its own **Arm recovery** button.
+
 Click **Refresh connections** to scan USB adapters using the same read-only detection as `find_ports.py`. Only ports with responding Feetech motors appear. Each arm shows its motor IDs and measured bus voltage. The voltage is a snapshot from the first responding motor, timestamped at refresh; leader/follower is inferred using the existing 8 V threshold. Leaders, incomplete motor sets, and arms with unreadable voltage remain visible with an explanation but cannot be selected for connection. Choose the follower with motor IDs **1–6**; `/dev/ttyACM` numbers can change after reconnecting. Refresh again after changing USB or power connections.
 
 Refresh runs only while disconnected and never changes torque or motor settings. Busy/unreadable adapters are skipped with a message; close any other serial controller before retrying. A scan failure clears the old choices. Connection independently reads all six motors' supply and operating mode without configuring the robot or enabling torque. Low supply voltage, missing motors, and the wrong operating mode are rejected. Simulation only displays the practice arm and never scans physical devices.
 
-Choose a placement name. “Unchanged” means the same physical setup, not just the same name. Leave it unchecked after moving anything, changing pad thickness or glove fit, adjusting the gripper, or repairing a joint. Selecting a different contact tool creates a new fixture even if “unchanged” is checked. Previous records remain on disk but no longer count as registered for the new fixture.
+Choose a placement name. “Keep saved placement” means the same physical setup, not just the same name. Leave it unconfirmed after moving anything, changing pad thickness or glove fit, adjusting the gripper, or repairing a joint. Selecting a different contact tool creates a new fixture even if “Keep saved placement” is confirmed. Previous records remain on disk but no longer count as registered for the new fixture.
 
 ## Motor calibration
 
@@ -23,6 +25,8 @@ Choose a placement name. “Unchanged” means the same physical setup, not just
 5. Review and save. Torque remains off. Set the final padded gripper opening before teaching notes.
 
 The app backs up the previous motor calibration before homing changes. A normal abort or software fault attempts restoration and verifies it. If serial communication or power is lost, restoration may be unverified. Secure the arm, reconnect, and perform a full calibration before teaching; do not assume either the old or new references are usable.
+
+Midpoint capture checks the original steady pose, calculates new offsets from the current encoder reference, verifies the offset registers, and allows a short bounded interval for fresh position feedback. It accepts only three consecutive readings within 2047 ±3 ticks and a 2-tick spread per motor. A failed readback names each affected motor and its offset/spread; it does not assume you moved. Persistent mismatches still reject calibration and trigger restoration of the previous settings. No motor target or torque-enable command is used.
 
 The eight-step tracker stays above the current instruction. During each sweep, the active joint is highlighted in the model and motor cards. Minimum, current, and maximum encoder readings update continuously. **Save range & continue** becomes available once travel exceeds the software's minimum sample spread and you confirm both directions; this is not an instruction to force extra travel. Existing calibrated limits are hidden while new references are being recorded. The preparation checklist, optional spoken cues, and capture delay keep the workflow in the browser.
 
