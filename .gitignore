@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+.venv/
+*.log
+orchid_runs/
+orchid_session/
+orchid_keys.json.*.bak
+.orchid_keys.json.*.tmp
+
+# Local operator state and physical calibration data
+data/
+orchid_keys.json
+leader-voltage-before-*.json
+recordings/
+orchid_calibration/
+
+# Development tools
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+.env
+.env.*
+!.env.example

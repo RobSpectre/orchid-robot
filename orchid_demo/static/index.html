@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Orchid · Operator console</title>
+  <link rel="icon" href="/static/orchid.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/"><img src="/static/orchid.svg" alt="" width="36" height="36"><span>orchid<span class="brand-sub">ROBOT INSTRUMENT</span></span></a>
+    <div class="side-label">OPERATOR CONSOLE</div>
+    <nav aria-label="Workflow progress">
+      <div id="nav-connect" class="nav-item"><span>01</span> Connect the arm <b></b></div>
+      <div id="nav-calibration" class="nav-item"><span>02</span> Calibrate motors <b></b></div>
+      <div id="nav-notes" class="nav-item"><span>03</span> Register notes <b></b></div>
+    </nav>
+    <div class="side-bottom"><span class="status-dot"></span> LOCAL PYTHON APP<p>One arm. Twelve notes.<br>A repeatable performance.</p><a href="/api/export" download>↓ Export session</a></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div><span id="mode" class="badge">CONNECTING</span><span id="connection">Waiting for local app</span></div><button id="stop" class="stop" disabled>■ Stop motion <kbd>Esc</kbd></button></header>
+    <main>
+      <div id="connection-warning" class="notice danger" role="alert" hidden></div>
+      <div class="page-heading"><div><div class="eyebrow">ORCHID / SINGLE OCTAVE</div><h1>Teach the instrument.</h1><p>Calibrate once. Capture, test, and register each note.</p></div><div class="progress-number"><strong id="completed">0<span>/12</span></strong><span>NOTES REGISTERED</span></div></div>
+      <section class="keyboard-card" aria-label="Twelve note registration progress"><div class="section-line"><h2>Your octave</h2><div class="legend"><span>○ Untaught</span><span class="green">● Registered</span><span class="amber">● Needs attention</span></div></div><div id="keyboard" class="keyboard"></div><p class="subtle" id="keyboard-hint">Each note stores its own short press and release path.</p></section>
+      <div class="work-grid">
+        <section class="workflow card"><div class="section-line"><span id="step-label" class="eyebrow">01 / CONNECTION</span><span id="phase-badge" class="badge neutral">SETUP</span></div><div id="workflow"></div><div id="countdown" class="countdown" role="status" hidden></div><div id="operation" class="operation" role="status" hidden></div><div id="error" class="notice danger" role="alert" hidden></div><div class="capture-options"><label><input type="checkbox" id="delay"> 5-second delay for captures & torque release</label><label><input type="checkbox" id="speech"> Speak capture cues</label></div></section>
+        <aside class="telemetry card"><div class="section-line"><h2>Arm status</h2><span id="torque-summary" class="badge neutral">UNKNOWN</span></div><p id="feedback-age" class="subtle">No motor feedback yet</p><div id="motors"></div><div class="telemetry-footer"><span>Supply <b id="voltage">—</b></span><span>Feedback <b id="feedback">—</b></span></div><p class="physical-note">Stop motion requests a measured hold. It does not cut power. Keep the physical power stop within reach.</p><details id="recovery"><summary>Release or disconnect</summary><label class="confirmation"><input type="checkbox" id="recovery-supported"> I am supporting the arm’s weight.</label><div class="actions"><button data-action="release" data-recovery="true" class="secondary">Release torque</button><button data-action="disconnect" data-recovery="true" class="secondary">Disconnect</button></div></details></aside>
+      </div>
+      <section class="activity card"><div class="section-line"><h2>Session activity</h2><span class="subtle">Saved locally</span></div><ol id="events"></ol></section>
+      <footer>Orchid operator console <span>Position control · no force sensing</span></footer>
+    </main>
+  </div>
+</body>
+</html>
