@@ -1,6 +1,6 @@
 # Architecture
 
-`app.py` launches FastAPI/Uvicorn on IPv4 loopback. The browser uses static HTML/CSS/JavaScript and a small JSON API. There is no Node dependency, asset build, package installation for the application, background service, or cloud connection. Hardware imports happen only when hardware connection is explicitly requested.
+`app.py` launches FastAPI/Uvicorn on IPv4 loopback. The browser uses static HTML/CSS/JavaScript and a small JSON API. There is no Node dependency, asset build, package installation for the application, background service, or cloud connection. Hardware imports happen only when hardware discovery or connection is explicitly requested.
 
 ## Ownership and control
 
@@ -13,6 +13,8 @@ The UI polls every 500 ms, preserving input fields and confirmation checkboxes b
 Local defenses: trusted loopback Host values, same-origin mutation checks, a per-process request token, bounded JSON command bodies, a restrictive Content Security Policy, and no cross-origin access. The app is for a trusted local OS account, not shared or remote deployment. An OS user can access this local service. Linux file locking prevents another server using the same mode directory; the hardware port also uses pyserial exclusive mode. Legacy serial programs must still be shut down separately.
 
 ## State machine
+
+`discovery.py` is shared with `find_ports.py`: USB candidates are pinged for Feetech IDs 1–20 at 1 Mbaud, then voltage register 62 is read on the first responder. It acquires serial exclusivity before packet traffic, uses bounded serial writes and monotonic packet deadlines, closes each adapter, and checks cancellation/ownership between reads. Nonresponding serial devices are omitted; busy adapters produce warnings. The authenticated `refresh_ports` command runs only in the disconnected phase on the motor worker. GET `/api/ports` and state polling return cached results without serial I/O. Simulation never imports or invokes discovery. Scan failure invalidates old results. Eligibility requires IDs 1–6, a valid voltage, and an inferred follower role; hardware connection still revalidates all six voltages and modes.
 
 ```mermaid
 stateDiagram-v2

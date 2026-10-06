@@ -97,7 +97,44 @@ def test_only_one_server_per_data_directory(tmp_path):
 
 
 def test_hardware_mode_never_connects_on_startup(tmp_path):
-    e = Engine(tmp_path, "hardware", hardware_factory=lambda *_: pytest.fail("Connected on startup"))
+    e = Engine(tmp_path, "hardware", hardware_factory=lambda *_: pytest.fail("Connected on startup"),
+               port_scanner=lambda **_: pytest.fail("Unowned GET triggered a scan"))
     app = create_app(tmp_path, "hardware", engine=e)
     with TestClient(app, base_url="http://127.0.0.1") as c:
         assert c.get("/api/state").json()["connected"] is False
+        assert c.get("/api/ports").json()["ports"] == []
+
+
+def test_discovery_uses_authenticated_worker_and_keeps_http_responsive(tmp_path):
+    entered, finish = threading.Event(), threading.Event()
+    workers = []
+    def scan(*, guard):
+        workers.append(threading.current_thread().name)
+        entered.set()
+        assert finish.wait(2)
+        guard()
+        return {"arms": [{"port": "/dev/ttyACM1", "role": "follower", "voltage": 12.4,
+                          "motor_ids": [1, 2, 3, 4, 5, 6]}], "warnings": []}
+    e = Engine(tmp_path, "hardware", port_scanner=scan)
+    app = create_app(tmp_path, "hardware", engine=e)
+    with TestClient(app, base_url="http://127.0.0.1") as c:
+        headers = operator_headers(c)
+        cmd = {"id": str(uuid4()), "action": "refresh_ports", "revision": 0, "args": {}}
+        assert c.post("/api/commands", json=cmd).status_code == 403
+        assert not entered.is_set()
+        c.post("/api/heartbeat", json={}, headers=headers)
+        try:
+            assert c.post("/api/commands", json=cmd, headers=headers).status_code == 202
+            assert entered.wait(1)
+            assert c.get("/api/ports").json()["scanning"] is True
+            assert c.get("/api/state").json()["pending"] is True
+            assert c.post("/api/heartbeat", json={}, headers=headers).status_code == 200
+            assert c.post("/api/commands", json={**cmd, "id": str(uuid4())}, headers=headers).status_code == 409
+        finally:
+            finish.set()
+        state = wait_command(c, cmd["id"])
+        assert state["last_receipt"]["status"] == "complete"
+        assert state["discovery"]["ports"][0]["voltage"] == 12.4
+        assert state["discovery"]["ports"][0]["connectable"] is True
+        assert state["connected"] is False
+        assert workers == ["orchid-motor-owner"]

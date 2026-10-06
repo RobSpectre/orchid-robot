@@ -536,6 +536,7 @@ main {
 
 .field-row .form-field {
   flex:1;
+  min-width:0;
 }
 
 .field-row button {
@@ -543,6 +544,26 @@ main {
   min-height:45px;
   padding:8px 12px;
 }
+
+.connection-picker { flex-wrap:wrap; }
+.connection-picker .form-field { flex-basis:220px; }
+.connection-picker button { flex-shrink:0; }
+.arm-discovery { display:grid; gap:10px; }
+.discovered-arm {
+  display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 14px;
+  border:1px solid #514b40; border-radius:8px; padding:15px;
+  background:#20211d;
+}
+.discovered-arm.ready-arm { border-color:#bfa265; }
+.arm-identity { display:grid; gap:4px; }
+.arm-identity strong { font-size:14px; }
+.arm-identity span { font-size:12px; color:#bfb9a9; overflow-wrap:anywhere; }
+.arm-voltage { color:#edcd81; font-size:16px; align-self:center; }
+.discovered-motors { grid-column:1/-1; display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.discovered-motors span { font-size:11px; color:#bfb9a9; margin-right:5px; }
+.discovered-motors b { display:grid; place-items:center; width:25px; height:25px; font-size:12px; border:1px solid #5a5448; border-radius:4px; }
+.discovered-arm p { grid-column:1/-1; margin:0; font-size:11px; color:#bfb9a9; line-height:1.5; }
+.discovery-warnings { font-size:12px; color:#f8bf8d; white-space:pre-line; overflow-wrap:anywhere; }
 
 .confirmation {
   display:flex;

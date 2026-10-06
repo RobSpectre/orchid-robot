@@ -3,8 +3,8 @@ const $ = (id) => document.getElementById(id);
 const notes = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const motors = {shoulder_pan: "Base rotation", shoulder_lift: "Shoulder", elbow_flex: "Elbow", wrist_flex: "Wrist bend", wrist_roll: "Wrist rotation", gripper: "Gripper"};
 const owner = crypto.randomUUID();
-let state, token, online = false, owns = false, renderKey = "", sending = false, timer = null, ports = [];
-let portError = "", lastReceipt = "", instance = "", firstLoad = true, keyboardKey = "";
+let state, token, online = false, owns = false, renderKey = "", sending = false, timer = null;
+let lastReceipt = "", instance = "", firstLoad = true, keyboardKey = "";
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isSim = () => state?.mode === "simulation";
 const activeControl = () => state.catalog[selectedNote || state.selected];
@@ -33,16 +33,27 @@ async function request(path, body) {
   }
   return response.json();
 }
-async function getPorts() {
-  try { ports = (await request("/api/ports")).ports; portError = ""; }
-  catch (err) { ports = []; portError = err.message; }
-  const select = $("port");
-  if (select) {
-    const previous = select.value;
-    select.innerHTML = ports.length ? ports.map(p => `<option value="${esc(p.path)}">${esc(p.path)} · ${esc(p.description)}</option>`).join("") : '<option value="">No follower ports found</option>';
-    if (ports.some(p => p.path === previous)) select.value = previous;
-  }
-  if (portError) error(portError);
+function renderPorts() {
+  const select = $("port"), discovery = state.discovery;
+  if (!select || !discovery) return;
+  const {ports, scanning, scanned_at: scannedAt, warnings, error: scanError} = discovery;
+  const signature = JSON.stringify(discovery);
+  if (select.dataset.snapshot === signature) return;
+  select.dataset.snapshot = signature;
+  const previous = select.value;
+  const role = p => p.role === "simulator" ? "Practice arm" : p.role === "follower" ? "Follower" : p.role === "leader" ? "Leader" : "Unidentified arm";
+  const volts = p => p.voltage === null ? "Voltage unavailable" : `${p.voltage.toFixed(1)} V`;
+  const eligible = ports.filter(p => p.connectable);
+  select.innerHTML = (!eligible.length ? `<option value="">${scanning ? "Scanning robot arms…" : scannedAt ? "No ready follower found" : "Refresh to find robot arms"}</option>` : "") +
+    ports.map(p => `<option value="${esc(p.path)}" ${p.connectable ? "" : "disabled"}>${esc(role(p))} · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("");
+  select.value = eligible.some(p => p.path === previous) ? previous : eligible[0]?.path || "";
+  $("arm-discovery").innerHTML = ports.map(p => `<article class="discovered-arm ${p.connectable ? "ready-arm" : ""}"><div class="arm-identity"><strong>${esc(role(p))}</strong><span>${esc(p.path)}</span></div><strong class="arm-voltage">${volts(p)}</strong><div class="discovered-motors"><span>Motor IDs</span>${p.motor_ids.map(id => `<b>${esc(id)}</b>`).join("")}</div><p>${isSim() ? "Simulated readings · no USB connection" : esc(p.problem || "Six motors detected · ready to connect")}</p></article>`).join("");
+  const status = scanning ? "Scanning USB adapters for Feetech motors…" : scanError ? `Scan failed: ${scanError}` : isSim() ? "Practice arm available. No physical devices are scanned." : scannedAt ?
+    `${ports.length} robot arm${ports.length === 1 ? "" : "s"} found · scanned ${new Date(scannedAt * 1000).toLocaleTimeString()}. Voltage is a scan-time reading from each arm’s first responding motor. ${ports.length ? "Leader / follower is inferred from voltage." : "Check USB and arm power, then refresh."}` :
+    "Refresh connections to find powered robot arms. Only adapters with responding Feetech motors appear here.";
+  $("discovery-status").textContent = status;
+  $("discovery-warnings").textContent = warnings.join("\n");
+  $("discovery-warnings").hidden = !warnings.length;
 }
 function noteSteps() {
   const phase = state.phase;
@@ -97,7 +108,8 @@ function workflow() {
   let html = "";
   if (p === "disconnected") {
     html = intro(sim ? "A rehearsal, without the robot." : "Set up the follower arm.", sim ? "Walk through calibration, keys, chord buttons, and voicing gestures with a simulated arm. Practice data stays separate from the real instrument." : "Secure the arm and Orchid to their marked positions. Fit the soft pad, fix the gripper opening, and rest the arm safely clear of the keyboard.") +
-      `<div class="field-row"><label class="form-field">Follower connection<select id="port" aria-label="Follower connection"></select></label><button class="secondary" id="refresh-ports" aria-label="Refresh ports">↻</button></div>` +
+      `<div class="field-row connection-picker"><label class="form-field">Follower connection<select id="port" aria-label="Follower connection" aria-describedby="discovery-status"></select></label><button class="secondary" id="refresh-ports" data-action="refresh_ports">↻ Refresh connections</button></div>` +
+      '<div id="arm-discovery" class="arm-discovery" aria-label="Detected robot arms"></div><p id="discovery-status" class="hint" role="status"></p><p id="discovery-warnings" class="discovery-warnings" hidden></p>' +
       `<label class="form-field">Fixture / placement name<input id="fixture" maxlength="120" value="${esc(s.fixture.label)}" placeholder="Orchid demo · table A"></label>` +
       `<label class="form-field">Contact tool<select id="contact-tool"><option value="rubber_gloved_tips" ${s.fixture.tool !== "padded_gripper" ? "selected" : ""}>Rubber-covered gripper tips</option><option value="padded_gripper" ${s.fixture.tool === "padded_gripper" ? "selected" : ""}>Padded gripper</option></select></label>` +
       (s.fixture.id ? confirm("fixture_unchanged", "Arm, keyboard, contact tips, and gripper opening have not changed since this saved fixture.") : "") +
@@ -147,7 +159,6 @@ function workflow() {
   if (p.startsWith("calibration_") || (p === "connected" && !s.calibrated)) html = window.OrchidPanels.calibration(s) + html;
   if (p === "connected" && !s.calibrated) html += '<div class="setup-checklist"><strong>Before starting</strong><ul><li>Secure the base and reseated joints; keep the instrument outside the arm’s reach.</li><li>Support the full arm weight before torque releases.</li><li>Use the delay and optional spoken cues to keep both hands available.</li></ul><p>Calibration stays torque off. OFF flags do not remove gearbox drag.</p></div>';
   $("workflow").innerHTML = html;
-  if (p === "disconnected") getPorts();
 }
 function render() {
   if (!state) return;
@@ -157,6 +168,7 @@ function render() {
     cancelCountdown(); renderKey = key; workflow();
     say(["dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_pressed", "note_touch", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
   }
+  renderPorts();
   const count = Object.values(allStatuses()).filter(k => k.status === "registered").length;
   $("completed").innerHTML = `${count}<span>/22</span>`;
   $("mode").textContent = isSim() ? "SIMULATION · NO HARDWARE" : "HARDWARE MODE";
@@ -208,7 +220,7 @@ function render() {
   }
   if ($("dial-return-error")) $("dial-return-error").textContent = `${s.dial_return_error ?? "—"} ticks`;
   $("events").innerHTML = s.events.length ? s.events.slice(0,12).map(e => `<li><time datetime="${esc(e.created)}">${esc(new Date(e.created).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"}))}</time><span>${esc(e.message)}</span></li>`).join("") : '<li><span>No session activity yet. Connect the practice arm to begin.</span></li>';
-  $("operation").hidden = !s.pending; $("operation").textContent = s.message;
+  $("operation").hidden = !s.pending; $("operation").textContent = s.discovery?.scanning ? "Reading connected robot arms…" : s.message;
   if (s.last_receipt?.id !== lastReceipt || s.error) {
     lastReceipt = s.last_receipt?.id;
     error(s.error || (s.last_receipt?.status === "rejected" ? s.last_receipt.message : ""));
@@ -222,11 +234,14 @@ function updateButtons() {
     const scope = b.dataset.recovery ? $("recovery") : $("workflow");
     let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.dataset.confirm !== "fixture_unchanged").every(c => c.checked);
     if (b.dataset.recovery) valid = $("recovery-supported").checked;
-    if (["simulate_sweep", "fail"].includes(b.dataset.action)) valid = true;
+    if (["simulate_sweep", "fail", "refresh_ports"].includes(b.dataset.action)) valid = true;
+    if (b.dataset.action === "connect") valid = valid && state.discovery?.ports.some(p => p.path === $("port")?.value && p.connectable);
     if (b.dataset.diagnostics) valid = state.connected && ["connected", "ready"].includes(state.phase) && Object.values(state.torque || {}).length === 6 && Object.values(state.torque).every(v => v === 0);
     if (b.dataset.action === "calibration_next") { const range = state.ranges[state.range_motor]; valid = valid && range && range.max - range.min > 32; }
     b.disabled = blocked || !valid;
   });
+  if ($("port")) $("port").disabled = blocked || !state.discovery?.ports.some(p => p.connectable);
+  if ($("refresh-ports")) $("refresh-ports").textContent = state.discovery?.scanning ? "Scanning…" : "↻ Refresh connections";
   document.querySelectorAll("[data-note]").forEach(b => b.disabled = blocked || !state.calibrated || !["ready", "connected"].includes(state.phase));
   $("stop").disabled = !online || !owns || !state?.connected;
   document.querySelectorAll("[data-note]").forEach(k => k.classList.toggle("selected", k.dataset.note === (selectedNote || state.selected)));
@@ -267,7 +282,6 @@ function dispatchButton(b) {
 document.addEventListener("click", event => {
   const b = event.target.closest("button"); if (!b || b.disabled) return;
   if (b.id === "cancel-countdown") { cancelCountdown(); updateButtons(); }
-  else if (b.id === "refresh-ports") getPorts();
   else if (b.id === "stop") { cancelCountdown(); say("Stop requested"); submit("stop"); }
   else if (b.dataset.action) dispatchButton(b);
   else if (b.dataset.note) { selectedNote = b.dataset.note; render(); }

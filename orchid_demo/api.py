@@ -13,7 +13,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .devices import available_ports
 from .engine import Engine
 from .motion import SafetyError
 
@@ -95,12 +94,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None):
 
     @app.get("/api/ports")
     def ports():
-        if mode == "simulation":
-            return {"ports": [{"path": "simulator", "description": "Practice arm · no hardware"}]}
-        try:
-            return {"ports": available_ports()}
-        except ImportError as exc:
-            raise HTTPException(503, "Install requirements-hardware.txt on the robot host before using hardware mode.") from exc
+        # GET never opens a serial device. Authenticated refresh_ports commands
+        # perform discovery on the same worker that owns all other bus traffic.
+        return engine.snapshot()["discovery"]
 
     @app.post("/api/commands", status_code=202)
     def commands(command: Command, request: Request):

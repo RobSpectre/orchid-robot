@@ -12,7 +12,8 @@ import uuid
 from . import motion as m
 from . import dial
 from .controls import CATALOG, group_members
-from .devices import HardwareArm, SimulatedArm, available_ports
+from .devices import HardwareArm, SimulatedArm
+from .discovery import discover_arms, follower_problem
 from .storage import Repository
 from .telemetry import motor_status, pose_angles
 
@@ -45,10 +46,16 @@ class GuardedController(m.Controller):
 
 class Engine:
     def __init__(self, directory: Path, mode="simulation", *, clock=time.monotonic, sleep=time.sleep,
-                 hardware_factory=HardwareArm):
+                 hardware_factory=HardwareArm, port_scanner=discover_arms):
         m.require(mode in ("simulation", "hardware"), "Unknown operating mode")
         self.mode, self.clock, self.sleep = mode, clock, sleep
         self.hardware_factory = hardware_factory
+        self.port_scanner = port_scanner
+        self.discovery = {"ports": [], "scanned_at": None, "scanning": False, "warnings": [], "error": None}
+        if mode == "simulation":
+            self.discovery["ports"] = [{"path": "simulator", "description": "Practice arm · no hardware",
+                                        "role": "simulator", "motor_ids": list(range(1, 7)), "voltage": 12.0,
+                                        "connectable": True, "problem": None}]
         self.repo = Repository(directory, mode)
         self.calibration = self.repo.get("calibration")
         self.fixture = self.repo.get("fixture", {"label": "Orchid demo", "id": ""})
@@ -153,6 +160,7 @@ class Engine:
                 "instance_id": self.instance_id, "revision": self.revision, "mode": self.mode,
                 "phase": self.phase, "message": self.message, "error": self.error,
                 "connected": self.arm is not None, "calibrated": self.calibrated,
+                "discovery": deepcopy(self.discovery),
                 "fixture": deepcopy(self.fixture), "selected": self.selected,
                 "position": deepcopy(self.current), "torque": deepcopy(self.torque),
                 "feedback_at": self.feedback_at, "heartbeat": time.time(),
@@ -354,7 +362,32 @@ class Engine:
         self.publish()
 
     def dispatch(self, action, args):
-        if action == "connect":
+        if action == "refresh_ports":
+            self.require_phase("disconnected")
+            m.require(self.arm is None, "Disconnect the follower before scanning USB ports.")
+            if self.mode == "simulation":
+                return  # Never load the serial SDK or touch USB in practice mode.
+            self.discovery = {"ports": [], "scanned_at": None, "scanning": True, "warnings": [], "error": None}
+            self.publish()
+            try:
+                result = self.port_scanner(guard=self.guard)
+                self.guard()
+                self.discovery["ports"] = [
+                    {**arm, "path": arm["port"], "description": arm["role"] or "Unidentified arm",
+                     "connectable": follower_problem(arm) is None, "problem": follower_problem(arm)}
+                    for arm in result["arms"]
+                ]
+                self.discovery["warnings"] = result["warnings"]
+                self.discovery["scanned_at"] = time.time()
+                self.error = None
+            except Exception as exc:
+                message = ("Install requirements-hardware.txt in the Python environment running this app."
+                           if isinstance(exc, ImportError) else str(exc))
+                self.discovery["error"] = message
+                raise m.SafetyError(message) from exc
+            finally:
+                self.discovery["scanning"] = False
+        elif action == "connect":
             self.require_phase("disconnected")
             m.require(args.get("prepared") is True, "Confirm the pad, mounting, clear workspace, and accessible power stop.")
             label = str(args.get("fixture", "")).strip()
@@ -367,7 +400,8 @@ class Engine:
                 self.repo.put("fixture", self.fixture)
             if self.mode == "hardware":
                 port = args.get("port")
-                m.require(port in {p["path"] for p in available_ports()}, "Choose a currently connected serial port.")
+                m.require(any(p["path"] == port and p["connectable"] for p in self.discovery["ports"]),
+                          "Refresh connections and choose a detected follower with motor IDs 1–6 and a verified voltage.")
                 candidate = self.hardware_factory(port, self.calibration)
             else:
                 candidate = SimulatedArm(self.calibration)

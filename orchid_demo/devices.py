@@ -176,9 +176,3 @@ class HardwareArm(m.Arm):
         self.homing_changed = False
         self.backup = None
         self.calibration_matches = bool(self.calibration) and self.bus.is_calibrated
-
-
-def available_ports():
-    """Enumerate devices only; selecting a port does not ping or configure motors."""
-    from serial.tools import list_ports
-    return [{"path": port.device, "description": port.description} for port in list_ports.comports()]

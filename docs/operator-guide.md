@@ -8,7 +8,9 @@ Secure the arm base and synthesizer to reproducible marks. Fit the rubber tip gl
 
 Support the arm's full weight before any torque release. Six OFF readings mean motor drive is disabled, not that the gearbox is frictionless. Do not overcome significant resistance by forcing a joint. Keep an accessible physical power stop and a safe resting support available.
 
-Choose the follower port by device description; `/dev/ttyACM` numbers can change after reconnecting. Connection reads motor state without configuring the robot or enabling torque. Low supply voltage, missing motors, and the wrong operating mode are rejected.
+Click **Refresh connections** to scan USB adapters using the same read-only detection as `find_ports.py`. Only ports with responding Feetech motors appear. Each arm shows its motor IDs and measured bus voltage. The voltage is a snapshot from the first responding motor, timestamped at refresh; leader/follower is inferred using the existing 8 V threshold. Leaders, incomplete motor sets, and arms with unreadable voltage remain visible with an explanation but cannot be selected for connection. Choose the follower with motor IDs **1–6**; `/dev/ttyACM` numbers can change after reconnecting. Refresh again after changing USB or power connections.
+
+Refresh runs only while disconnected and never changes torque or motor settings. Busy/unreadable adapters are skipped with a message; close any other serial controller before retrying. A scan failure clears the old choices. Connection independently reads all six motors' supply and operating mode without configuring the robot or enabling torque. Low supply voltage, missing motors, and the wrong operating mode are rejected. Simulation only displays the practice arm and never scans physical devices.
 
 Choose a placement name. “Unchanged” means the same physical setup, not just the same name. Leave it unchecked after moving anything, changing pad thickness or glove fit, adjusting the gripper, or repairing a joint. Selecting a different contact tool creates a new fixture even if “unchanged” is checked. Previous records remain on disk but no longer count as registered for the new fixture.
 
