@@ -10,7 +10,7 @@ Support the arm's full weight before any torque release. Six OFF readings mean m
 
 Safety confirmations are large touchscreen buttons. Tap **Arm this step** (or the named confirmation), check its highlighted **Confirmed** state, then press the action below it. Confirming alone sends no motor command. Tap again to cancel. Each attempt consumes its confirmations, including canceled countdowns and rejected captures; you must confirm again to retry. The optional saved-placement choice remains separate. Recovery has its own **Arm recovery** button.
 
-Click **Refresh connections** to scan USB adapters using the same read-only detection as `find_ports.py`. Only ports with responding Feetech motors appear. Each arm shows its motor IDs and measured bus voltage. The voltage is a snapshot from the first responding motor, timestamped at refresh; leader/follower is inferred using the existing 8 V threshold. Leaders, incomplete motor sets, and arms with unreadable voltage remain visible with an explanation but cannot be selected for connection. Choose the follower with motor IDs **1–6**; `/dev/ttyACM` numbers can change after reconnecting. Refresh again after changing USB or power connections.
+Click **Refresh connections** to scan USB adapters using the same read-only detection as `find_ports.py`. Only ports with responding Feetech motors appear. Each arm shows its motor IDs and measured bus voltage. The voltage is a snapshot from the first responding motor, timestamped at refresh; leader/follower is inferred using the existing 8 V threshold. Choose the follower with motor IDs **1–6**. To use both arms, select **Use leader to teach** and choose the separate low-voltage arm in **Leader connection**. A leader cannot be selected as the follower; incomplete motor sets and arms with unreadable voltage cannot connect. `/dev/ttyACM` numbers can change after reconnecting. Refresh again after changing USB or power connections.
 
 Refresh runs only while disconnected and never changes torque or motor settings. Busy/unreadable adapters are skipped with a message; close any other serial controller before retrying. A scan failure clears the old choices. Connection independently reads all six motors' supply and operating mode without configuring the robot or enabling torque. Low supply voltage, missing motors, and the wrong operating mode are rejected. Simulation only displays the practice arm and never scans physical devices.
 
@@ -53,6 +53,8 @@ References: [SO101 calibration guide](https://huggingface.co/docs/lerobot/en/so1
 
 ## Register each of the 12 notes
 
+The steps below describe **Guide follower by hand**. For powered leader input, use the leader workflow below instead.
+
 Select a key when the console is ready and choose **Teach** while supporting the arm. The active note is shown above the capture steps.
 
 | Step | Operator action | Result |
@@ -69,6 +71,20 @@ Small pauses while deciding what to do next are fine with the page connected. Du
 **Reject & re-teach** clears the trial count for that attempt. A control's **REGISTERED** or checkmark state means three accepted trials with the current fixture/calibration. A simulation never counts as hardware registration. There is no autonomous travel between controls in this release.
 
 For both-hand handling, leave the five-second delay enabled. Pressing a delayed control starts a visible countdown; support and position the arm before it reaches zero. Captures also require a brief steady reading. Optional spoken cues can help, but always check the visible status; browser speech can be muted.
+
+## Teach with the leader arm
+
+1. While disconnected, select **Use leader to teach**, refresh connections, and select the follower and leader in their separate lists. Their ports must differ. Connection only reads; it does not enable torque. Do not run another controller or calibration utility alongside this app.
+2. Use **Calibrate follower** and **Calibrate leader**. Each has its own saved reference, backup, midpoint, five measured ranges and verified save. Both arms stay torque off. The calibration banner and 3D heading identify which arm you are handling; during leader calibration the motor cards show the leader. The CAD shape is still an approximate SO101 reference, not a leader-specific collision model. Reset/reload applies to the arm named in its saved-reference panel. Saved calibrations that match the motor settings can be reused; changing or reseating a joint requires recalibration.
+3. Choose a key, chord button or dial direction and **Teach**. With torque off, position the follower just clear of that control and set its final padded gripper opening. Keep the leader in a comfortable position within its calibrated range. Support the follower and choose **Establish follower hold**; the optional delay gives you five seconds. Wait for **PAUSED · HOLDING** before clearing your hands.
+4. Confirm **Arm following** and choose **Engage leader following**. Move only the leader. Start in clear space and check the direction of each of the five arm joints before approaching the instrument. Input is relative at ¼ scale, with nominal speed capped at 24 raw ticks/s (integer-tick rounding applies). Fast input is discarded rather than queued. The follower stays within 120 ticks of its initial local hold and inside its calibrated margins. These are position limits, not contact-force protection. The leader gripper is ignored; the follower gripper stays fixed.
+5. For a key or chord button, guide the lightest working press, **Pause following**, then capture. Engage again to release to first contact, pause and capture; engage to lift to clearance, pause and capture. Capture buttons are disabled while following. For a dial, pause at each of the existing start/contact/turn/lift/return stages. Keep the fixed-tip rim contact and musical reference checks.
+6. Pausing holds the follower at its measured pose. You can reposition the leader while paused; re-engaging starts from the new pair of positions with no alignment move. Keep hands off the powered follower. To reposition the follower itself, support it and use **Release torque**.
+7. The final capture hands the held follower to the existing test controller without releasing torque. The leader no longer drives it. Perform three observed trials, then support and **Release & continue** to position the next control with torque off.
+
+Leaving the operator page or losing its visible-page heartbeat pauses following after at most 1.2 seconds plus current I/O; returning never re-engages automatically. The normal five-second owner lease and Stop control still apply. Input jumps, encoder wrapping, stale feedback, unexpected torque, changed grip or tracking failures stop following and request a measured hold when possible, without dropping torque. If communication is lost, the last target can remain active; use the physical power stop while supporting the arm. No software limit or 3D model detects collisions or key force.
+
+Simulation provides **Practice leader movement** with a joint selector and ± buttons. Each tap moves the virtual leader by 48 ticks over time (normally 12 follower ticks while engaged). These controls never appear as hardware movement controls. Simulated captures use the measured virtual follower path and do not reposition it automatically.
 
 ## Register the eight chord buttons
 

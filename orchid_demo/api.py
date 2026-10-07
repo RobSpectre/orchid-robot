@@ -85,9 +85,12 @@ def create_app(directory: Path, mode="simulation", *, engine=None):
         return engine.snapshot()
 
     @app.post("/api/heartbeat")
-    def heartbeat(request: Request):
+    async def heartbeat(request: Request):
         try:
-            engine.heartbeat(operator(request))
+            body = await request.json()
+            engine.heartbeat(operator(request), leader_visible=isinstance(body, dict) and body.get("leader_visible") is True)
+        except ValueError as exc:
+            raise HTTPException(400, "Heartbeat must contain JSON") from exc
         except SafetyError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"ok": True}

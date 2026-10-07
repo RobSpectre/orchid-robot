@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from orchid_demo import motion as m
-from orchid_demo.devices import HardwareArm, validate_calibration
+from orchid_demo.devices import HardwareArm, HardwareLeader, validate_calibration
 
 
 @dataclass
@@ -88,6 +88,31 @@ def test_open_only_reads_and_disconnect_never_drops_torque(arm):
     assert arm.calibration_matches
     arm.close()
     assert not arm.bus.is_connected
+
+
+def test_leader_connection_is_read_only_and_cannot_send_or_enable(arm):
+    arm.__class__ = HardwareLeader
+    arm.bus.values["Present_Voltage"] = dict.fromkeys(m.MOTORS, 52)
+    arm.open()
+    assert not arm.bus.writes and arm.calibration_matches
+    with pytest.raises(m.SafetyError, match="input-only"):
+        arm.send(dict.fromkeys(m.MOTORS, 2047))
+    with pytest.raises(m.SafetyError, match="torque enable"):
+        arm.arm_at_current(dict.fromkeys(m.MOTORS, 2047))
+    assert not arm.bus.writes
+    arm.begin_calibration()
+    offsets = arm.center(sleep=lambda _: None)
+    arm.commit_calibration({n: {**c, "homing_offset": offsets[n]} for n,c in arm.calibration.items()})
+    assert not any(r in ("Torque_Enable", "Goal_Position") for r,_,_ in arm.bus.writes)
+
+
+@pytest.mark.parametrize("voltage", [0, 39, 80, 120])
+def test_leader_rejects_follower_or_unpowered_bus_without_writes(arm, voltage):
+    arm.__class__ = HardwareLeader
+    arm.bus.values["Present_Voltage"]["elbow_flex"] = voltage
+    with pytest.raises(m.SafetyError, match="low-voltage leader"):
+        arm.open()
+    assert not arm.bus.writes
 
 
 @pytest.mark.parametrize("register,value", [("Present_Voltage",52), ("Operating_Mode",1)])

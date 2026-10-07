@@ -84,3 +84,11 @@ def follower_problem(arm):
     if arm["role"] != "follower":
         return "Leader / low-voltage bus. Select the 12 V follower."
     return None
+
+
+def leader_problem(arm):
+    if arm["motor_ids"] != EXPECTED_MOTOR_IDS:
+        return "Leader needs motor IDs 1–6."
+    if arm["voltage"] is None or not 4 <= arm["voltage"] < FOLLOWER_MIN_VOLTAGE or arm["role"] != "leader":
+        return "Select a powered low-voltage leader, not the 12 V follower."
+    return None

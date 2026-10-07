@@ -70,7 +70,9 @@ python -m pip install -r requirements-hardware.txt
 python app.py --enable-hardware
 ```
 
-Opening the page does not connect or enable motors. Choose the follower's current port in the browser; USB names can change. Connection checks all six motor IDs, follower supply voltage, position mode, and saved calibration agreement. The leader is not needed for this workflow.
+Opening the page does not connect or enable motors. Choose the follower's current port in the browser; USB names can change. Connection checks all six motor IDs, follower supply voltage, position mode, and saved calibration agreement. **Guide follower by hand** needs only the follower. **Use leader to teach** adds a separate low-voltage leader connection and calibration.
+
+For leader teaching, calibrate both arms, choose a control, position the follower just clear of it with torque off, and choose **Establish follower hold** while supporting it. Clear hands from the follower, confirm **Arm following**, and engage. Leader joint changes produce quarter-scale, speed-limited follower changes; its gripper opening stays fixed. **Pause following** holds the follower while you reposition the leader or capture each waypoint. Re-engaging uses fresh relative positions and does not jump to the leader's absolute pose. Captured paths use measured follower positions and the same three verification trials. This is local teaching, not automatic travel across the keyboard. See [leader operator instructions](docs/operator-guide.md#teach-with-the-leader-arm).
 
 Finish the [hardware commissioning checklist](docs/operator-guide.md#commissioning-the-repaired-arm) before a public demo. Previous terminal-taught files are preserved locally but are **not automatically imported or trusted** by the web app. A joint repair requires fresh calibration and note teaching.
 

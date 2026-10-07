@@ -101,6 +101,8 @@ class SimulatedArm(m.Arm):
 
 class HardwareArm(m.Arm):
     """Same checked motion adapter as the prototype, without robot.configure()."""
+    role = "follower"
+
     def __init__(self, port, calibration=None):
         from lerobot.motors import Motor, MotorCalibration, MotorNormMode
         from lerobot.motors.feetech import FeetechMotorsBus
@@ -124,8 +126,9 @@ class HardwareArm(m.Arm):
         # pyserial's exclusive flock also prevents another cooperating serial owner.
         self.bus.port_handler.ser.exclusive = True
         values = self.bus.sync_read("Present_Voltage", normalize=False, num_retry=0)
-        m.require(set(values) == set(m.MOTORS) and all(v >= 80 for v in values.values()),
-                  "Expected six 12 V follower motors. Check the selected port and power.")
+        valid_voltage = (lambda v: 40 <= v < 80) if self.role == "leader" else (lambda v: v >= 80)
+        m.require(set(values) == set(m.MOTORS) and all(valid_voltage(v) for v in values.values()),
+                  f"Expected six {'low-voltage leader' if self.role == 'leader' else '12 V follower'} motors. Check the selected port and power.")
         self.voltage = min(values.values()) / 10
         modes = self.bus.sync_read("Operating_Mode", normalize=False, num_retry=0)
         m.require(set(modes) == set(m.MOTORS) and all(v == 0 for v in modes.values()),
@@ -272,3 +275,14 @@ class HardwareArm(m.Arm):
         # saved app calibration. Never treat that rollback as a verified match.
         self.bus.calibration = {name: MotorCalibration(**value) for name, value in (self.calibration or {}).items()}
         self.calibration_matches = bool(self.calibration) and self.bus.read_calibration() == self.bus.calibration
+
+
+class HardwareLeader(HardwareArm):
+    """Torque-off input device. Calibration is explicit; leader motion is forbidden."""
+    role = "leader"
+
+    def send(self, pose):
+        raise m.SafetyError("The leader is input-only; motor goals are forbidden.")
+
+    def arm_at_current(self, current):
+        raise m.SafetyError("Leader torque enable is forbidden.")

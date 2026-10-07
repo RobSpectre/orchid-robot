@@ -15,7 +15,7 @@ const confirmationTitles = {supported: "Arm this step", hands_clear: "Arm test",
   direction_verified: "Confirm dial direction", rim_clear: "Confirm rim is clear", reference_reset: "Confirm reference reset",
   effect_verified: "Confirm expected effect", calibration_unchanged: "Confirm same arm & joints"};
 const confirmed = b => b?.getAttribute("aria-pressed") === "true";
-const confirm = (name, text) => `<button type="button" class="confirmation" data-confirm="${name}" aria-pressed="false"><span class="confirmation-icon" aria-hidden="true">○</span><span class="confirmation-copy"><strong>${confirmationTitles[name] || "Confirm this step"}</strong><span>${text}</span><small class="confirmation-state">Tap to confirm · no motor command</small></span></button>`;
+const confirm = (name, text, title = confirmationTitles[name] || "Confirm this step") => `<button type="button" class="confirmation" data-confirm="${name}" aria-pressed="false"><span class="confirmation-icon" aria-hidden="true">○</span><span class="confirmation-copy"><strong>${title}</strong><span>${text}</span><small class="confirmation-state">Tap to confirm · no motor command</small></span></button>`;
 function setConfirmation(b, enabled) {
   b.setAttribute("aria-pressed", String(enabled));
   b.querySelector(".confirmation-icon").textContent = enabled ? "✓" : "○";
@@ -27,13 +27,15 @@ function clearConfirmations(scope = document) {
   });
 }
 const button = (action, text, secondary = false, attrs = "") => `<button data-action="${action}" class="${secondary ? "secondary" : "primary"}" ${attrs}>${text}</button>`;
-const support = () => confirm("supported", "I am supporting the arm’s weight; it is safe to release or hold here.");
+const leaderMode = () => state?.teaching_mode === "leader";
+const teachingPhases = ["note_ready","note_pressed","note_touch","dial_ready","dial_approach","dial_contact","dial_turned","dial_lifted"];
+const support = () => confirm("supported", leaderMode() ? "Both arms are supported or resting securely; it is safe to release torque or establish the follower hold." : "I am supporting the arm’s weight; it is safe to release or hold here.");
 const calibrationPhases = ["connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review"];
-const actionScope = b => b.dataset.recovery ? $("recovery") : b.dataset.calibration ? $("calibration-tools") : $("workflow");
+const actionScope = b => b.dataset.recovery ? $("recovery") : b.dataset.calibration ? $("calibration-tools") : b.dataset.leader ? $("leader-teaching") : $("workflow");
 function calibrationTools() {
-  const s = state, available = calibrationPhases.includes(s.phase);
+  const s = state.calibration_target === "leader" ? {...state,...state.leader} : state, available = calibrationPhases.includes(state.phase);
   const status = s.calibrating ? "New calibration in progress" : s.calibrated ? "Saved calibration is active" : "Saved calibration is not active";
-  $("calibration-tools-content").innerHTML = `<div class="calibration-saved"><span class="eyebrow">SAVED REFERENCE</span><strong>${s.calibration ? esc(status) : "No saved calibration yet"}</strong><p>${s.calibration ? `Six motors · reference <code>${esc(s.calibration_id || "saved")}</code>` : "Complete and save the guided calibration to enable reload."}</p></div>` +
+  $("calibration-tools-content").innerHTML = `<div class="calibration-saved"><span class="eyebrow">${state.calibration_target === "leader" ? "LEADER" : "FOLLOWER"} · SAVED REFERENCE</span><strong>${s.calibration ? esc(status) : "No saved calibration yet"}</strong><p>${s.calibration ? `Six motors · reference <code>${esc(s.calibration_id || "saved")}</code>` : "Complete and save the guided calibration to enable reload."}</p></div>` +
     `<p class="hint">Reset restarts the midpoint and all joint sweeps. Your last saved calibration and registered motions stay saved.</p>` +
     (!available ? `<p class="hint">${s.connected ? "Finish this control or use Release or disconnect → Release torque to return to setup." : "Connect the follower to reset or reload its calibration."}</p>` : support() +
       actions(button("calibration_reset", "Reset calibration", true, 'data-calibration="true"')) +
@@ -45,6 +47,23 @@ function calibrationTools() {
 const hands = () => confirm("hands_clear", "My hands are clear of the arm and key path.");
 const intro = (title, description) => `<h3>${title}</h3><p class="description">${description}</p>`;
 const actions = (html) => `<div class="actions">${html}</div>`;
+function leaderPanel() {
+  const s = state, l = s.leader;
+  const simJoint = $("leader-sim-joint")?.value, simOpen = document.querySelector(".leader-simulation")?.open;
+  $("leader-teaching").hidden = !leaderMode() || !l?.connected;
+  if (!leaderMode() || !l?.connected) return;
+  let html = `<div class="section-line"><h3>Leader → follower</h3><span id="leader-status" class="badge neutral"></span></div><p class="hint">Leader <b>${l.voltage?.toFixed(1) ?? "—"} V</b> · <span id="leader-torque"></span> · ${l.calibrated ? "calibrated" : "calibration needed"}<br>Follower ${s.calibrated ? "calibrated" : "calibration needed"} · gripper stays fixed</p>`;
+  if (s.leader_teaching && teachingPhases.includes(s.phase)) {
+    html += '<p class="hint">¼ scale · slow local motion only. Pause to capture or reposition the leader. Fast input is limited and discarded; there is no catch-up movement.</p>';
+    html += s.leader_following ? actions(button("leader_pause", "Pause following · hold here", false, 'data-leader="true"')) :
+      confirm("hands_clear", "My hands are clear of the powered follower and its path. I will move only the leader.", "Arm following") + actions(button("leader_resume", "Engage leader following →", false, 'data-leader="true"'));
+    if (isSim()) html += `<details class="leader-simulation"><summary>Practice leader movement</summary><p class="hint">Each tap moves the simulated leader by 48 ticks over time. Following produces up to 12 follower ticks. Try a wrist bend press, pause and capture, then reverse to release.</p><label class="form-field">Joint<select id="leader-sim-joint">${Object.entries(motors).map(([id,label])=>`<option value="${id}" ${id === "wrist_flex" ? "selected" : ""}>${label}</option>`).join("")}</select></label>${actions(button("simulate_leader", "− Leader", true, 'data-leader="true" data-delta="-48"') + button("simulate_leader", "+ Leader", true, 'data-leader="true" data-delta="48"'))}</details>`;
+  }
+  html += '<p id="leader-feedback-status" class="hint" role="status"></p>';
+  $("leader-teaching").innerHTML = html;
+  if (simJoint && $("leader-sim-joint")) $("leader-sim-joint").value = simJoint;
+  if (simOpen && document.querySelector(".leader-simulation")) document.querySelector(".leader-simulation").open = true;
+}
 function say(text) {
   if ($("speech").checked && "speechSynthesis" in window) {
     speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text));
@@ -76,7 +95,11 @@ function renderPorts() {
   select.innerHTML = (!eligible.length ? `<option value="">${scanning ? "Scanning robot arms…" : scannedAt ? "No ready follower found" : "Refresh to find robot arms"}</option>` : "") +
     ports.map(p => `<option value="${esc(p.path)}" ${p.connectable ? "" : "disabled"}>${esc(role(p))} · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("");
   select.value = eligible.some(p => p.path === previous) ? previous : eligible[0]?.path || "";
-  $("arm-discovery").innerHTML = ports.map(p => `<article class="discovered-arm ${p.connectable ? "ready-arm" : ""}"><div class="arm-identity"><strong>${esc(role(p))}</strong><span>${esc(p.path)}</span></div><strong class="arm-voltage">${volts(p)}</strong><div class="discovered-motors"><span>Motor IDs</span>${p.motor_ids.map(id => `<b>${esc(id)}</b>`).join("")}</div><p>${isSim() ? "Simulated readings · no USB connection" : esc(p.problem || "Six motors detected · ready to connect")}</p></article>`).join("");
+  const leaderSelect = $("leader-port"), previousLeader = leaderSelect.value;
+  const leaders = ports.filter(p => p.leader_connectable);
+  leaderSelect.innerHTML = leaders.length ? leaders.map(p => `<option value="${esc(p.path)}">Leader · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("") : '<option value="">No ready leader found · refresh connections</option>';
+  leaderSelect.value = leaders.some(p => p.path === previousLeader) ? previousLeader : leaders[0]?.path || "";
+  $("arm-discovery").innerHTML = ports.map(p => `<article class="discovered-arm ${p.connectable || p.leader_connectable ? "ready-arm" : ""}"><div class="arm-identity"><strong>${esc(role(p))}</strong><span>${esc(p.path)}</span></div><strong class="arm-voltage">${volts(p)}</strong><div class="discovered-motors"><span>Motor IDs</span>${p.motor_ids.map(id => `<b>${esc(id)}</b>`).join("")}</div><p>${isSim() ? "Simulated readings · no USB connection" : p.leader_connectable ? "Ready for leader input · select Use leader to teach" : esc(p.problem || "Six motors detected · ready to connect")}</p></article>`).join("");
   const status = scanning ? "Scanning USB adapters for Feetech motors…" : scanError ? `Scan failed: ${scanError}` : isSim() ? "Practice arm available. No physical devices are scanned." : scannedAt ?
     `${ports.length} robot arm${ports.length === 1 ? "" : "s"} found · scanned ${new Date(scannedAt * 1000).toLocaleTimeString()}. Voltage is a scan-time reading from each arm’s first responding motor. ${ports.length ? "Leader / follower is inferred from voltage." : "Check USB and arm power, then refresh."}` :
     "Refresh connections to find powered robot arms. Only adapters with responding Feetech motors appear here.";
@@ -119,7 +142,7 @@ function dialWorkflow(s) {
   if (p === "dial_approach") html += actions(button("dial_capture_contact", "Capture rim contact →"));
   if (p === "dial_contact") html += confirm("direction_verified", `The dial turned ${esc(direction)} and produced the intended change.`) + actions(button("dial_capture_turn", "Capture turned position →"));
   if (p === "dial_turned") html += confirm("rim_clear", "The pad is completely clear of the dial rim.") + actions(button("dial_capture_lift", "Capture lift-off →"));
-  if (p === "dial_lifted") html += '<div class="return-meter">Return error <strong id="dial-return-error">—</strong><span>target ≤ 6 ticks · same clear start area</span></div>' + confirm("rim_clear", "The entire return path stayed clear of the dial.") + support() + actions(button("dial_capture_return", "Capture return & hold →"));
+  if (p === "dial_lifted") html += '<div class="return-meter">Return error <strong id="dial-return-error">—</strong><span>target ≤ 6 ticks · same clear start area</span></div>' + confirm("rim_clear", "The entire return path stayed clear of the dial.") + (leaderMode() ? hands() : support()) + actions(button("dial_capture_return", "Capture return & hold →"));
   const reference = () => `<div class="reference-card"><span>REFERENCE</span><p>${esc(s.dial_reference)}</p><span>EXPECTED EFFECT</span><p>${esc(s.dial_expected_effect)}</p></div>`;
   const reset = () => confirm("reference_reset", "I restored the reference chord and starting voicing while the pad was clear.");
   if (["holding", "saved", "result"].includes(p)) html += reference();
@@ -131,13 +154,17 @@ function dialWorkflow(s) {
 }
 function workflow() {
   const s = state, sim = isSim(), p = s.phase;
+  const dialFields = p === "dial_ready" ? [$("dial-reference")?.value, $("dial-effect")?.value] : [];
   const chosen = activeControl();
   const chord = s.selected_control.kind === "button";
   const complete = Object.values(allStatuses()).every(k => k.status === "registered");
+  const canTeach = s.calibrated && (!leaderMode() || s.leader?.calibrated);
   let html = "";
   if (p === "disconnected") {
     html = intro(sim ? "A rehearsal, without the robot." : "Set up the follower arm.", sim ? "Walk through calibration, keys, chord buttons, and voicing gestures with a simulated arm. Practice data stays separate from the real instrument." : "Secure the arm and Orchid to their marked positions. Fit the soft pad, fix the gripper opening, and rest the arm safely clear of the keyboard.") +
+      '<label class="form-field">Teaching mode<select id="teaching-mode"><option value="manual">Guide follower by hand</option><option value="leader">Use leader to teach</option></select></label>' +
       `<div class="field-row connection-picker"><label class="form-field">Follower connection<select id="port" aria-label="Follower connection" aria-describedby="discovery-status"></select></label><button class="secondary" id="refresh-ports" data-action="refresh_ports">↻ Refresh connections</button></div>` +
+      '<label class="form-field" id="leader-port-field" hidden>Leader connection<select id="leader-port" aria-label="Leader connection"></select></label>' +
       '<div id="arm-discovery" class="arm-discovery" aria-label="Detected robot arms"></div><p id="discovery-status" class="hint" role="status"></p><p id="discovery-warnings" class="discovery-warnings" hidden></p>' +
       `<label class="form-field">Fixture / placement name<input id="fixture" maxlength="120" value="${esc(s.fixture.label)}" placeholder="Orchid demo · table A"></label>` +
       `<label class="form-field">Contact tool<select id="contact-tool"><option value="rubber_gloved_tips" ${s.fixture.tool !== "padded_gripper" ? "selected" : ""}>Rubber-covered gripper tips</option><option value="padded_gripper" ${s.fixture.tool === "padded_gripper" ? "selected" : ""}>Padded gripper</option></select></label>` +
@@ -146,8 +173,9 @@ function workflow() {
       actions(button("connect", sim ? "Connect practice arm →" : "Connect follower →")) +
       '<p class="hint">Changed placement or pad? Leave “Keep saved placement” unconfirmed. Saved notes will require teaching again.</p>';
   } else if (["connected", "ready"].includes(p)) {
-    html = intro(complete ? "The instrument is registered." : s.calibrated ? `Ready to teach ${esc(chosen.name)}.` : "Give the arm its reference points.", complete ? "All 22 motions have three accepted trials. Rest the arm safely and export your session. Changing the fixture or pad requires re-teaching." : s.calibrated ? (chosen.kind === "dial" ? "Teach a small turn of the large voicing dial, then lift off and return clear. Each direction has its own path and verification trials." : chosen.kind === "button" ? "Teach this chord button’s lightest reliable press and release. Its musical effect depends on Orchid’s playstyle and reference chord; the button may not sound alone." : "Choose any key or control above. Teach its local motion by hand, then test it three times.") : "With torque off, capture a supported midpoint, then measure each joint’s usable range. Keep the arm clear of Orchid for the whole calibration.") +
-      support() + actions((s.calibrated ? button("control_start", `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}"`) : "") + button("calibrate", s.calibrated ? "Recalibrate motors" : "Begin motor calibration →", s.calibrated));
+    html = intro(complete ? "The instrument is registered." : canTeach ? `Ready to teach ${esc(chosen.name)}.` : (leaderMode() ? "Calibrate both arms." : "Give the arm its reference points."), complete ? "All 22 motions have three accepted trials. Rest the arm safely and export your session. Changing the fixture or pad requires re-teaching." : canTeach ? (chosen.kind === "dial" ? "Teach a small turn of the large voicing dial, then lift off and return clear. Each direction has its own path and verification trials." : chosen.kind === "button" ? "Teach this chord button’s lightest reliable press and release. Its musical effect depends on Orchid’s playstyle and reference chord; the button may not sound alone." : "Choose any key or control above. Teach its local motion by hand, then test it three times.") : "With torque off, capture a supported midpoint, then measure each joint’s usable range. Keep the arm clear of Orchid for the whole calibration.") +
+      support() + actions((s.calibrated && (!leaderMode() || s.leader?.calibrated) ? button("control_start", `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}"`) : "") + button("calibrate", s.calibrated ? "Recalibrate follower" : "Calibrate follower →", s.calibrated, 'data-target="follower"') +
+        (leaderMode() ? button("calibrate", s.leader?.calibrated ? "Recalibrate leader" : "Calibrate leader →", true, 'data-target="leader"') : ""));
     if (complete) html += '<p class="hint"><a href="/api/export" download>Download the session record →</a></p>';
     html += '<p class="hint">Support the full weight before releasing torque. Gear resistance can remain with all six motors OFF.</p>';
   } else if (p === "calibration_midpoint") {
@@ -162,7 +190,9 @@ function workflow() {
     html = intro("Review the measured travel.", "Confirm these ranges reflect deliberate sweeps. Wrist rotation uses the full encoder range; there is no cable-twisting sweep.") +
       `<table><thead><tr><th>JOINT</th><th>MIN</th><th>MAX</th></tr></thead><tbody>${Object.entries(motors).map(([name,label]) => `<tr><td>${label}</td><td>${name === "wrist_roll" ? 0 : s.ranges[name]?.min}</td><td>${name === "wrist_roll" ? 4095 : s.ranges[name]?.max}</td></tr>`).join("")}</tbody></table>` + confirm("range_complete", "These measured ranges cover the intended usable travel.") + actions(button("calibration_save", "Save & verify calibration →")) + '<p class="hint">Existing note paths are tied to their original calibration. Changed calibration makes them require re-teaching.</p>';
   } else if (p === "fault" || p === "failed") {
-    html = intro(p === "failed" ? "Let’s teach that stroke again." : "The session has stopped.", p === "failed" ? "This attempt is not registered. Support the arm before releasing torque, then capture a gentler, shorter stroke." : "No new motion is being issued. Support the arm and inspect the reported cause before continuing. Motor state is unverified until feedback resumes.") + support() + actions(button(s.calibrated ? "retry" : "release", s.calibrated ? "Release & retry this control" : "Release torque & return to setup")) + '<p class="hint">If the motors are not responding, use the physical power stop while supporting the arm.</p>';
+    html = intro(p === "failed" ? "Let’s teach that stroke again." : "The session has stopped.", p === "failed" ? "This attempt is not registered. Support the arm before releasing torque, then capture a gentler, shorter stroke." : "No new motion is being issued. Support the arm and inspect the reported cause before continuing. Motor state is unverified until feedback resumes.") + support() + actions(button(canTeach ? "retry" : "release", canTeach ? "Release & retry this control" : "Release torque & return to setup")) + '<p class="hint">If the motors are not responding, use the physical power stop while supporting the arm.</p>';
+  } else if (leaderMode() && ["note_ready", "dial_ready"].includes(p) && !s.leader_teaching) {
+    html = intro("Hold near the selected control.", `With torque off, position the follower’s fixed tips just clear of ${esc(s.selected_control.name)}. Support the follower’s weight and establish a hold. It will hold here before following the leader.`) + support() + actions(button("leader_hold", "Establish follower hold →")) + '<p class="hint">First try each leader joint in clear space and verify the follower moves in the expected direction. This mode teaches one local motion; reposition between controls with torque off.</p>';
   } else if (s.selected_control.kind === "dial") {
     html = dialWorkflow(s);
   } else {
@@ -179,22 +209,29 @@ function workflow() {
     html = `<div class="note-title"><span class="note-symbol">${esc(s.selected_control.label)}</span><h3>${text[0]}</h3></div>${noteSteps()}<p class="description">${text[1]}</p>`;
     if (p === "note_ready") html += actions(button("capture_pressed", chord ? "Capture button press →" : "Capture sounding press →"));
     if (p === "note_pressed") html += actions(button("capture_touch", "Capture first contact →"));
-    if (p === "note_touch") html += support() + actions(button("capture_clear", "Capture clearance & hold →"));
+    if (p === "note_touch") html += (leaderMode() ? hands() : support()) + actions(button("capture_clear", leaderMode() ? "Capture clearance →" : "Capture clearance & hold →"));
     if (p === "holding") html += hands() + actions(button("test", "Test one press →"));
     if (p === "result") html += trials() + actions(button("pass", sim ? "Accept simulated trial ✓" : chord ? "Activated & released cleanly ✓" : "Sounded & released cleanly ✓") + button("fail", "Reject & re-teach", true));
     if (p === "saved") html += trials() + (s.trials >= 3 ? support() + actions(button("next", "Release & continue →")) : hands() + actions(button("test", "Test again →")));
-    if (p.startsWith("note_")) html += `<p class="hint">${sim ? "Simulation places the virtual arm at each capture." : "Move gently. A large jump, changed grip, or stale reading stops capture."}</p>`;
+    if (p.startsWith("note_")) html += `<p class="hint">${leaderMode() ? (sim ? "Use Practice leader movement to move the input arm; captures store measured follower positions." : "Move the leader gently. A jump, changed follower grip, or stale reading stops following.") : sim ? "Simulation places the virtual arm at each capture." : "Move gently. A large jump, changed grip, or stale reading stops capture."}</p>`;
   }
-  if (p.startsWith("calibration_") || (p === "connected" && !s.calibrated)) html = window.OrchidPanels.calibration(s) + html;
+  if (leaderMode() && s.leader_teaching && teachingPhases.includes(p)) {
+    const cue = {note_ready:"Use the leader to find the lightest sounding press. Pause following, then capture.", note_pressed:"Use the leader to release the key until the pad barely touches it. Pause following, then capture.", note_touch:"Use the leader to lift just clear along the same path. Pause following, then capture the clearance for testing.", dial_ready:"The follower is holding clear of the dial. Keep following paused, enter the reference and capture the start."}[p];
+    if (cue) html = html.replace(/<p class="description">.*?<\/p>/, `<p class="description">${cue}</p>`);
+    html += '<p class="leader-capture-hint">Follower torque is ON. Move the leader only; pause following before every capture.</p>';
+  }
+  if (p.startsWith("calibration_") || (p === "connected" && !s.calibrated)) html = `<p class="calibration-arm-label">CALIBRATING ${s.calibration_target === "leader" ? "LEADER · follower stays torque off" : "FOLLOWER"}</p>` + window.OrchidPanels.calibration(s) + html;
   if (p === "connected" && !s.calibrated) html += '<div class="setup-checklist"><strong>Before starting</strong><ul><li>Secure the base and reseated joints; keep the instrument outside the arm’s reach.</li><li>Support the full arm weight before torque releases.</li><li>Use the delay and optional spoken cues to keep both hands available.</li></ul><p>Calibration stays torque off. OFF flags do not remove gearbox drag.</p></div>';
   $("workflow").innerHTML = html;
+  if (dialFields[0] !== undefined && $("dial-reference")) $("dial-reference").value = dialFields[0];
+  if (dialFields[1] !== undefined && $("dial-effect")) $("dial-effect").value = dialFields[1];
 }
 function render() {
   if (!state) return;
   const s = state, p = s.phase;
-  const key = [s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated].join(":");
+  const key = [s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following].join(":");
   if (key !== renderKey) {
-    cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools();
+    cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools(); leaderPanel();
     say(["dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_pressed", "note_touch", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
   }
   renderPorts();
@@ -202,7 +239,7 @@ function render() {
   $("completed").innerHTML = `${count}<span>/22</span>`;
   $("mode").textContent = isSim() ? "SIMULATION · NO HARDWARE" : "HARDWARE MODE";
   $("mode").className = `badge ${isSim() ? "" : "hardware"}`;
-  $("connection").textContent = online ? (owns ? (s.connected ? "Follower connected" : "Local app ready") : "Read-only window") : "Local app unavailable";
+  $("connection").textContent = online ? (owns ? (s.connected ? (s.leader?.connected ? "Leader + follower connected" : "Follower connected") : "Local app ready") : "Read-only window") : "Local app unavailable";
   $("connection-warning").hidden = online && owns;
   $("connection-warning").textContent = !online ? "Connection to the local Python app was lost. Controls are disabled. If a physical arm is active, support it and use the power stop if needed." : "Another browser owns operator control. This window shows status only.";
   const section = p === "disconnected" ? "connect" : p.startsWith("calibration") || (!s.calibrated && ["connected", "fault"].includes(p)) ? "calibration" : "notes";
@@ -232,11 +269,20 @@ function render() {
   }
   // Clicking a key selects a label only; torque release always needs the supported action.
   $("keyboard-hint").textContent = ["ready", "connected"].includes(p) && s.calibrated ? "Select a key, chord button, or dial direction. Support the arm, then choose Teach below." : "12 keys · 8 chord buttons · 2 voicing directions. Each motion is taught and verified separately.";
-  window.OrchidPanels.update(s, online);
+  const leaderView = s.calibrating && s.calibration_target === "leader";
+  $("arm-guide-title").textContent = leaderView ? "SO101 · leader motor guide" : "SO101 · follower guide";
+  // Separate display identities prevent a stale leader pose being shown as the follower after a fault.
+  window.OrchidPanels.update({...s,...(leaderView ? s.leader : {}),instance_id:`${s.instance_id}:${leaderView ? "leader" : "follower"}`}, online);
+  if ($("leader-status")) {
+    const l = s.leader, freshLeader = online && l.feedback_at && Date.now()/1000-l.feedback_at < 1.5 && p !== "fault";
+    $("leader-status").textContent = s.leader_following ? "FOLLOWING" : s.leader_teaching ? "PAUSED · HOLDING" : "INPUT IDLE";
+    $("leader-torque").textContent = freshLeader && Object.values(l.torque || {}).length === 6 && Object.values(l.torque).every(v=>v===0) ? "6 / 6 TORQUE OFF" : "TORQUE UNVERIFIED";
+    $("leader-feedback-status").textContent = s.leader_limited ? "Input speed limited. Move the leader more slowly." : !freshLeader ? "Leader feedback unavailable or paused during verification." : s.leader_following ? "Live input · leaving this page pauses following within 1.2 seconds." : "Following is disengaged. Repositioning the leader does not move the follower.";
+  }
   const fresh = online && s.connected && s.feedback_at && Date.now()/1000 - s.feedback_at < 1.5 && p !== "fault";
   const flags = fresh ? Object.values(s.torque || {}) : [];
   const off = flags.length === 6 && flags.every(v => v === 0), on = flags.length === 6 && flags.every(v => v === 1);
-  $("torque-summary").textContent = off ? "6 / 6 TORQUE OFF" : on ? (p === "testing" ? "TORQUE ON · MOVING" : "TORQUE ON · HOLD") : "UNVERIFIED";
+  $("torque-summary").textContent = off ? "6 / 6 TORQUE OFF" : on ? (s.leader_following ? "TORQUE ON · FOLLOWING" : p === "testing" ? "TORQUE ON · MOVING" : "TORQUE ON · HOLD") : "UNVERIFIED";
   $("torque-summary").className = `badge ${on ? "powered" : "neutral"}`;
   $("feedback-age").textContent = s.feedback_at ? `Last read ${Math.max(0, (Date.now()/1000 - s.feedback_at)).toFixed(1)}s ago · raw ticks` : "No current motor feedback";
   $("voltage").textContent = s.voltage ? `${s.voltage.toFixed(1)} V` : "—";
@@ -266,15 +312,25 @@ function updateButtons() {
     if (b.dataset.recovery) valid = confirmed($("recovery-supported"));
     if (b.dataset.calibration) {
       valid = calibrationPhases.includes(state.phase) && confirmed(scope.querySelector('[data-confirm="supported"]'));
-      if (b.dataset.action === "calibration_reload") valid = valid && !!state.calibration && confirmed(scope.querySelector('[data-confirm="calibration_unchanged"]'));
+      if (b.dataset.action === "calibration_reload") valid = valid && !!(state.calibration_target === "leader" ? state.leader?.calibration : state.calibration) && confirmed(scope.querySelector('[data-confirm="calibration_unchanged"]'));
     }
     if (["simulate_sweep", "fail", "refresh_ports"].includes(b.dataset.action)) valid = true;
     if (b.dataset.action === "connect") valid = valid && state.discovery?.ports.some(p => p.path === $("port")?.value && p.connectable);
+    if (b.dataset.action === "connect" && $("teaching-mode")?.value === "leader") valid = valid && state.discovery?.ports.some(p => p.path === $("leader-port")?.value && p.leader_connectable);
+    if (b.dataset.action === "leader_pause") valid = !!state.leader_following;
+    if (b.dataset.action === "leader_resume") valid = valid && state.leader_teaching && !state.leader_following;
+    if (b.dataset.action === "simulate_leader") valid = isSim() && state.leader_teaching && !state.simulated_leader_input;
+    if (leaderMode() && (b.dataset.action.startsWith("capture_") || b.dataset.action.startsWith("dial_capture_"))) valid = valid && state.leader_teaching && !state.leader_following;
     if (b.dataset.diagnostics) valid = state.connected && ["connected", "ready"].includes(state.phase) && Object.values(state.torque || {}).length === 6 && Object.values(state.torque).every(v => v === 0);
     if (b.dataset.action === "calibration_next") { const range = state.ranges[state.range_motor]; valid = valid && range && range.max - range.min > 32; }
     b.disabled = blocked || !valid;
   });
   if ($("port")) $("port").disabled = blocked || !state.discovery?.ports.some(p => p.connectable);
+  if ($("teaching-mode")) {
+    $("teaching-mode").disabled = blocked;
+    $("leader-port-field").hidden = $("teaching-mode").value !== "leader";
+    $("leader-port").disabled = blocked || !state.discovery?.ports.some(p=>p.leader_connectable);
+  }
   if ($("refresh-ports")) $("refresh-ports").textContent = state.discovery?.scanning ? "Scanning…" : "↻ Refresh connections";
   document.querySelectorAll("[data-note]").forEach(b => b.disabled = blocked || !state.calibrated || !["ready", "connected"].includes(state.phase));
   $("stop").disabled = !online || !owns || !state?.connected;
@@ -293,13 +349,16 @@ function dispatchButton(b) {
   const scope = actionScope(b);
   if (!b.dataset.diagnostics) scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = confirmed(c));
   if (b.dataset.recovery) args.supported = confirmed($("recovery-supported"));
-  if (action === "connect") { args.fixture = $("fixture").value; args.port = $("port").value; args.tool = $("contact-tool").value; }
+  if (action === "connect") { args.fixture = $("fixture").value; args.port = $("port").value; args.tool = $("contact-tool").value; args.teaching_mode = $("teaching-mode").value; args.leader_port = $("leader-port").value; }
+  if (action === "calibrate") args.target = b.dataset.target || "follower";
+  if (["calibration_reset","calibration_reload"].includes(action)) args.target = state.calibration_target || "follower";
+  if (action === "simulate_leader") { args.motor = $("leader-sim-joint").value; args.delta = Number(b.dataset.delta); }
   if (action === "control_start") args.control = b.dataset.control;
   if (action === "dial_capture_start") { args.reference = $("dial-reference").value; args.expected_effect = $("dial-effect").value; }
   // Consent is for this attempt only, including canceled countdowns and errors.
   if (!b.dataset.diagnostics && action !== "refresh_ports") clearConfirmations(scope);
   const revision = state.revision;
-  const delayed = ["calibrate","calibration_reset","calibration_reload","calibration_center","control_start","dial_capture_start","dial_capture_contact","dial_capture_turn","dial_capture_lift","dial_capture_return","capture_pressed","capture_touch","capture_clear","next","release","disconnect","retry"].includes(action);
+  const delayed = ["leader_hold","calibrate","calibration_reset","calibration_reload","calibration_center","control_start","dial_capture_start","dial_capture_contact","dial_capture_turn","dial_capture_lift","dial_capture_return","capture_pressed","capture_touch","capture_clear","next","release","disconnect","retry"].includes(action);
   if ($("delay").checked && delayed) {
     let left = 5;
     const title = b.textContent;
@@ -324,13 +383,20 @@ document.addEventListener("click", event => {
   else if (b.dataset.note) { selectedNote = b.dataset.note; render(); }
 });
 document.addEventListener("change", updateButtons);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    cancelCountdown(); clearConfirmations();
+    if (online && owns && token) request("/api/heartbeat", {leader_visible:false}).catch(()=>{});
+    updateButtons();
+  }
+});
 document.addEventListener("keydown", event => { if (event.key === "Escape") { cancelCountdown(); if (!$("stop").disabled) $("stop").click(); updateButtons(); } });
 async function poll() {
   try {
     const session = await request("/api/session");
     if (instance && instance !== session.state.instance_id) { cancelCountdown(); selectedNote = null; }
     instance = session.state.instance_id; token = session.token; state = session.state; online = state.worker_alive !== false;
-    try { await request("/api/heartbeat", {}); owns = true; }
+    try { await request("/api/heartbeat", {leader_visible:!document.hidden}); owns = true; }
     catch { owns = false; cancelCountdown(); clearConfirmations(); }
     if (firstLoad) { $("delay").checked = !isSim(); firstLoad = false; }
     render();

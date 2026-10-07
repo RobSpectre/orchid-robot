@@ -21,18 +21,23 @@ function consoleHarness() {
   const unchanged = button('unchanged', {confirm:'calibration_unchanged'});
   const reset = button('reset', {action:'calibration_reset', calibration:'true'});
   const reload = button('reload', {action:'calibration_reload', calibration:'true'});
+  const leaderClear = button('leader-clear', {confirm:'hands_clear'});
+  const resume = button('resume', {action:'leader_resume', leader:'true'});
+  const pause = button('pause', {action:'leader_pause', leader:'true'});
+  const capture = button('capture', {action:'capture_pressed'});
   Object.assign(elements, {
     'workflow':{querySelectorAll:()=>[consent, optional]},
     'recovery':{querySelectorAll:()=>[recovery]},
     'calibration-tools':{querySelectorAll:()=>[calibrationSupport,unchanged],
       querySelector:s=>s.includes('calibration_unchanged') ? unchanged : calibrationSupport},
+    'leader-teaching':{querySelectorAll:()=>[leaderClear]},
     'recovery-supported':recovery, 'stop':button('stop'),
     'delay':{checked:false}, 'speech':{checked:false}, 'countdown':{}, 'error':{}
   });
   const document = {
     getElementById:id=>elements[id], addEventListener:(event,fn)=>listeners[event]=fn,
-    querySelectorAll:selector=>selector === '[data-action]' ? [action,disconnect,reset,reload]
-      : selector === '[data-confirm]' ? [consent,optional,recovery,calibrationSupport,unchanged] : []
+    querySelectorAll:selector=>selector === '[data-action]' ? [action,disconnect,reset,reload,resume,pause,capture]
+      : selector === '[data-confirm]' ? [consent,optional,recovery,calibrationSupport,unchanged,leaderClear] : []
   };
   let fail = false;
   const context = vm.createContext({document, crypto:webcrypto, AbortSignal,
@@ -47,7 +52,7 @@ function consoleHarness() {
   vm.runInContext(readFileSync('orchid_demo/static/app.js','utf8'),context);
   vm.runInContext(`state={phase:'connected',connected:true,calibrated:false,worker_alive:true,revision:1,pending:false};
     token='test-token';online=true;owns=true;updateButtons();`,context);
-  return {consent,optional,recovery,action,disconnect,calibrationSupport,unchanged,reset,reload,elements,commands,context,
+  return {consent,optional,recovery,action,disconnect,calibrationSupport,unchanged,reset,reload,leaderClear,resume,pause,capture,elements,commands,context,listeners,
     fail:()=>{fail=true;}, click:b=>listeners.click({target:b})};
 }
 
@@ -155,4 +160,31 @@ test('reset and reload cannot run during holds and honor a canceled support coun
   ui.click({id:'cancel-countdown',closest(){return this;}});
   assert.equal(ui.reload.disabled,true);
   assert.equal(ui.calibrationSupport.disabled,false);
+});
+
+test('leader capture requires a paused hold and following needs its own hands-clear confirmation',()=>{
+  const ui=consoleHarness();
+  vm.runInContext('state.teaching_mode="leader";state.phase="note_ready";updateButtons();',ui.context);
+  ui.click(ui.consent);
+  assert.equal(ui.capture.disabled,true);
+  assert.equal(ui.resume.disabled,true);
+  vm.runInContext('state.leader_teaching=true;state.leader_following=false;updateButtons();',ui.context);
+  assert.equal(ui.capture.disabled,false);
+  assert.equal(ui.resume.disabled,true);
+  ui.click(ui.leaderClear);
+  assert.equal(ui.resume.disabled,false);
+  vm.runInContext('state.leader_following=true;updateButtons();',ui.context);
+  assert.equal(ui.capture.disabled,true);
+  assert.equal(ui.resume.disabled,true);
+  assert.equal(ui.pause.disabled,false);
+});
+
+test('hidden page clears consent and immediately revokes visible following permission',async()=>{
+  const ui=consoleHarness();
+  ui.click(ui.leaderClear);
+  vm.runInContext('document.hidden=true;',ui.context);
+  ui.listeners.visibilitychange();
+  await new Promise(setImmediate);
+  assert.equal(ui.leaderClear.getAttribute('aria-pressed'),'false');
+  assert.equal(ui.commands[0].leader_visible,false);
 });

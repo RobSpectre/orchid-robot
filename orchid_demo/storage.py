@@ -81,6 +81,7 @@ class Repository:
     def export(self):
         return {"schema_version": 2, "application": "orchid-demo", "mode": self.mode,
                 "exported_at": stamp(), "calibration": self.get("calibration"),
+                "leader_calibration": self.get("leader_calibration"),
                 "fixture": self.get("fixture"), "keys": self.notes(), "controls": self.controls(),
                 "events": self.events(1000)}
 

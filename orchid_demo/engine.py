@@ -12,8 +12,9 @@ import uuid
 from . import motion as m
 from . import dial
 from .controls import CATALOG, group_members
-from .devices import HardwareArm, SimulatedArm, validate_calibration
-from .discovery import discover_arms, follower_problem
+from .devices import HardwareArm, HardwareLeader, SimulatedArm, validate_calibration
+from .discovery import discover_arms, follower_problem, leader_problem
+from .leader import LeaderController, TEACH_PHASES, FOLLOW_LEASE
 from .storage import Repository
 from .telemetry import motor_status, pose_angles
 
@@ -47,18 +48,30 @@ class GuardedController(m.Controller):
 
 class Engine:
     def __init__(self, directory: Path, mode="simulation", *, clock=time.monotonic, sleep=time.sleep,
-                 hardware_factory=HardwareArm, port_scanner=discover_arms):
+                 hardware_factory=HardwareArm, leader_factory=HardwareLeader, port_scanner=discover_arms):
         m.require(mode in ("simulation", "hardware"), "Unknown operating mode")
         self.mode, self.clock, self.sleep = mode, clock, sleep
         self.hardware_factory = hardware_factory
+        self.leader_factory = leader_factory
         self.port_scanner = port_scanner
         self.discovery = {"ports": [], "scanned_at": None, "scanning": False, "warnings": [], "error": None}
         if mode == "simulation":
             self.discovery["ports"] = [{"path": "simulator", "description": "Practice arm · no hardware",
                                         "role": "simulator", "motor_ids": list(range(1, 7)), "voltage": 12.0,
-                                        "connectable": True, "problem": None}]
+                                        "connectable": True, "leader_connectable": False, "problem": None},
+                                       {"path": "simulator-leader", "description": "Practice leader", "role": "leader",
+                                        "motor_ids": list(range(1, 7)), "voltage": 5.2,
+                                        "connectable": False, "leader_connectable": True, "problem": "Leader input"}]
         self.repo = Repository(directory, mode)
         self.calibration = self.repo.get("calibration")
+        self.leader_calibration = self.repo.get("leader_calibration")
+        self.leader = None
+        self.leader_calibrated = False
+        self.leader_current = self.leader_torque = self.leader_feedback_at = None
+        self.teaching_mode = "manual"
+        self.calibration_target = "follower"
+        self.leader_visible_until = 0.0
+        self.simulated_leader_input = None
         self.fixture = self.repo.get("fixture", {"label": "Orchid demo", "id": ""})
         self.notes = self.repo.notes()
         self.controls = self.repo.controls()
@@ -141,6 +154,8 @@ class Engine:
         self.events = self.repo.events()
 
     def ready_message(self):
+        if self.teaching_mode == "leader":
+            return "Torque OFF. Position the follower just clear of the selected control, support it, then establish a hold for leader teaching."
         if self.is_dial:
             return "Torque OFF. Start just clear of the large voicing dial; teach a small turn, lift-off, and clear return."
         if self.control["kind"] == "button":
@@ -149,12 +164,15 @@ class Engine:
 
     def publish(self):
         with self.lock:
-            reference_ready = self.calibrated or (self.calibrating and self.offsets is not None
+            reference_ready = self.calibrated or (self.calibrating and self.calibration_target == "follower" and self.offsets is not None
                                                    and self.phase != "calibration_midpoint")
+            leader_recording = self.calibrating and self.calibration_target == "leader"
+            leader_reference = self.leader_calibrated or (leader_recording and self.offsets is not None)
             target = (self.controller.previous if self.controller and self.controller.enabled
                       and self.phase != "fault" else None)
             self.export_data = {"schema_version": 2, "application": "orchid-demo", "mode": self.mode,
                                 "units": m.UNITS, "exported_at": m.stamp(), "calibration": deepcopy(self.calibration),
+                                "leader_calibration": deepcopy(self.leader_calibration),
                                 "fixture": deepcopy(self.fixture), "keys": deepcopy(self.notes),
                                 "controls": deepcopy(self.controls), "events": deepcopy(self.events)}
             self.public = {
@@ -162,13 +180,28 @@ class Engine:
                 "phase": self.phase, "message": self.message, "error": self.error,
                 "connected": self.arm is not None, "calibrated": self.calibrated,
                 "calibrating": self.calibrating,
+                "calibration_target": self.calibration_target,
+                "teaching_mode": self.teaching_mode,
+                "leader": {"connected": self.leader is not None, "calibrated": self.leader_calibrated,
+                           "position": deepcopy(self.leader_current), "torque": deepcopy(self.leader_torque),
+                           "feedback_at": self.leader_feedback_at, "voltage": self.leader.voltage if self.leader else None,
+                           "calibration": deepcopy(self.leader_calibration),
+                           "calibration_id": m.fingerprint(self.leader_calibration)[:12] if self.leader_calibration else None,
+                           "pose_reference_ready": leader_reference,
+                           "pose_angles": pose_angles(self.leader_current, self.leader_calibration if self.leader_calibrated else None, leader_reference),
+                           "motor_status": motor_status(self.leader_current, self.leader_torque, self.leader_calibration, self.ranges,
+                                                        reference_ready=leader_reference, recording=leader_recording)},
+                "leader_teaching": isinstance(self.controller, LeaderController) and self.controller.enabled,
+                "leader_following": isinstance(self.controller, LeaderController) and self.controller.engaged,
+                "leader_limited": isinstance(self.controller, LeaderController) and self.controller.limited,
+                "simulated_leader_input": self.simulated_leader_input is not None,
                 "calibration_id": m.fingerprint(self.calibration)[:12] if self.calibration else None,
                 "discovery": deepcopy(self.discovery),
                 "fixture": deepcopy(self.fixture), "selected": self.selected,
                 "position": deepcopy(self.current), "torque": deepcopy(self.torque),
                 "feedback_at": self.feedback_at, "heartbeat": time.time(),
                 "motor_status": motor_status(self.current, self.torque, self.calibration, self.ranges,
-                                             reference_ready=reference_ready, recording=self.calibrating,
+                                             reference_ready=reference_ready, recording=self.calibrating and not leader_recording,
                                              target=target, diagnostics=self.diagnostics),
                 "pose_angles": pose_angles(self.current, self.calibration if self.calibrated else None, reference_ready),
                 "pose_reference_ready": reference_ready,
@@ -200,7 +233,7 @@ class Engine:
         with self.lock:
             return deepcopy(self.export_data)
 
-    def heartbeat(self, owner):
+    def heartbeat(self, owner, *, leader_visible=True):
         with self.lock:
             now = time.monotonic()
             m.require(self.owner in (None, owner) or self.lease_until <= now,
@@ -210,6 +243,7 @@ class Engine:
                 self.stop_event.set()
             self.owner = owner
             self.lease_until = now + LEASE_SECONDS
+            self.leader_visible_until = now + FOLLOW_LEASE if leader_visible else 0.0
 
     def submit(self, owner, command_id, action, revision, args):
         with self.lock:
@@ -249,13 +283,21 @@ class Engine:
         m.require(self.phase in phases, "That action is not available at this step.")
 
     def stable(self, enforce_limits=True):
+        if isinstance(self.controller, LeaderController) and self.controller.enabled:
+            m.require(not self.controller.engaged, "Pause following before capturing a waypoint.")
+            samples = []
+            for _ in range(7):
+                samples.append(self.controller.tick(stage="leader_capture_hold"))
+            m.require(all(max(p[n] for p in samples) - min(p[n] for p in samples) <= 2 for n in m.MOTORS),
+                      "Follower did not settle within the capture window. Keep following paused and retry.")
+            return samples[-1]
         samples = []
         for _ in range(7):
             self.guard()
             self.sample()
             if enforce_limits:
                 self.arm.check_pose(self.current)
-            samples.append(dict(self.current))
+            samples.append(dict(self.leader_current if self.calibrating and self.calibration_target == "leader" else self.current))
             self.sleep(0.1)
         spread = {n: max(p[n] for p in samples) - min(p[n] for p in samples) for n in m.MOTORS}
         unsettled = [f"{n}: {span} ticks" for n, span in spread.items() if span > 2]
@@ -264,7 +306,7 @@ class Engine:
         return samples[-1]
 
     def simulate_pose(self, label):
-        if self.mode != "simulation":
+        if self.mode != "simulation" or self.teaching_mode == "leader":
             return
         self.arm.require_torque(False)
         target = dict.fromkeys(m.MOTORS, 2047)
@@ -287,6 +329,8 @@ class Engine:
 
     def sample(self):
         start = self.clock()
+        if self.leader:
+            self.sample_leader()
         previous = self.current
         torque = self.arm.torque_status()
         current = self.arm.read_raw()
@@ -302,9 +346,10 @@ class Engine:
         self.last_read, self.feedback_at = now, time.time()
         if self.phase == "calibration_range":
             motor = RANGE_MOTORS[self.range_index]
-            span = self.ranges.setdefault(motor, {"min": current[motor], "max": current[motor]})
-            span["min"] = min(span["min"], current[motor])
-            span["max"] = max(span["max"], current[motor])
+            reading = self.leader_current if self.calibration_target == "leader" else current
+            span = self.ranges.setdefault(motor, {"min": reading[motor], "max": reading[motor]})
+            span["min"] = min(span["min"], reading[motor])
+            span["max"] = max(span["max"], reading[motor])
         if recording:
             self.arm.check_pose(current)
             m.append_capture(self.capture, current, previous_observation=previous)
@@ -313,6 +358,39 @@ class Engine:
                 dial.validate({**self.capture, "path": self.capture["path"] + [current]})
         self.publish()
 
+    def sample_leader(self):
+        start = self.clock()
+        torque = self.leader.torque_status()
+        current = self.leader.read_raw()
+        if self.phase != "connected":
+            m.require(all(v == 0 for v in torque.values()), "Leader must stay torque off.")
+        m.require(self.clock() - start <= m.MAX_IO_TIME, "Leader feedback is stale.")
+        self.leader_current, self.leader_torque = current, torque
+        self.leader_feedback_at = time.time()
+
+    def leader_feedback(self, current):
+        self.leader_current = dict(current)
+        self.leader_torque = dict.fromkeys(m.MOTORS, 0)
+        self.leader_feedback_at = time.time()
+
+    def record_leader_sample(self, current):
+        if self.capture and self.phase in TEACH_PHASES:
+            m.append_capture(self.capture, current, previous_observation=self.current)
+            self.validate_leader_target(current)
+
+    def validate_leader_target(self, target):
+        if not self.capture:
+            return
+        # Include the last measured sample when decimation skipped it. Validate
+        # the proposed target before sending, then save only measured samples.
+        candidate = {**self.capture, "path": self.capture["path"] + [self.current, target]}
+        m.validate_entry(candidate)
+        if self.is_dial:
+            dial.validate(candidate)
+        elif self.phase == "note_pressed":
+            m.require(m.distance(self.capture["path"][0], target) <= m.MAX_CONTACT_EXCURSION,
+                      "Leader contact stroke exceeds the local press limit. Re-teach a smaller stroke.")
+
     def feedback(self, current, stage):
         self.current, self.stage = current, stage
         self.torque = dict.fromkeys(m.MOTORS, 1)
@@ -320,6 +398,7 @@ class Engine:
         self.publish()
 
     def reset_note(self):
+        self.simulated_leader_input = None
         self.capture = self.draft = self.controller = None
         self.touch_index = None
         self.trials = 0
@@ -334,22 +413,51 @@ class Engine:
         self.ranges, self.range_index = {}, 0
         # A reference change invalidates the previous encoder/3D sample.
         self.current = self.feedback_at = self.last_read = None
+        self.leader_current = self.leader_feedback_at = None
+
+    @property
+    def calibration_arm(self):
+        return self.leader if self.calibration_target == "leader" else self.arm
+
+    @property
+    def saved_calibration(self):
+        return self.leader_calibration if self.calibration_target == "leader" else self.calibration
+
+    def mark_calibrated(self, value):
+        if self.calibration_target == "leader":
+            self.leader_calibrated = value
+        else:
+            self.calibrated = value
 
     def begin_calibration(self):
-        backup = self.arm.begin_calibration()
+        backup = self.calibration_arm.begin_calibration()
         self.calibrating = True
-        self.repo.put("calibration_backup", {"at": m.stamp(), "hardware": backup, "saved": self.calibration})
+        prefix = "leader_" if self.calibration_target == "leader" else ""
+        self.repo.put(prefix + "calibration_backup", {"at": m.stamp(), "hardware": backup, "saved": self.saved_calibration})
 
     def establish_hold(self, draft, planned):
         self.repo.put("draft", {"key": self.selected, "entry": draft})
         self.draft = draft
+        previous = self.controller
+        if isinstance(previous, LeaderController):
+            m.require(not previous.engaged, "Pause following before switching to a test hold.")
+            current = previous.tick(stage="leader_handover")
+            previous.inside(current)
+            if self.log:
+                self.log.close()
         self.log = (self.repo.directory / f"trial-{uuid.uuid4().hex}.jsonl").open("x")
         self.controller = GuardedController(self.arm, planned, self.log, clock=self.clock, sleep=self.sleep,
                                             guard=self.guard, feedback=self.feedback)
         self.transition("arming", "Keep supporting while the motors establish a hold at this captured position.")
         try:
             self.guard()
-            self.controller.arm_here()
+            if isinstance(previous, LeaderController):
+                self.controller.enabled = True  # Already powered; never release/re-enable during handover.
+                self.controller.check_start(current)
+                self.controller.previous = dict(previous.previous)
+                previous.enabled = False
+            else:
+                self.controller.arm_here()
             self.controller.tick(self.controller.previous, "hold_verified")
         except Exception as exc:
             self.fault(exc)
@@ -361,9 +469,9 @@ class Engine:
         if self.controller:
             self.controller.stop()
         if self.calibrating:
-            self.calibrated = False
+            self.mark_calibrated(False)
             try:
-                self.arm.abort_calibration()
+                self.calibration_arm.abort_calibration()
                 self.calibrating = False
             except Exception as restore_error:
                 message += f" Calibration restoration unverified: {restore_error}"
@@ -374,11 +482,17 @@ class Engine:
                         if self.arm is not None else "Stopped before connecting. Choose a follower to start again.")
         self.torque = None
         self.feedback_at = None
+        self.leader_feedback_at = None
         self.stop_event.clear()
         self.event("fault", message)
         self.publish()
 
     def dispatch(self, action, args):
+        if self.teaching_mode == "leader" and action in ("capture_pressed", "capture_touch", "capture_clear",
+                "dial_capture_start", "dial_capture_contact", "dial_capture_turn", "dial_capture_lift", "dial_capture_return"):
+            m.require(isinstance(self.controller, LeaderController) and self.controller.enabled,
+                      "Establish a follower hold for leader teaching first.")
+            m.require(not self.controller.engaged, "Pause following before capturing a waypoint.")
         if action == "refresh_ports":
             self.require_phase("disconnected")
             m.require(self.arm is None, "Disconnect the follower before scanning USB ports.")
@@ -391,7 +505,8 @@ class Engine:
                 self.guard()
                 self.discovery["ports"] = [
                     {**arm, "path": arm["port"], "description": arm["role"] or "Unidentified arm",
-                     "connectable": follower_problem(arm) is None, "problem": follower_problem(arm)}
+                     "connectable": follower_problem(arm) is None, "problem": follower_problem(arm),
+                     "leader_connectable": leader_problem(arm) is None, "leader_problem": leader_problem(arm)}
                     for arm in result["arms"]
                 ]
                 self.discovery["warnings"] = result["warnings"]
@@ -407,6 +522,12 @@ class Engine:
         elif action == "connect":
             self.require_phase("disconnected")
             m.require(args.get("prepared") is True, "Confirm the pad, mounting, clear workspace, and accessible power stop.")
+            teaching_mode = args.get("teaching_mode", "manual")
+            m.require(teaching_mode in ("manual", "leader"), "Choose manual or leader teaching.")
+            if teaching_mode == "leader" and self.mode == "hardware":
+                leader_port = args.get("leader_port")
+                m.require(leader_port != args.get("port") and any(p["path"] == leader_port and p.get("leader_connectable") for p in self.discovery["ports"]),
+                          "Select a separate detected leader with motor IDs 1–6 and low-voltage power.")
             label = str(args.get("fixture", "")).strip()
             m.require(1 <= len(label) <= 120, "Give this fixture a short placement name.")
             tool = args.get("tool", self.fixture.get("tool", "padded_gripper"))
@@ -425,11 +546,24 @@ class Engine:
             try:
                 candidate.open()
                 self.arm = candidate
+                if teaching_mode == "leader":
+                    self.leader = (self.leader_factory(leader_port, self.leader_calibration) if self.mode == "hardware"
+                                   else SimulatedArm(self.leader_calibration))
+                    if self.mode == "simulation":
+                        self.leader.voltage = 5.2
+                    self.leader.open()
+                    self.leader_calibrated = bool(self.leader_calibration) and getattr(self.leader, "calibration_matches", True)
+                self.teaching_mode = teaching_mode
+                self.calibration_target = "follower"
                 self.diagnostics = self.diagnostics_error = None
                 self.calibrated = bool(self.calibration) and getattr(candidate, "calibration_matches", True)
                 self.transition("connected", "Follower connected. Check motor state, then calibrate or register notes.")
                 self.sample()
             except Exception:
+                if self.leader:
+                    self.leader.close()
+                    self.leader = None
+                    self.leader_calibrated = False
                 candidate.close()
                 self.arm = None
                 self.calibrated = False
@@ -449,26 +583,33 @@ class Engine:
         elif action in ("calibrate", "calibration_reset", "calibration_reload"):
             self.require_phase(*(("connected", "ready") if action == "calibrate" else CALIBRATION_SETUP_PHASES))
             self.supported(args)
+            target = args.get("target", self.calibration_target if action != "calibrate" else "follower")
+            m.require(target in ("leader", "follower") and (target != "leader" or self.leader is not None), "Connect the requested arm first.")
+            m.require(not self.calibrating or target == self.calibration_target, "Finish or release the current arm's calibration first.")
+            self.calibration_target = target
             reload_saved = action == "calibration_reload"
             if reload_saved:
                 # Validate before releasing torque or discarding an active sweep.
-                validate_calibration(self.calibration)
+                validate_calibration(self.saved_calibration)
                 m.require(args.get("calibration_unchanged") is True,
                           "Confirm this is the same arm and no motors or joints have been replaced or reseated since saving.")
             self.guard()
             self.actuating = True
             self.arm.release()
-            self.calibrated = False
+            if self.leader:
+                self.leader.release()
+            self.mark_calibrated(False)
             if self.calibrating:
-                self.arm.abort_calibration()
+                self.calibration_arm.abort_calibration()
                 self.calibrating = False
             self.reset_note()
             self.clear_calibration_capture()
             self.guard()
             self.begin_calibration()
             if reload_saved:
-                self.arm.commit_calibration(self.calibration, guard=self.guard)
-                self.calibrated, self.calibrating = True, False
+                self.calibration_arm.commit_calibration(self.saved_calibration, guard=self.guard)
+                self.mark_calibrated(True)
+                self.calibrating = False
                 self.event("calibration_reloaded", "Saved calibration reloaded and verified on all six motors; torque remains off.")
                 self.transition("ready", "Saved calibration is active. Registered motions retain their original fixture and calibration checks.")
             else:
@@ -481,7 +622,7 @@ class Engine:
             self.stable(enforce_limits=False)
             self.guard()
             self.actuating = True
-            self.offsets = self.arm.center(guard=self.guard, sleep=self.sleep)
+            self.offsets = self.calibration_arm.center(guard=self.guard, sleep=self.sleep)
             self.ranges, self.range_index = {}, 0
             self.transition("calibration_range", "Slowly move the base rotation through its usable travel in both directions. Do not force the stops.")
             self.sample()
@@ -491,7 +632,7 @@ class Engine:
             motor = RANGE_MOTORS[self.range_index]
             for value in (2047, 1800, 1400, 1000, 1400, 2047, 2600, 3100, 2047):
                 self.guard()
-                self.arm.current[motor] = value
+                self.calibration_arm.current[motor] = value
                 self.sample()
                 self.sleep(0.12)
         elif action == "calibration_next":
@@ -519,26 +660,75 @@ class Engine:
                              "range_min": span["min"], "range_max": span["max"]}
             self.guard()
             self.actuating = True
-            self.arm.commit_calibration(new, guard=self.guard)
-            self.repo.put("calibration", new)
-            self.calibration, self.calibrated, self.calibrating = new, True, False
+            self.calibration_arm.commit_calibration(new, guard=self.guard)
+            self.repo.put("leader_calibration" if self.calibration_target == "leader" else "calibration", new)
+            if self.calibration_target == "leader":
+                self.leader_calibration = new
+            else:
+                self.calibration = new
+            self.mark_calibrated(True)
+            self.calibrating = False
             self.event("calibration_saved", "All six motors calibrated; torque remains off.", new)
             self.transition("ready", "Calibration verified. Fix the padded gripper opening and begin with C.")
         elif action in ("note_start", "control_start"):
             self.require_phase("connected", "ready", "saved")
             self.supported(args)
             m.require(self.calibrated, "Complete motor calibration first.")
+            m.require(self.teaching_mode != "leader" or self.leader_calibrated, "Calibrate the leader before teaching.")
             selected = args.get("control", args.get("key", self.selected))
             m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
             if action == "note_start":
                 m.require(selected in m.KEYS, "Choose one of the twelve notes.")
             self.actuating = True
             self.arm.release()
+            if self.leader:
+                self.leader.release()
             if self.controller:
                 self.controller.enabled = False
             self.reset_note()
             self.selected = selected
             self.transition("dial_ready" if self.is_dial else "note_ready", self.ready_message())
+        elif action == "leader_hold":
+            self.require_phase("note_ready", "dial_ready")
+            self.supported(args)
+            m.require(self.teaching_mode == "leader" and self.leader and self.leader_calibrated and self.calibrated,
+                      "Connect and calibrate both arms first.")
+            m.require(self.controller is None, "A hold is already active.")
+            self.arm.require_torque(False)
+            self.leader.require_torque(False)
+            current = self.stable()
+            self.log = (self.repo.directory / f"leader-{uuid.uuid4().hex}.jsonl").open("x")
+            self.controller = LeaderController(self.arm, self.leader, current, self.log, guard=self.guard,
+                                               permission=lambda: time.monotonic() < self.leader_visible_until,
+                                               observe=self.record_leader_sample, leader_feedback=self.leader_feedback,
+                                               validate_target=self.validate_leader_target, feedback=self.feedback,
+                                               clock=self.clock, sleep=self.sleep)
+            self.actuating = True
+            self.controller.arm_here()
+            self.transition(self.phase, "Follower holding its current pose. Clear hands from the follower, then engage leader following.")
+        elif action in ("leader_resume", "leader_pause"):
+            self.require_phase(*TEACH_PHASES)
+            m.require(isinstance(self.controller, LeaderController) and self.controller.enabled, "Establish the supported follower hold first.")
+            if action == "leader_resume":
+                m.require(args.get("hands_clear") is True, "Confirm hands are clear of the follower and its path.")
+                m.require(not self.controller.engaged, "Following is already engaged.")
+            self.actuating = True
+            if action == "leader_resume":
+                self.controller.resume()
+            else:
+                self.controller.pause()
+            self.transition(self.phase, "Following leader at quarter scale; gripper fixed. Pause before capture." if self.controller.engaged
+                            else "Following paused. Follower holds here; reposition the leader or capture the waypoint.")
+        elif action == "simulate_leader":
+            self.require_phase(*TEACH_PHASES)
+            m.require(self.mode == "simulation" and isinstance(self.controller, LeaderController), "Simulation-only leader input.")
+            m.require(self.simulated_leader_input is None, "The simulated hand movement is still in progress.")
+            name, delta = args.get("motor"), args.get("delta")
+            m.require(name in m.MOTORS and type(delta) is int and 0 < abs(delta) <= 96, "Choose a small simulated leader input.")
+            value = self.leader.current[name] + delta
+            m.require(0 <= value <= 4095, "Simulated leader is outside its encoder range.")
+            # Human input unfolds over multiple worker ticks; no blocking motion command.
+            self.simulated_leader_input = (name, delta)
         elif action == "dial_capture_start":
             self.require_phase("dial_ready")
             settings = {field: str(args.get(field, "")).strip() for field in ("reference", "expected_effect")}
@@ -576,13 +766,18 @@ class Engine:
             self.transition(following, message)
         elif action == "dial_capture_return":
             self.require_phase("dial_lifted")
-            self.supported(args)
+            if self.teaching_mode == "leader":
+                m.require(args.get("hands_clear") is True, "Keep hands clear of the powered follower.")
+            else:
+                self.supported(args)
             m.require(args.get("rim_clear") is True, "Confirm the entire return path stayed clear of the dial.")
             self.simulate_pose("dial_start")
             current = self.stable()
             m.append_capture(self.capture, current, force=True)
             draft = {**self.capture, "complete": True, "mode": self.mode, "fixture_id": self.fixture["id"],
                      "control_id": self.selected, "teaching_mode": "web_dial_forward_loop"}
+            if self.teaching_mode == "leader":
+                draft["teaching_mode"] = "web_leader_dial_forward_loop"
             self.establish_hold(draft, dial.plan(draft))
         elif action == "capture_pressed":
             self.require_phase("note_ready")
@@ -601,7 +796,10 @@ class Engine:
             self.transition("note_touch", "Contact captured. Lift to a small visible clearance. Keep supporting; the next capture enables a hold.")
         elif action == "capture_clear":
             self.require_phase("note_touch")
-            self.supported(args)
+            if self.teaching_mode == "leader":
+                m.require(args.get("hands_clear") is True, "Keep hands clear of the powered follower.")
+            else:
+                self.supported(args)
             self.simulate_pose("clear")
             hover = self.stable()
             m.append_capture(self.capture, hover, force=True)
@@ -609,6 +807,8 @@ class Engine:
             draft = {**self.capture, "path": path, "touch_index": len(path) - 1 - self.touch_index,
                      "complete": True, "mode": self.mode, "fixture_id": self.fixture["id"],
                      "control_id": self.selected, "teaching_mode": "web_release_path"}
+            if self.teaching_mode == "leader":
+                draft["teaching_mode"] = "web_leader_release_path"
             m.validate_entry(draft, complete=True)
             m.require(m.distance(path[0], path[draft["touch_index"]]) > 0, "Lift clear of the contact pose before capturing.")
             planned = m.plan(draft)
@@ -668,16 +868,23 @@ class Engine:
             self.supported(args)
             self.actuating = True
             self.arm.release()
+            if self.leader:
+                self.leader.release()
             if self.controller:
                 self.controller.enabled = False
             if self.calibrating:
-                self.arm.abort_calibration()
+                self.calibration_arm.abort_calibration()
                 self.calibrating = False
-                self.calibrated = bool(self.calibration) and getattr(self.arm, "calibration_matches", True)
+                self.mark_calibrated(bool(self.saved_calibration) and getattr(self.calibration_arm, "calibration_matches", True))
                 self.clear_calibration_capture()
             self.reset_note()
             self.stop_event.clear()
             if action == "disconnect":
+                if self.leader:
+                    self.leader.close()
+                    self.leader = None
+                    self.leader_calibrated = False
+                    self.leader_current = self.leader_torque = self.leader_feedback_at = None
                 self.arm.close()
                 self.arm = None
                 self.current = self.torque = None
@@ -686,7 +893,7 @@ class Engine:
                 self.calibrated = False
                 self.transition("disconnected", "Follower disconnected after supported torque release. Saved registrations are retained.")
             else:
-                retry = action == "retry" and self.calibrated
+                retry = action == "retry" and self.calibrated and (self.teaching_mode != "leader" or self.leader_calibrated)
                 self.transition(("dial_ready" if self.is_dial else "note_ready") if retry else "connected",
                                 self.ready_message() if retry else "Torque OFF. Rest the arm safely or continue setup.")
         else:
@@ -726,6 +933,12 @@ class Engine:
             self.process(command)
         if self.arm and self.phase not in ("fault", "disconnected"):
             try:
+                if self.simulated_leader_input:
+                    name, remaining = self.simulated_leader_input
+                    delta = max(-4, min(4, remaining))
+                    self.leader.current[name] += delta
+                    remaining -= delta
+                    self.simulated_leader_input = (name, remaining) if remaining else None
                 if self.controller and self.controller.enabled:
                     self.guard()
                     self.controller.tick(self.controller.previous, "idle_hold")
@@ -756,9 +969,11 @@ class Engine:
             if self.arm:
                 try:
                     if self.calibrating:
-                        self.arm.abort_calibration()
+                        self.calibration_arm.abort_calibration()
                 finally:
                     self.arm.close()
+                    if self.leader:
+                        self.leader.close()
             if self.log:
                 self.log.close()
 
@@ -777,8 +992,10 @@ class Engine:
                 self.controller.stop()
             if self.arm:
                 if self.calibrating:
-                    self.arm.abort_calibration()
+                    self.calibration_arm.abort_calibration()
                 self.arm.close()
+                if self.leader:
+                    self.leader.close()
             if self.log:
                 self.log.close()
         self.repo.close()

@@ -57,6 +57,14 @@ def test_csrf_host_origin_and_size_checks(client):
     assert client.post("/api/heartbeat", json={}, headers={**headers, "x-orchid-operator": "invalid"}).status_code == 400
 
 
+def test_following_permission_requires_explicit_visible_heartbeat(client):
+    headers = operator_headers(client)
+    for body, visible in [({}, False), ({"leader_visible": "true"}, False), ({"leader_visible": True}, True), ({"leader_visible": False}, False)]:
+        assert client.post("/api/heartbeat", json=body, headers=headers).status_code == 200
+        assert (client.app.state.engine.leader_visible_until > time.monotonic()) is visible
+    assert client.post("/api/heartbeat", content="invalid", headers=headers).status_code == 400
+
+
 def test_single_operator_idempotency_stale_and_export(client):
     headers = operator_headers(client)
     assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
