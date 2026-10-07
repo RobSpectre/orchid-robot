@@ -51,6 +51,8 @@ Detailed instructions: [Operator guide](docs/operator-guide.md).
 
 ## Calibration and live arm view
 
+**Calibrate motors** in the sidebar returns to an arm picker at any point after connecting. Choose **Follower** or **Leader** to calibrate, reset or reload its separate reference. If you started with only the follower, **Leader → Find leader → Connect leader** adds the leader without disconnecting or recalibrating the follower. Powered holds require the supported release step before setup; active leader following must first be paused. Training becomes available after both required calibrations are verified.
+
 The calibration screen has an eight-step tracker, joint-specific handling instructions, a live minimum/current/maximum display, and an automatically highlighted joint in the **3D arm view**. The instrument map moves out of the way during calibration. Five joint sweeps are recorded; wrist rotation is not swept.
 
 **Motor status** shows all six encoder positions, torque readbacks, angles from the captured midpoint, recorded ranges, and powered target/tracking differences. Select a motor to highlight it in 3D. **Refresh volts & temperature** takes a separate health snapshot only while idle with torque off; it adds no diagnostic reads to powered motion. Each snapshot is timestamped.

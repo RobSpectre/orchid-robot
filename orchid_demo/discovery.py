@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob
+from pathlib import Path
 import time
 
 FOLLOWER_MIN_VOLTAGE = 8.0
@@ -58,13 +59,16 @@ def probe(port: str, *, guard=lambda: None) -> dict | None:
             handler.closePort()
 
 
-def discover_arms(*, guard=lambda: None):
+def discover_arms(*, guard=lambda: None, exclude_ports=()):
     # Fail clearly even when no USB ports exist and hardware dependencies are absent.
     import scservo_sdk  # noqa: F401
     import serial  # noqa: F401
 
     arms, warnings = [], []
+    excluded = {Path(port).resolve() for port in exclude_ports}
     for port in serial_candidates():
+        if Path(port).resolve() in excluded:
+            continue
         guard()
         try:
             info = probe(port, guard=guard)

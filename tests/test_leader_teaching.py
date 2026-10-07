@@ -286,3 +286,89 @@ def test_partial_pair_connection_closes_both_without_torque_commands(tmp_path):
         assert e.phase == "disconnected" and e.arm is None and e.leader is None
     finally:
         e.close()
+
+
+def test_add_leader_after_follower_calibration_keeps_saved_reference_and_fixture(engine):
+    connect(engine)
+    calibrate(engine)
+    follower, fixture = deepcopy(engine.calibration), deepcopy(engine.fixture)
+    arm = engine.arm
+    release = arm.release
+    arm.release = lambda: pytest.fail("Adding a leader released the follower")
+    arm.send = arm.arm_at_current = lambda *_: pytest.fail("Adding a leader moved the follower")
+    command(engine, "refresh_leader_ports")
+    command(engine, "connect_leader", prepared=True, leader_port="simulator-leader")
+    assert engine.arm is arm and arm.connected and not arm.enabled
+    assert engine.calibrated and not engine.leader_calibrated
+    assert engine.calibration == engine.repo.get("calibration") == follower
+    assert engine.fixture == fixture and engine.teaching_mode == "leader"
+    reject(engine, "control_start", supported=True)
+    arm.release = release
+    command(engine, "calibrate", target="leader", supported=True)
+    command(engine, "calibration_center", supported=True)
+    for _ in range(5):
+        command(engine, "simulate_sweep")
+        command(engine, "calibration_next", range_complete=True)
+    command(engine, "calibration_save", range_complete=True)
+    assert engine.calibrated and engine.leader_calibrated
+    assert engine.calibration == follower and engine.arm.calibration == follower
+    assert engine.fixture == fixture and not engine.arm.enabled and not engine.leader.enabled
+
+
+def test_leader_connection_requires_idle_off_follower_and_detected_separate_port(engine):
+    connect(engine)
+    calibrate(engine)
+    reject(engine, "connect_leader", leader_port="simulator-leader")
+    reject(engine, "connect_leader", prepared=True, leader_port="simulator")
+    reject(engine, "connect_leader", prepared=True, leader_port="unknown")
+    engine.phase = "connected"  # Connection may observe pre-existing torque; attachment must refuse it.
+    engine.arm.enabled = True
+    reject(engine, "connect_leader", prepared=True, leader_port="simulator-leader")
+    assert engine.leader is None
+    engine.arm.enabled = False
+    command(engine, "calibrate", supported=True)
+    reject(engine, "connect_leader", prepared=True, leader_port="simulator-leader")
+    reject(engine, "refresh_leader_ports")
+    command(engine, "release", supported=True)
+    command(engine, "control_start", supported=True)
+    reject(engine, "connect_leader", prepared=True, leader_port="simulator-leader")
+
+
+def test_leader_scan_excludes_open_follower_and_failed_attach_preserves_it(tmp_path):
+    seen = []
+    ports = [{"port": "/dev/test-follower", "role": "follower", "voltage": 12, "motor_ids": list(range(1,7))},
+             {"port": "/dev/test-leader", "role": "leader", "voltage": 5.2, "motor_ids": list(range(1,7))}]
+    def scan(**kwargs):
+        seen.append(kwargs.get("exclude_ports", ()))
+        return {"arms": [p for p in ports if p["port"] not in seen[-1]], "warnings": []}
+    failed = SimulatedArm()
+    def fail():
+        failed.connected = True
+        raise m.SafetyError("Unplugged leader")
+    failed.open = fail
+    e = Engine(tmp_path, "hardware", hardware_factory=lambda _, cal: SimulatedArm(cal),
+               leader_factory=lambda *_: failed, port_scanner=scan)
+    try:
+        command(e, "refresh_ports")
+        connect(e, port="/dev/test-follower")
+        command(e, "calibrate", supported=True)
+        command(e, "calibration_center", supported=True)
+        for motor in (name for name in m.MOTORS if name != "wrist_roll"):
+            for position in (1000, 3000):
+                e.arm.current[motor] = position
+                e.sample()
+            command(e, "calibration_next", range_complete=True)
+        command(e, "calibration_save", range_complete=True)
+        saved = deepcopy(e.calibration)
+        follower = e.arm
+        follower.close = follower.release = lambda: pytest.fail("Follower was closed or released")
+        command(e, "refresh_leader_ports")
+        assert seen[-1] == ("/dev/test-follower",)
+        reject(e, "connect_leader", prepared=True, leader_port="/dev/test-leader")
+        assert e.arm is follower and follower.connected and e.calibrated
+        assert e.calibration == saved and e.leader is None and not failed.connected
+        assert "Unplugged leader" in e.error
+    finally:
+        if e.arm:
+            e.arm.close = lambda: None
+        e.close()

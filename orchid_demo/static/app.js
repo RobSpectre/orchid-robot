@@ -3,7 +3,9 @@ const $ = (id) => document.getElementById(id);
 const notes = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const motors = {shoulder_pan: "Base rotation", shoulder_lift: "Shoulder", elbow_flex: "Elbow", wrist_flex: "Wrist bend", wrist_roll: "Wrist rotation", gripper: "Gripper"};
 const owner = crypto.randomUUID();
-let state, token, online = false, owns = false, renderKey = "", sending = false, timer = null;
+let state, token, online = false, owns = false, operatorError = null, renderKey = "", sending = false, timer = null;
+let operatorConflictSince = null;
+let calibrationView = false, calibrationChoice = null;
 let lastReceipt = "", instance = "", firstLoad = true, keyboardKey = "";
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isSim = () => state?.mode === "simulation";
@@ -28,16 +30,23 @@ function clearConfirmations(scope = document) {
 }
 const button = (action, text, secondary = false, attrs = "") => `<button data-action="${action}" class="${secondary ? "secondary" : "primary"}" ${attrs}>${text}</button>`;
 const leaderMode = () => state?.teaching_mode === "leader";
+const referencesReady = (s = state) => !!s?.calibrated && (s.teaching_mode !== "leader" || !!s.leader?.calibrated);
+const setupIdle = (s = state) => ["connected", "ready"].includes(s?.phase);
+const calibrationTarget = () => state?.phase.startsWith("calibration_") ? state.calibration_target :
+  calibrationChoice || (leaderMode() && state.calibrated && !state.leader?.calibrated ? "leader" : "follower");
+const workflowSection = () => state.phase === "disconnected" ? "connect" :
+  calibrationView || state.phase.startsWith("calibration_") || (!referencesReady() && ["connected","ready","fault"].includes(state.phase)) ? "calibration" : "notes";
 const teachingPhases = ["note_ready","note_pressed","note_touch","dial_ready","dial_approach","dial_contact","dial_turned","dial_lifted"];
 const support = () => confirm("supported", leaderMode() ? "Both arms are supported or resting securely; it is safe to release torque or establish the follower hold." : "I am supporting the arm’s weight; it is safe to release or hold here.");
 const calibrationPhases = ["connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review"];
 const actionScope = b => b.dataset.recovery ? $("recovery") : b.dataset.calibration ? $("calibration-tools") : b.dataset.leader ? $("leader-teaching") : $("workflow");
 function calibrationTools() {
-  const s = state.calibration_target === "leader" ? {...state,...state.leader} : state, available = calibrationPhases.includes(state.phase);
+  const target = calibrationTarget(), s = target === "leader" ? {...state,...state.leader} : state;
+  const available = calibrationPhases.includes(state.phase) && s.connected;
   const status = s.calibrating ? "New calibration in progress" : s.calibrated ? "Saved calibration is active" : "Saved calibration is not active";
-  $("calibration-tools-content").innerHTML = `<div class="calibration-saved"><span class="eyebrow">${state.calibration_target === "leader" ? "LEADER" : "FOLLOWER"} · SAVED REFERENCE</span><strong>${s.calibration ? esc(status) : "No saved calibration yet"}</strong><p>${s.calibration ? `Six motors · reference <code>${esc(s.calibration_id || "saved")}</code>` : "Complete and save the guided calibration to enable reload."}</p></div>` +
+  $("calibration-tools-content").innerHTML = `<div class="calibration-saved"><span class="eyebrow">${target.toUpperCase()} · SAVED REFERENCE</span><strong>${s.calibration ? esc(status) : "No saved calibration yet"}</strong><p>${s.calibration ? `Six motors · reference <code>${esc(s.calibration_id || "saved")}</code>` : "Complete and save the guided calibration to enable reload."}</p></div>` +
     `<p class="hint">Reset restarts the midpoint and all joint sweeps. Your last saved calibration and registered motions stay saved.</p>` +
-    (!available ? `<p class="hint">${s.connected ? "Finish this control or use Release or disconnect → Release torque to return to setup." : "Connect the follower to reset or reload its calibration."}</p>` : support() +
+    (!available ? `<p class="hint">${s.connected ? "Finish this control or use Release or disconnect → Release torque to return to setup." : `Connect the ${target} to reset or reload its calibration.`}</p>` : support() +
       actions(button("calibration_reset", "Reset calibration", true, 'data-calibration="true"')) +
       `<div class="calibration-reload"><p class="hint">Reload discards the unfinished calibration and verifies the saved settings on all six motors. Use reset after replacing or reseating a motor or joint.</p>` +
       (s.calibration ? confirm("calibration_unchanged", "This is the same arm; no motors or joints have been replaced or reseated since this calibration was saved.") : "") +
@@ -77,25 +86,28 @@ async function request(path, body) {
   if (!response.ok) {
     let message = await response.text();
     try { message = JSON.parse(message).detail || message; } catch { /* Plain middleware error. */ }
-    throw new Error(typeof message === "string" ? message : "The command could not be accepted.");
+    throw Object.assign(new Error(typeof message === "string" ? message : "The command could not be accepted."), {status: response.status});
   }
   return response.json();
 }
 function renderPorts() {
-  const select = $("port"), discovery = state.discovery;
-  if (!select || !discovery) return;
+  const select = $("port"), leaderSelect = $("leader-port"), discovery = state.discovery;
+  const picker = select || leaderSelect;
+  if (!picker || !discovery) return;
   const {ports, scanning, scanned_at: scannedAt, warnings, error: scanError} = discovery;
   const signature = JSON.stringify(discovery);
-  if (select.dataset.snapshot === signature) return;
-  select.dataset.snapshot = signature;
-  const previous = select.value;
+  if (picker.dataset.snapshot === signature) return;
+  picker.dataset.snapshot = signature;
   const role = p => p.role === "simulator" ? "Practice arm" : p.role === "follower" ? "Follower" : p.role === "leader" ? "Leader" : "Unidentified arm";
   const volts = p => p.voltage === null ? "Voltage unavailable" : `${p.voltage.toFixed(1)} V`;
   const eligible = ports.filter(p => p.connectable);
+  if (select) {
+  const previous = select.value;
   select.innerHTML = (!eligible.length ? `<option value="">${scanning ? "Scanning robot arms…" : scannedAt ? "No ready follower found" : "Refresh to find robot arms"}</option>` : "") +
     ports.map(p => `<option value="${esc(p.path)}" ${p.connectable ? "" : "disabled"}>${esc(role(p))} · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("");
   select.value = eligible.some(p => p.path === previous) ? previous : eligible[0]?.path || "";
-  const leaderSelect = $("leader-port"), previousLeader = leaderSelect.value;
+  }
+  const previousLeader = leaderSelect.value;
   const leaders = ports.filter(p => p.leader_connectable);
   leaderSelect.innerHTML = leaders.length ? leaders.map(p => `<option value="${esc(p.path)}">Leader · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("") : '<option value="">No ready leader found · refresh connections</option>';
   leaderSelect.value = leaders.some(p => p.path === previousLeader) ? previousLeader : leaders[0]?.path || "";
@@ -106,6 +118,26 @@ function renderPorts() {
   $("discovery-status").textContent = status;
   $("discovery-warnings").textContent = warnings.join("\n");
   $("discovery-warnings").hidden = !warnings.length;
+}
+function calibrationSetup() {
+  const target = calibrationTarget(), arm = target === "leader" ? state.leader : state;
+  let html = intro("Choose an arm to calibrate.", "Each arm keeps its own saved calibration. Selecting an arm does not change motor settings.") +
+    `<div class="calibration-arm-picker" role="group" aria-label="Arm to calibrate">${["follower","leader"].map(role => {
+      const value = role === "leader" ? state.leader : state;
+      return `<button type="button" class="secondary" data-calibration-target="${role}" aria-pressed="${role === target}"><strong>${role === "leader" ? "Leader" : "Follower"}</strong><span>${value?.connected ? value.calibrated ? "Calibration verified" : "Needs calibration" : "Not connected"}</span></button>`;
+    }).join("")}</div>`;
+  if (!arm?.connected) {
+    html += '<p class="description">Connect the leader here to enable leader teaching. The follower stays connected and its saved calibration is retained.</p>' +
+      '<div class="field-row connection-picker"><label class="form-field">Leader connection<select id="leader-port" aria-label="Leader connection" aria-describedby="discovery-status"></select></label>' +
+      button("refresh_leader_ports", "↻ Find leader", true) + '</div><div id="arm-discovery" class="arm-discovery" aria-label="Detected robot arms"></div><p id="discovery-status" class="hint" role="status"></p><p id="discovery-warnings" class="discovery-warnings" hidden></p>' +
+      confirm("prepared", "The leader is secure, powered, connected by USB and clear of the instrument.", "Arm leader connection") +
+      actions(button("connect_leader", "Connect leader →"));
+  } else {
+    html += `<p class="description">${target === "leader" ? "Calibrate the leader while the follower rests securely. The follower’s saved calibration is retained." : "Capture the follower midpoint, then measure its usable joint ranges."}</p>` +
+      support() + actions(button("calibrate", `${arm.calibrated ? "Recalibrate" : "Calibrate"} ${target} →`, false, `data-target="${target}"`));
+  }
+  if (referencesReady()) html += actions('<button type="button" class="secondary" data-view="notes">Back to training →</button>');
+  return html;
 }
 function noteSteps() {
   const phase = state.phase;
@@ -158,7 +190,7 @@ function workflow() {
   const chosen = activeControl();
   const chord = s.selected_control.kind === "button";
   const complete = Object.values(allStatuses()).every(k => k.status === "registered");
-  const canTeach = s.calibrated && (!leaderMode() || s.leader?.calibrated);
+  const canTeach = referencesReady();
   let html = "";
   if (p === "disconnected") {
     html = intro(sim ? "A rehearsal, without the robot." : "Set up the follower arm.", sim ? "Walk through calibration, keys, chord buttons, and voicing gestures with a simulated arm. Practice data stays separate from the real instrument." : "Secure the arm and Orchid to their marked positions. Fit the soft pad, fix the gripper opening, and rest the arm safely clear of the keyboard.") +
@@ -172,10 +204,15 @@ function workflow() {
       confirm("prepared", sim ? "I understand this is a simulation; no physical notes are verified." : "Mounting and pad are secure, the workspace is clear, and I can reach the power stop.") +
       actions(button("connect", sim ? "Connect practice arm →" : "Connect follower →")) +
       '<p class="hint">Changed placement or pad? Leave “Keep saved placement” unconfirmed. Saved notes will require teaching again.</p>';
+  } else if (calibrationView && !setupIdle() && !p.startsWith("calibration_")) {
+    html = intro("Return to calibration.", "Support both connected arms before releasing torque. This ends the current teaching attempt; saved calibrations and registered motions are retained.") +
+      support() + actions(button("release", "Release & return to calibration →"));
+  } else if (setupIdle() && (calibrationView || !canTeach)) {
+    html = calibrationSetup();
   } else if (["connected", "ready"].includes(p)) {
     html = intro(complete ? "The instrument is registered." : canTeach ? `Ready to teach ${esc(chosen.name)}.` : (leaderMode() ? "Calibrate both arms." : "Give the arm its reference points."), complete ? "All 22 motions have three accepted trials. Rest the arm safely and export your session. Changing the fixture or pad requires re-teaching." : canTeach ? (chosen.kind === "dial" ? "Teach a small turn of the large voicing dial, then lift off and return clear. Each direction has its own path and verification trials." : chosen.kind === "button" ? "Teach this chord button’s lightest reliable press and release. Its musical effect depends on Orchid’s playstyle and reference chord; the button may not sound alone." : "Choose any key or control above. Teach its local motion by hand, then test it three times.") : "With torque off, capture a supported midpoint, then measure each joint’s usable range. Keep the arm clear of Orchid for the whole calibration.") +
-      support() + actions((s.calibrated && (!leaderMode() || s.leader?.calibrated) ? button("control_start", `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}"`) : "") + button("calibrate", s.calibrated ? "Recalibrate follower" : "Calibrate follower →", s.calibrated, 'data-target="follower"') +
-        (leaderMode() ? button("calibrate", s.leader?.calibrated ? "Recalibrate leader" : "Calibrate leader →", true, 'data-target="leader"') : ""));
+      support() + actions(button("control_start", `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}"`) +
+        '<button type="button" class="secondary" data-view="calibration">Back to calibration</button>');
     if (complete) html += '<p class="hint"><a href="/api/export" download>Download the session record →</a></p>';
     html += '<p class="hint">Support the full weight before releasing torque. Gear resistance can remain with all six motors OFF.</p>';
   } else if (p === "calibration_midpoint") {
@@ -220,16 +257,30 @@ function workflow() {
     if (cue) html = html.replace(/<p class="description">.*?<\/p>/, `<p class="description">${cue}</p>`);
     html += '<p class="leader-capture-hint">Follower torque is ON. Move the leader only; pause following before every capture.</p>';
   }
-  if (p.startsWith("calibration_") || (p === "connected" && !s.calibrated)) html = `<p class="calibration-arm-label">CALIBRATING ${s.calibration_target === "leader" ? "LEADER · follower stays torque off" : "FOLLOWER"}</p>` + window.OrchidPanels.calibration(s) + html;
+  if (p.startsWith("calibration_")) html = `<p class="calibration-arm-label">CALIBRATING ${s.calibration_target === "leader" ? "LEADER · follower stays torque off" : "FOLLOWER"}</p>` + window.OrchidPanels.calibration(s) + html;
   if (p === "connected" && !s.calibrated) html += '<div class="setup-checklist"><strong>Before starting</strong><ul><li>Secure the base and reseated joints; keep the instrument outside the arm’s reach.</li><li>Support the full arm weight before torque releases.</li><li>Use the delay and optional spoken cues to keep both hands available.</li></ul><p>Calibration stays torque off. OFF flags do not remove gearbox drag.</p></div>';
   $("workflow").innerHTML = html;
   if (dialFields[0] !== undefined && $("dial-reference")) $("dial-reference").value = dialFields[0];
   if (dialFields[1] !== undefined && $("dial-effect")) $("dial-effect").value = dialFields[1];
 }
+function renderConnection() {
+  const conflict = operatorError?.status === 409;
+  const waiting = conflict && operatorConflictSince !== null && Date.now() - operatorConflictSince < 5000;
+  $("connection").textContent = !online ? "Local app unavailable" : owns ?
+    (state.connected ? (state.leader?.connected ? "Leader + follower connected" : "Follower connected") : "Local app ready") :
+    waiting ? "Waiting for operator control" : conflict ? "Read-only window" : "Operator control unavailable";
+  $("connection-warning").hidden = online && owns;
+  $("connection-warning").textContent = !online ?
+    "Connection to the local Python app was lost. Controls are disabled. If a physical arm is active, support it and use the power stop if needed." :
+    owns ? "" : waiting ?
+    "Waiting for the previous operator session to expire. Reloading this tab can cause a wait of up to five seconds. Keep this page open; it retries automatically." : conflict ?
+    "Another operator session holds control. After that session closes, this page retries automatically within five seconds." :
+    `Cannot acquire operator control: ${operatorError?.message || "The control heartbeat did not complete."} Retrying automatically; controls remain disabled.`;
+}
 function render() {
   if (!state) return;
   const s = state, p = s.phase;
-  const key = [s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following].join(":");
+  const key = [s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following, calibrationView, calibrationTarget()].join(":");
   if (key !== renderKey) {
     cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools(); leaderPanel();
     say(["dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_pressed", "note_touch", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
@@ -239,16 +290,14 @@ function render() {
   $("completed").innerHTML = `${count}<span>/22</span>`;
   $("mode").textContent = isSim() ? "SIMULATION · NO HARDWARE" : "HARDWARE MODE";
   $("mode").className = `badge ${isSim() ? "" : "hardware"}`;
-  $("connection").textContent = online ? (owns ? (s.connected ? (s.leader?.connected ? "Leader + follower connected" : "Follower connected") : "Local app ready") : "Read-only window") : "Local app unavailable";
-  $("connection-warning").hidden = online && owns;
-  $("connection-warning").textContent = !online ? "Connection to the local Python app was lost. Controls are disabled. If a physical arm is active, support it and use the power stop if needed." : "Another browser owns operator control. This window shows status only.";
-  const section = p === "disconnected" ? "connect" : p.startsWith("calibration") || (!s.calibrated && ["connected", "fault"].includes(p)) ? "calibration" : "notes";
+  renderConnection();
+  const section = workflowSection();
   document.body.classList.toggle("calibrating", section === "calibration");
   document.querySelector(".page-heading h1").textContent = section === "calibration" ? "Give the arm its bearings." : "Teach the instrument.";
   document.querySelector(".page-heading p").textContent = section === "calibration" ? "Guided calibration. Six motors. One joint at a time." : "Twelve keys. Eight chord buttons. Two voicing gestures.";
   for (const name of ["connect", "calibration", "notes"]) {
     $("nav-" + name).classList.toggle("active", name === section);
-    $("nav-" + name).querySelector("b").textContent = name === "connect" && s.connected || name === "calibration" && s.calibrated || name === "notes" && count === 22 ? "✓" : "";
+    $("nav-" + name).querySelector("b").textContent = name === "connect" && s.connected || name === "calibration" && referencesReady() || name === "notes" && count === 22 ? "✓" : "";
   }
   $("step-label").textContent = section === "connect" ? "01 / CONNECTION" : section === "calibration" ? "02 / MOTOR CALIBRATION" : "03 / CONTROL TRAINING";
   $("phase-badge").textContent = p === "fault" ? "STOPPED" : s.pending ? "IN PROGRESS" : p.replaceAll("_", " ").toUpperCase();
@@ -268,8 +317,8 @@ function render() {
     }
   }
   // Clicking a key selects a label only; torque release always needs the supported action.
-  $("keyboard-hint").textContent = ["ready", "connected"].includes(p) && s.calibrated ? "Select a key, chord button, or dial direction. Support the arm, then choose Teach below." : "12 keys · 8 chord buttons · 2 voicing directions. Each motion is taught and verified separately.";
-  const leaderView = s.calibrating && s.calibration_target === "leader";
+  $("keyboard-hint").textContent = setupIdle() && referencesReady() ? "Select a key, chord button, or dial direction. Support the arm, then choose Teach below." : "12 keys · 8 chord buttons · 2 voicing directions. Each motion is taught and verified separately.";
+  const leaderView = s.leader?.connected && calibrationTarget() === "leader" && section === "calibration";
   $("arm-guide-title").textContent = leaderView ? "SO101 · leader motor guide" : "SO101 · follower guide";
   // Separate display identities prevent a stale leader pose being shown as the follower after a fault.
   window.OrchidPanels.update({...s,...(leaderView ? s.leader : {}),instance_id:`${s.instance_id}:${leaderView ? "leader" : "follower"}`}, online);
@@ -312,9 +361,10 @@ function updateButtons() {
     if (b.dataset.recovery) valid = confirmed($("recovery-supported"));
     if (b.dataset.calibration) {
       valid = calibrationPhases.includes(state.phase) && confirmed(scope.querySelector('[data-confirm="supported"]'));
-      if (b.dataset.action === "calibration_reload") valid = valid && !!(state.calibration_target === "leader" ? state.leader?.calibration : state.calibration) && confirmed(scope.querySelector('[data-confirm="calibration_unchanged"]'));
+      if (b.dataset.action === "calibration_reload") valid = valid && !!(calibrationTarget() === "leader" ? state.leader?.calibration : state.calibration) && confirmed(scope.querySelector('[data-confirm="calibration_unchanged"]'));
     }
-    if (["simulate_sweep", "fail", "refresh_ports"].includes(b.dataset.action)) valid = true;
+    if (["simulate_sweep", "fail", "refresh_ports", "refresh_leader_ports"].includes(b.dataset.action)) valid = true;
+    if (b.dataset.action === "connect_leader") valid = valid && setupIdle() && !state.leader?.connected && state.discovery?.ports.some(p => p.path === $("leader-port")?.value && p.leader_connectable);
     if (b.dataset.action === "connect") valid = valid && state.discovery?.ports.some(p => p.path === $("port")?.value && p.connectable);
     if (b.dataset.action === "connect" && $("teaching-mode")?.value === "leader") valid = valid && state.discovery?.ports.some(p => p.path === $("leader-port")?.value && p.leader_connectable);
     if (b.dataset.action === "leader_pause") valid = !!state.leader_following;
@@ -326,13 +376,16 @@ function updateButtons() {
     b.disabled = blocked || !valid;
   });
   if ($("port")) $("port").disabled = blocked || !state.discovery?.ports.some(p => p.connectable);
+  if ($("leader-port")) $("leader-port").disabled = blocked || !state.discovery?.ports.some(p=>p.leader_connectable);
   if ($("teaching-mode")) {
     $("teaching-mode").disabled = blocked;
     $("leader-port-field").hidden = $("teaching-mode").value !== "leader";
     $("leader-port").disabled = blocked || !state.discovery?.ports.some(p=>p.leader_connectable);
   }
   if ($("refresh-ports")) $("refresh-ports").textContent = state.discovery?.scanning ? "Scanning…" : "↻ Refresh connections";
-  document.querySelectorAll("[data-note]").forEach(b => b.disabled = blocked || !state.calibrated || !["ready", "connected"].includes(state.phase));
+  document.querySelectorAll("[data-note]").forEach(b => b.disabled = blocked || !referencesReady() || !setupIdle());
+  document.querySelectorAll("[data-view]").forEach(b => b.disabled = blocked || !state.connected || state.leader_following || (b.dataset.view === "notes" && (!setupIdle() || !referencesReady())));
+  document.querySelectorAll("[data-calibration-target]").forEach(b => b.disabled = blocked || !setupIdle());
   $("stop").disabled = !online || !owns || !state?.connected;
   document.querySelectorAll("[data-note]").forEach(k => k.classList.toggle("selected", k.dataset.note === (selectedNote || state.selected)));
 }
@@ -350,13 +403,14 @@ function dispatchButton(b) {
   if (!b.dataset.diagnostics) scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = confirmed(c));
   if (b.dataset.recovery) args.supported = confirmed($("recovery-supported"));
   if (action === "connect") { args.fixture = $("fixture").value; args.port = $("port").value; args.tool = $("contact-tool").value; args.teaching_mode = $("teaching-mode").value; args.leader_port = $("leader-port").value; }
+  if (action === "connect_leader") args.leader_port = $("leader-port").value;
   if (action === "calibrate") args.target = b.dataset.target || "follower";
-  if (["calibration_reset","calibration_reload"].includes(action)) args.target = state.calibration_target || "follower";
+  if (["calibration_reset","calibration_reload"].includes(action)) args.target = calibrationTarget();
   if (action === "simulate_leader") { args.motor = $("leader-sim-joint").value; args.delta = Number(b.dataset.delta); }
   if (action === "control_start") args.control = b.dataset.control;
   if (action === "dial_capture_start") { args.reference = $("dial-reference").value; args.expected_effect = $("dial-effect").value; }
   // Consent is for this attempt only, including canceled countdowns and errors.
-  if (!b.dataset.diagnostics && action !== "refresh_ports") clearConfirmations(scope);
+  if (!b.dataset.diagnostics && !["refresh_ports","refresh_leader_ports"].includes(action)) clearConfirmations(scope);
   const revision = state.revision;
   const delayed = ["leader_hold","calibrate","calibration_reset","calibration_reload","calibration_center","control_start","dial_capture_start","dial_capture_contact","dial_capture_turn","dial_capture_lift","dial_capture_return","capture_pressed","capture_touch","capture_clear","next","release","disconnect","retry"].includes(action);
   if ($("delay").checked && delayed) {
@@ -379,8 +433,10 @@ document.addEventListener("click", event => {
   if (b.id === "cancel-countdown") { cancelCountdown(); updateButtons(); }
   else if (b.id === "stop") { cancelCountdown(); say("Stop requested"); submit("stop"); }
   else if (b.dataset.confirm) { setConfirmation(b, !confirmed(b)); updateButtons(); }
+  else if (b.dataset.view) { calibrationView = b.dataset.view === "calibration"; calibrationChoice = null; render(); }
+  else if (b.dataset.calibrationTarget) { calibrationChoice = b.dataset.calibrationTarget; render(); }
   else if (b.dataset.action) dispatchButton(b);
-  else if (b.dataset.note) { selectedNote = b.dataset.note; render(); }
+  else if (b.dataset.note) { selectedNote = b.dataset.note; calibrationView = false; render(); }
 });
 document.addEventListener("change", updateButtons);
 document.addEventListener("visibilitychange", () => {
@@ -394,10 +450,14 @@ document.addEventListener("keydown", event => { if (event.key === "Escape") { ca
 async function poll() {
   try {
     const session = await request("/api/session");
-    if (instance && instance !== session.state.instance_id) { cancelCountdown(); selectedNote = null; }
+    if (instance && instance !== session.state.instance_id) { cancelCountdown(); selectedNote = null; calibrationView = false; calibrationChoice = null; }
     instance = session.state.instance_id; token = session.token; state = session.state; online = state.worker_alive !== false;
-    try { await request("/api/heartbeat", {leader_visible:!document.hidden}); owns = true; }
-    catch { owns = false; cancelCountdown(); clearConfirmations(); }
+    try { await request("/api/heartbeat", {leader_visible:!document.hidden}); owns = true; operatorError = null; operatorConflictSince = null; }
+    catch (err) {
+      owns = false; operatorError = err;
+      operatorConflictSince = err.status === 409 ? (operatorConflictSince ?? Date.now()) : null;
+      cancelCountdown(); clearConfirmations();
+    }
     if (firstLoad) { $("delay").checked = !isSim(); firstLoad = false; }
     render();
   } catch {

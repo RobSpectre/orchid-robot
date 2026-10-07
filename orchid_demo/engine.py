@@ -80,6 +80,7 @@ class Engine:
         self.revision, self.phase = 0, "disconnected"
         self.message = "Connect the practice arm to explore the complete workflow." if mode == "simulation" else "Secure the arm clear of Orchid, then choose its follower port."
         self.arm = self.controller = self.log = None
+        self.follower_port = None
         self.current = self.torque = None
         self.feedback_at = None
         self.diagnostics = None
@@ -493,15 +494,21 @@ class Engine:
             m.require(isinstance(self.controller, LeaderController) and self.controller.enabled,
                       "Establish a follower hold for leader teaching first.")
             m.require(not self.controller.engaged, "Pause following before capturing a waypoint.")
-        if action == "refresh_ports":
-            self.require_phase("disconnected")
-            m.require(self.arm is None, "Disconnect the follower before scanning USB ports.")
+        if action in ("refresh_ports", "refresh_leader_ports"):
+            adding_leader = action == "refresh_leader_ports"
+            if adding_leader:
+                self.require_phase("connected", "ready")
+                m.require(self.arm is not None and self.leader is None, "Connect only the follower before finding a leader.")
+                self.arm.require_torque(False)
+            else:
+                self.require_phase("disconnected")
+                m.require(self.arm is None, "Disconnect the follower before scanning USB ports.")
             if self.mode == "simulation":
                 return  # Never load the serial SDK or touch USB in practice mode.
             self.discovery = {"ports": [], "scanned_at": None, "scanning": True, "warnings": [], "error": None}
             self.publish()
             try:
-                result = self.port_scanner(guard=self.guard)
+                result = self.port_scanner(guard=self.guard, **({"exclude_ports": (self.follower_port,)} if adding_leader else {}))
                 self.guard()
                 self.discovery["ports"] = [
                     {**arm, "path": arm["port"], "description": arm["role"] or "Unidentified arm",
@@ -546,6 +553,7 @@ class Engine:
             try:
                 candidate.open()
                 self.arm = candidate
+                self.follower_port = port if self.mode == "hardware" else "simulator"
                 if teaching_mode == "leader":
                     self.leader = (self.leader_factory(leader_port, self.leader_calibration) if self.mode == "hardware"
                                    else SimulatedArm(self.leader_calibration))
@@ -566,9 +574,39 @@ class Engine:
                     self.leader_calibrated = False
                 candidate.close()
                 self.arm = None
+                self.follower_port = None
                 self.calibrated = False
                 self.phase = "disconnected"
                 raise
+        elif action == "connect_leader":
+            self.require_phase("connected", "ready")
+            m.require(self.arm is not None and self.leader is None, "A follower must be connected and the leader must be disconnected.")
+            m.require(args.get("prepared") is True, "Confirm the leader is secure and clear of the instrument.")
+            port = args.get("leader_port")
+            m.require(isinstance(port, str) and any(p["path"] == port and p.get("leader_connectable") for p in self.discovery["ports"]),
+                      "Refresh leader connections and choose a detected low-voltage leader with motor IDs 1–6.")
+            m.require(Path(port).resolve() != Path(self.follower_port).resolve(), "The leader must use a separate port from the connected follower.")
+            self.guard()
+            self.arm.require_torque(False)
+            candidate = None
+            try:
+                candidate = self.leader_factory(port, self.leader_calibration) if self.mode == "hardware" else SimulatedArm(self.leader_calibration)
+                if self.mode == "simulation":
+                    candidate.voltage = 5.2
+                candidate.open()
+                candidate.require_torque(False)
+                candidate.read_raw()
+                self.guard()
+            except Exception as exc:
+                if candidate is not None:
+                    candidate.close()
+                raise m.SafetyError(f"Leader connection failed; follower calibration is unchanged: {exc}") from exc
+            self.leader = candidate
+            self.leader_calibrated = bool(self.leader_calibration) and getattr(candidate, "calibration_matches", True)
+            self.teaching_mode = "leader"
+            self.calibration_target = "leader"
+            self.transition("connected", "Leader connected. Follower calibration retained. Calibrate the leader before teaching.")
+            self.sample()
         elif action == "refresh_diagnostics":
             self.require_phase("connected", "ready")
             self.guard()
@@ -669,7 +707,9 @@ class Engine:
             self.mark_calibrated(True)
             self.calibrating = False
             self.event("calibration_saved", "All six motors calibrated; torque remains off.", new)
-            self.transition("ready", "Calibration verified. Fix the padded gripper opening and begin with C.")
+            remaining = "follower" if not self.calibrated else "leader" if self.teaching_mode == "leader" and not self.leader_calibrated else None
+            self.transition("ready", f"Calibration verified. Next, calibrate the {remaining}." if remaining else
+                            "Calibration verified. Both required references are ready; choose a control to teach.")
         elif action in ("note_start", "control_start"):
             self.require_phase("connected", "ready", "saved")
             self.supported(args)
@@ -887,6 +927,7 @@ class Engine:
                     self.leader_current = self.leader_torque = self.leader_feedback_at = None
                 self.arm.close()
                 self.arm = None
+                self.follower_port = None
                 self.current = self.torque = None
                 self.feedback_at = None
                 self.diagnostics = self.diagnostics_error = None

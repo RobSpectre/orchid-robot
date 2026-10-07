@@ -98,6 +98,15 @@ def test_busy_port_never_sends_packets(sdk, monkeypatch):
     assert [c[0] for c in sdk.calls] == ["open"]
 
 
+def test_connected_port_and_its_alias_are_not_opened(sdk, monkeypatch, tmp_path):
+    owned = tmp_path / "follower"
+    alias = tmp_path / "same-follower"
+    alias.symlink_to(owned)
+    monkeypatch.setattr(d, "serial_candidates", lambda: [str(owned), str(alias), "/dev/leader"])
+    d.discover_arms(exclude_ports=[str(owned)])
+    assert [c[1]["port"] for c in sdk.calls if c[0] == "open"] == ["/dev/leader"]
+
+
 def test_cancellation_closes_open_port(sdk):
     def guard():
         if len(sdk.calls) > 3:

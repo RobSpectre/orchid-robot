@@ -178,6 +178,16 @@ h3 {
   color:var(--gold);
 }
 
+button.nav-item { width:100%; background:transparent; border-radius:0; border-width:0 0 1px; text-align:left; font-weight:400; }
+button.nav-item:hover:enabled { background:#ffffff08; }
+button.nav-item:disabled { opacity:.65; }
+.calibration-arm-picker { display:flex; gap:12px; margin:24px 0; }
+.calibration-arm-picker button { flex:1; min-height:88px; text-align:left; }
+.calibration-arm-picker strong,.calibration-arm-picker span { display:block; }
+.calibration-arm-picker strong { font-size:19px; margin-bottom:8px; }
+.calibration-arm-picker span { font-size:12px; font-weight:400; }
+.calibration-arm-picker button[aria-pressed=true] { border-color:#edba55; background:#48402c; color:#f8d992; }
+
 .side-bottom {
   margin-top:auto;
   font-size:9px;
