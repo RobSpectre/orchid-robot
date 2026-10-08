@@ -12,6 +12,9 @@ data/
 orchid_keys.json
 leader-voltage-before-*.json
 recordings/
+keys/
+orchid-state-*.tar.gz
+.DS_Store
 orchid_calibration/
 
 # Development tools

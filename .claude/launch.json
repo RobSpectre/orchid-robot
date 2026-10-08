@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "orchid-simulation",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["app.py", "--port", "8090", "--data-dir", "data/preview"],
+      "port": 8090
+    }
+  ]
+}

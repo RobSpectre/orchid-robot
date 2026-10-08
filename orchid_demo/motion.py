@@ -314,13 +314,16 @@ class MidiMonitor:
 
 
 class Controller:
-    def __init__(self, arm, path, log, midi=None, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, arm, path, log, midi=None, clock=time.monotonic, sleep=time.sleep, max_run_time=MAX_RUN_TIME):
         self.arm, self.path, self.log, self.midi = arm, path, log, midi
         self.clock, self.sleep = clock, sleep
         self.previous = dict(path[0])
         self.last_tick = None
         self.enabled = False
         self.started = None
+        self.max_run_time = max_run_time
+        self.last_sample = {}
+        self.error_reporter = None
 
     def record(self, **event):
         self.log.write(json.dumps({"time": self.clock(), **event}, allow_nan=False) + "\n")
@@ -333,17 +336,22 @@ class Controller:
 
     def tick(self, target, stage):
         start = self.clock()
-        require(self.started is None or start - self.started <= MAX_RUN_TIME, "Single-stroke time limit exceeded.")
+        self.last_sample = {"time": start, "stage": stage, "target": dict(target),
+                            "previous_target": dict(self.previous), "command_sent": False}
+        require(self.started is None or start - self.started <= self.max_run_time, "Motion time limit exceeded.")
         if self.last_tick is not None:
             require(start - self.last_tick <= MAX_IO_TIME, "Control loop stalled; refusing to catch up with a jump.")
         current = self.arm.read()
+        self.last_sample["actual"] = dict(current)
         self.arm.require_torque(True)
+        self.last_sample["torque_verified"] = True
         require(self.clock() - start <= MAX_IO_TIME, "Stale position feedback; no new target sent.")
         self.inside(current)
         require(distance(current, self.previous) <= TRACKING_TOLERANCE, "Arm is not following the preceding target.")
         require(abs(current["gripper"] - self.path[0]["gripper"]) <= GRIPPER_TOLERANCE, "Gripper opening changed.")
         require(distance(current, target) <= TRACKING_TOLERANCE, "Next target is too far from measured position.")
         self.arm.send(target)
+        self.last_sample.update(command_sent=True, send_returned_at=self.clock())
         require(self.clock() - start <= MAX_IO_TIME, "Motor command took too long.")
         self.previous = dict(target)
         events = self.midi.poll() if self.midi else []
@@ -423,9 +431,12 @@ class Controller:
             require(self.clock() - start <= MAX_IO_TIME, "Cannot trust stale feedback during stop.")
             self.inside(current)
             self.arm.send(current)
-            print("Stopped issuing the stroke; requested a hold at measured position. Torque has not been disabled; support the arm before release.", file=sys.stderr)
+            print("Stopped issuing the stroke; requested a hold at measured position. Torque has not been disabled; support the arm before release.", flush=True)
         except Exception as exc:
-            print(f"Could not establish a hold: {exc}. Last motor target may remain active. Support the arm and use the hardware power stop.", file=sys.stderr)
+            if self.error_reporter:
+                self.error_reporter("hold_failed", exc)
+            else:
+                print(f"Could not establish a hold: {exc}. Last motor target may remain active. Support the arm and use the hardware power stop.", flush=True)
 
 
 def require_human(text, word):

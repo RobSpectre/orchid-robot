@@ -16,6 +16,10 @@ Click **Refresh connections** to scan USB adapters using the same read-only dete
 
 Choose a placement name. “Keep saved placement” means the same physical setup, not just the same name. Leave it unconfirmed after moving anything, changing pad thickness or glove fit, adjusting the gripper, or repairing a joint. Selecting a different contact tool creates a new fixture even if “Keep saved placement” is confirmed. Previous records remain on disk but no longer count as registered for the new fixture.
 
+To return to connection setup, select **01 · Connect the arm** in the sidebar. Opening this screen sends no motor command. If connected, pause leader following, support both arms, confirm **Arm this step**, then choose **Release & return to connections**. The optional five-second delay still applies. Saved calibrations and registered motions remain stored; an unfinished teaching attempt ends, and an unfinished calibration is canceled with its previous motor settings restored and verified. **Stay on current step** returns without disconnecting. Once disconnected, refresh ports and select the arms or teaching mode again.
+
+If USB was unplugged or an arm was replaced, Release can fail because it still addresses the old connection. In the stopped session, open **01 · Connect the arm → USB unplugged or arm replaced?** Rest/support both arms and physically disconnect both motor power supplies; unplugging USB alone does not release torque. Confirm **Arms supported** and **Motor power disconnected**, then choose **Forget unavailable connection**. This closes the old connections without motor commands or a calibration rollback; it does not claim torque was verified off. Saved records remain stored. Reconnect with the arms secure, refresh ports, and select the detected arms. For a replacement arm or interrupted calibration, perform a full calibration and teach a new home; leave **Keep saved placement** unconfirmed and re-teach its motions. If closing the old port also fails, keep motor power disconnected and restart Python.
+
 ## Motor calibration
 
 Select **Calibrate motors** in the sidebar or **Back to calibration** from the training screen. Choose **Follower** or **Leader**; each card shows its connection and calibration status. Selecting a card only changes the screen. If teaching or holding, pause leader following first, then confirm support and use **Release & return to calibration**. Saved calibrations and registered motions remain stored; the unfinished teaching attempt ends. Changing the arm during a calibration requires finishing or canceling that attempt first.
@@ -63,14 +67,15 @@ Select a key when the console is ready and choose **Teach** while supporting the
 
 | Step | Operator action | Result |
 | --- | --- | --- |
-| Sounding press | Press gently until the selected note sounds. Hold steady, then capture. | Begins recording the release path. Torque stays off. |
-| First contact | Slowly lift until the key is fully released and the pad barely touches it. Capture. | Marks the contact boundary. |
-| Clearance | Lift a small distance clear along the same path. Confirm support and capture. | Validates the stroke, seeds measured goals, enables torque, and verifies the hold. |
+| Hover | Hold the pad just clear above the key and capture. | Begins recording the downward stroke. Torque stays off. |
+| First contact | Lower until the pad barely touches the key without pressing it. Capture. | Marks the contact boundary. |
+| Sounding press | Press only until the selected note sounds. Confirm support and choose **Capture press & hold**. | Saves hover → contact → press, seeds measured goals, enables torque and holds at the captured press. |
+| Retreat | Clear your hands and choose **Retreat to hover**. | Moves directly from the pressed pose through contact to hover, reversing the saved path without repeating the press. |
 | Test | After the hold is confirmed, gently remove hands and confirm the path is clear. | One slow press and release, followed by a hold at clearance. |
 | Review | Listen and watch. Accept only a clean intended note and release. | Saves one successful trial; three are required for registration. |
 | Continue | Support the arm and release torque. Move by hand to the next note. | Advances to the next unregistered key. |
 
-Small pauses while deciding what to do next are fine with the page connected. During manual release-path recording, keep movements gentle and local. If a pose is near a limit, a sample jumps, or the grip changes, correct the physical setup and re-teach. Do not increase software limits to get a bad path accepted.
+Small pauses while deciding what to do next are fine with the page connected. During manual downward-stroke recording, keep movements gentle and local. If a pose is near a limit, a sample jumps, or the grip changes, correct the physical setup and re-teach. Do not increase software limits to get a bad path accepted.
 
 **Reject & re-teach** clears the trial count for that attempt. A control's **REGISTERED** or checkmark state means three accepted trials with the current fixture/calibration. A simulation never counts as hardware registration. There is no autonomous travel between controls in this release.
 
@@ -78,23 +83,47 @@ For both-hand handling, leave the five-second delay enabled. Pressing a delayed 
 
 ## Teach with the leader arm
 
-1. While disconnected, select **Use leader to teach**, refresh connections, and select the follower and leader in their separate lists. Their ports must differ. Connection only reads; it does not enable torque. Do not run another controller or calibration utility alongside this app.
-2. In **Calibrate motors**, select the **Follower** or **Leader** card, then confirm support and begin its calibration. Each has its own saved reference, backup, midpoint, five measured ranges and verified save. Both arms stay torque off. The calibration banner and 3D heading identify which arm you are handling; during leader calibration the motor cards show the leader. The CAD shape is still an approximate SO101 reference, not a leader-specific collision model. Reset/reload applies to the arm named in its saved-reference panel. Saved calibrations that match the motor settings can be reused; changing or reseating a joint requires recalibration.
-3. Choose a key, chord button or dial direction and **Teach**. With torque off, position the follower just clear of that control and set its final padded gripper opening. Keep the leader in a comfortable position within its calibrated range. Support the follower and choose **Establish follower hold**; the optional delay gives you five seconds. Wait for **PAUSED · HOLDING** before clearing your hands.
-4. Confirm **Arm following** and choose **Engage leader following**. Move only the leader. Start in clear space and check the direction of each of the five arm joints before approaching the instrument. Input is relative at ¼ scale, with nominal speed capped at 24 raw ticks/s (integer-tick rounding applies). Fast input is discarded rather than queued. The follower stays within 120 ticks of its initial local hold and inside its calibrated margins. These are position limits, not contact-force protection. The leader gripper is ignored; the follower gripper stays fixed.
-5. For a key or chord button, guide the lightest working press, **Pause following**, then capture. Engage again to release to first contact, pause and capture; engage to lift to clearance, pause and capture. Capture buttons are disabled while following. For a dial, pause at each of the existing start/contact/turn/lift/return stages. Keep the fixed-tip rim contact and musical reference checks.
-6. Pausing holds the follower at its measured pose. You can reposition the leader while paused; re-engaging starts from the new pair of positions with no alignment move. Keep hands off the powered follower. To reposition the follower itself, support it and use **Release torque**.
-7. The final capture hands the held follower to the existing test controller without releasing torque. The leader no longer drives it. Perform three observed trials, then support and **Release & continue** to position the next control with torque off.
+Leader teaching records the motion you make with the leader and replays it, using the installed LeRobot SO101 drivers and the same control loop as `teach_key.py` (`orchid_demo/teach.py`).
 
-Leaving the operator page or losing its visible-page heartbeat pauses following after at most 1.2 seconds plus current I/O; returning never re-engages automatically. The normal five-second owner lease and Stop control still apply. Input jumps, encoder wrapping, stale feedback, unexpected torque, changed grip or tracking failures stop following and request a measured hold when possible, without dropping torque. If communication is lost, the last target can remain active; use the physical power stop while supporting the arm. No software limit or 3D model detects collisions or key force.
+<kbd>Space</kbd> presses the highlighted button at every step, so one hand can stay on the leader.
 
-Simulation provides **Practice leader movement** with a joint selector and ± buttons. Each tap moves the virtual leader by 48 ticks over time (normally 12 follower ticks while engaged). These controls never appear as hardware movement controls. Simulated captures use the measured virtual follower path and do not reposition it automatically.
+1. **Connect arms.** Leader teaching is the default. The page scans for the arms by itself and selects the 12 V follower and the 5 V leader; connecting only reads the motors. Do not run another controller (such as `teach_key.py`) alongside this app; each takes an exclusive lock on the ports, so the second one refuses.
+2. Calibrations that match the motors are reused. Otherwise calibrate the arm the page names under **Calibrate motors**.
+3. **Teach C** (or select another key or chord button first). The follower's goal is set to its measured pose, LeRobot's `SOFollower.configure` applies its motor settings, and torque holds it there. The first time, that pose becomes the arm's **home**, used by every key. Then the follower ramps to the leader's pose at up to 30°/s and mirrors it 1:1. Keep hands off the follower and hold the leader roughly where the follower is. If the follower was already powered, the page first asks you to support it: torque blinks off for a moment while the settings are written.
+4. **Hover, touch, press.** Guide the follower just above the key and press Space (hover); lower until the tip just touches without pressing, Space (touch); press only until it sounds, Space (press). A beep confirms each capture. Tapping ✓ Touch or ✓ Hover re-captures it and clears the points after it. Tapping ✓ Home moves the arm's one home: every key, including keys already taught, then starts and ends there, and no key's hover/touch/press is cleared. Each point stores the commanded goal, so the press replays the depth you taught even where the key stopped the arm.
+5. After the press is captured the follower returns on its own: press → touch → hover → home, then holds at home, and the key counts as taught. Put the leader back at rest before following again (following always ramps to wherever the leader is).
+6. **Play.** The follower ramps to home (up to 30°/s, faster at higher speeds), waits until it has settled there, then goes home → hover → touch → press, holds the press for the key's **Press length** (default 0.3 s, 0–5 s), and returns the same way, with smooth joint moves (45°/s peak between home and hover, 20°/s for the strokes, at 1×). **Arm speed** is one global slider in the top bar (0.25–3×, where 3× is the maximum). Letting go of it saves it, and it applies from the next play to every key, chord button, dial turn and the API; try a new key at 1× first. A press length typed next to Play is saved for that key when you play it. If the arm did not reach home (more than 8° off), it holds and offers **Play anyway**.
+7. **Rest.** Click **☾ Rest** on the map, follow the leader to where the arm should wait, and press **Set rest here**. **Go to rest** moves the arm there (up to 30°/s) when you want it parked. Playback always ends at home, where the arm waits between key presses; a Play from rest first moves up to home.
+8. Select another key on the map, press **Follow the leader**, and capture its hover, touch and press. Release torque from **Release or disconnect** with the arm supported or resting.
+
+Moves between points are straight lines in joint space, not obstacle-avoiding paths. If the move from home to hover passes too close to Orchid, capture hover higher or choose a home closer to the keys. **Voicing dial.** Select **↻ CW** or **↺ CCW** and teach, with the leader, **hover** (above the knob), **open** (jaws open, still above it), **lower** (lowered around the knob, not touching) and **grip** (jaws closed on it). These four steps are shared by both directions. Capturing the grip lets go, raises to the open pose, then goes to hover and home on its own. The turn is not taught with the leader: each direction has an angle (default +20° CW, −20° CCW; flip the sign if it turns the wrong way, up to ±90°), and playback rotates only the wrist by it. Playback: home → hover → open → lower → grip → turn → let go in place → raise to the open pose → hover → home; it never turns back while gripping. The follower's wrist roll is held still while following, for keys and the dial alike.
+
+Following and playback clip each goal to 15° from the measured pose (LeRobot's `max_relative_target` rule): a lagging or blocked joint is limited, never faulted. There are no tracking, settle, stall, home or route checks. **Stop motion** (Esc) holds the follower at its measured pose and stays in the teaching session. Losing the operator page for five seconds stops with a hold. A recording stays valid until the follower calibration changes. This is joint position control, without collision or force sensing; keep the physical power stop within reach.
+
+Hardware conformance can be checked without opening a port: run `PYTHONPATH=.:tests /path/to/hardware/python -m unittest tests/test_teach_hardware.py` and `PYTHONPATH=. /path/to/hardware/python tests/check_native_teleop.py` using the app's LeRobot environment.
+
+Simulation provides **Practice leader movement** with a joint selector and ± buttons while following.
+
+## Play from scripts or Claude (API)
+
+While the console is open, connected and holding (Teach or Follow any control once), taught controls can be played and adjusted from `scripts/orchid.py` or the `orchid-keys` Claude skill. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply.
+
+```bash
+python3 scripts/orchid.py status                 # controls, press lengths, speed, readiness
+python3 scripts/orchid.py play C --press 0.8     # waits until the arm is back home
+python3 scripts/orchid.py seq "C E G:1.2 C" --speed 1.5
+python3 scripts/orchid.py set ccw --turn -25     # a dial direction's turn angle
+python3 scripts/orchid.py speed 2                # shared default speed
+python3 scripts/orchid.py home | stop
+```
+
+HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `POST /api/controls/{id}/play`, `POST /api/controls/{id}`, `POST /api/sequence`, `POST /api/settings`, `POST /api/home`, `POST /api/stop`. A sequence is one motion that passes through home between controls.
 
 ## Register the eight chord buttons
 
 Select a button on the left of the instrument map. The upper row is **Dim, Min, Maj, Sus**; the lower row is **6, m7, M7, 9**. Lowercase m7 and uppercase M7 are separate buttons. Use the same light press → first contact → clearance → three tests sequence as the keyboard.
 
-Set up a reference chord and keep Orchid's playstyle consistent. A chord button is not necessarily a standalone note trigger: extensions require a chord, and chord-type behavior depends on playstyle. Review the display and musical response as well as the clean physical release. The app records individual button motions; it does not coordinate simultaneous key/button combinations. **Release & continue** advances within the chord group. After the group is complete, select another group on the map.
+Set up a reference chord and keep Orchid's playstyle consistent. A chord button is not necessarily a standalone note trigger: extensions require a chord, and chord-type behavior depends on playstyle. Review the display and musical response as well as the clean physical release. The app records individual button motions; it does not coordinate simultaneous key/button combinations. **Continue at home** advances within the chord group during leader teaching; manual teaching uses **Release & continue**. After the group is complete, select another group on the map.
 
 ## Register the large voicing dial
 
@@ -132,6 +161,12 @@ Instrument references: [Playstyles](https://support.telepathicinstruments.com/hc
 
 For normal shutdown, support the arm, open **Release or disconnect**, confirm support, and choose **Disconnect**. Rest the unpowered arm safely. Then close the browser and stop Python with Ctrl+C. Never rely on closing a browser to release torque.
 
+Use **Copy error** beside an error to copy its full text, including joint measurements and targets. Copy is available while stopped, disconnected, or viewing without operator control, and on error entries in Session activity. If browser clipboard access is blocked, the app exposes selected text for manual copying. Copying sends no command to either arm.
+
+Faults now show **STOPPED · UNVERIFIED** and the actual stop reason beside the leader controls. A joint-boundary notice can occur separately from the fault; read the stop reason before retrying. The Python terminal immediately prints arm faults, failed holds, rejected commands and worker/cleanup errors as JSON, including the failing measured/requested positions and traceback when available. The same records are saved in `data/hardware/arm-events.jsonl` (or `data/simulation/arm-events.jsonl`), with three rotated 5 MB backups. Feedback in an error record is cached and timestamped; logging does not add reads to a failed motor bus.
+
+Explicit follower arming performs the position-control setup used by the pinned LeRobot replay driver: response delay, acceleration, angle-feedback mode, PID gains and gripper protection settings. It verifies the settings with torque off, then takes a stable position reading, seeds that position as the target, and enables the hold. Connection and leader input remain read-only. This setup does not change saved calibration. Leader positioning uses the native defaults described above; recorded automatic playback still uses the separate playback controller. A setup failure leaves torque off and reports the failed register.
+
 Export the session for review. For a full backup, stop the app and copy `data/hardware/` (or `data/simulation/`). Do not copy just a live SQLite database while its WAL files may contain recent changes. Keep all files together.
 
 ## Commissioning the repaired arm
@@ -147,3 +182,13 @@ This new web workflow has not yet been validated on the repaired physical arm. B
 7. Save fixture marks, glove/pad details, date, and the exported session. Re-teach after contact-tool, glove-fit, opening, hardware, or placement changes.
 
 Encoder position and tracking checks cannot measure force, detect every collision, or guarantee safety after mechanical slippage. Automatic performances, travel between keys, force sensing, and velocity-sensitive playing are future work.
+
+## Reporting an arm error
+
+Every new arm fault or rejected operation saves a local incident automatically. Open **Error reports**, optionally describe what you saw, then press **Report to Codex**. This queues that incident for the existing Codex chat; the chat checks the queue about once a minute while the Codex app is running. The report changes from **Queued** to **Codex is reviewing**, then **Reviewed** or **Operator action needed**. Queueing does not mean Codex has read it yet. Only reports you explicitly queue request attention; ordinary errors do not restart background arm monitoring.
+
+**Download diagnostics** exports the same JSON bundle for manual sharing. Every error message also has **Copy error**. These actions work without owning the motor session and issue no motor commands. If delivery is not configured, reports remain local. If saving fails, the app says so instead of claiming a report exists.
+
+A bundle contains up to 30 seconds of available telemetry (at most 900 samples), the failing sample before the stop handler, recent operator actions, both calibrations, the fixture/home reference, cached motor setup and health readings, controller limits, and Python/LeRobot versions and source hashes. A session shorter than 30 seconds has less history. Missing or stale voltage/temperature data stays identified as such; recording does not add serial reads. Targets are distinguished as proposed, sent (the write returned), and goal-register readback (when available). A sent target alone does not prove physical motion.
+
+Bundles and report acknowledgments live under `data/hardware/incidents/` (practice uses `data/simulation/incidents/`) and are ignored by Git. They contain local paths, fixture labels, calibration and operator notes. Files remain available across restarts; download them before manually deleting old incidents. Saving uses a bounded memory buffer and a separate writer, so disk persistence does not run on the motor worker. Reporting never changes motion limits, releases torque or restarts the controller. Support/clearance confirmation is still needed before a physical trial or a restart that could affect a powered arm.

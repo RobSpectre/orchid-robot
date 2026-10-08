@@ -10,10 +10,13 @@ MAX_MOTOR_ID = 20
 EXPECTED_MOTOR_IDS = list(range(1, 7))
 
 
+# USB arm adapters only; never the host's built-in ttyS ports. Linux: ttyACM/ttyUSB. macOS: the tty.* call-in
+# devices LeRobot uses (one per adapter; the matching cu.* device is the same port), including WCH's CH34x driver.
+SERIAL_PATTERNS = ("/dev/ttyACM*", "/dev/ttyUSB*", "/dev/tty.usbmodem*", "/dev/tty.usbserial*", "/dev/tty.wchusbserial*")
+
+
 def serial_candidates():
-    # Do not probe the host's built-in ttyS ports. These are USB arm adapters.
-    return sorted({path for pattern in ("/dev/ttyACM*", "/dev/ttyUSB*", "/dev/tty.usbmodem*", "/dev/tty.usbserial*")
-                   for path in glob.glob(pattern)})
+    return sorted({path for pattern in SERIAL_PATTERNS for path in glob.glob(pattern)})
 
 
 def probe(port: str, *, guard=lambda: None) -> dict | None:

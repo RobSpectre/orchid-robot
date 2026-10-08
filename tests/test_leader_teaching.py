@@ -1,4 +1,4 @@
-"""Dual-arm workflows and bounded leader input; never opens hardware ports."""
+"""Dual-arm workflows with native position following; never opens hardware ports."""
 from copy import deepcopy
 import time
 
@@ -19,7 +19,7 @@ def engine(tmp_path):
     e.close()
 
 
-def prepare(e, control="C"):
+def prepare(e, control="C", *, local=True, resting=False):
     connect(e, teaching_mode="leader")
     calibrate(e)
     command(e, "calibrate", target="leader", supported=True)
@@ -28,16 +28,34 @@ def prepare(e, control="C"):
         command(e, "simulate_sweep")
         command(e, "calibration_next", range_complete=True)
     command(e, "calibration_save", range_complete=True)
+    if resting:
+        e.arm.current["elbow_flex"] = 3100
+        e.arm.current["gripper"] = 1000
+    e.leader.current = dict(e.arm.current)  # Operator matches poses before engagement.
+    command(e, "capture_home", supported=True)
     command(e, "control_start", control=control, supported=True)
-    command(e, "leader_hold", supported=True)
+    assert e.arm.enabled and not e.controller.engaged
+    if local:
+        command(e, "capture_key_clearance", path_clear=True)
 
 
-def move(e, motor="wrist_flex", ticks=48):
+def move(e, motor="wrist_flex", ticks=12):
+    # Model the operator bringing the leader close during the countdown.
+    e.leader.current = dict(e.arm.current)
     command(e, "leader_resume", hands_clear=True)
     command(e, "simulate_leader", motor=motor, delta=ticks)
     while e.simulated_leader_input:
         e.step()
         assert e.phase != "fault", e.error
+    # Position targets persist while the leader is held still; wait for arrival
+    # before capturing, just as an operator watching the arm would.
+    for _ in range(100):
+        if m.distance(e.controller.previous, e.controller.desired) == 0:
+            break
+        e.step()
+        assert e.phase != "fault", e.error
+    else:
+        pytest.fail("Leader target did not converge")
     command(e, "leader_pause")
 
 
@@ -45,13 +63,17 @@ def move(e, motor="wrist_flex", ticks=48):
 def test_leader_press_captures_measured_follower_and_verifies_three_trials(engine, control):
     prepare(engine, control)
     assert engine.arm.enabled and not engine.leader.enabled
-    move(engine, ticks=96)
-    command(engine, "capture_pressed")
-    assert engine.capture["path"][0]["wrist_flex"] == 2071
-    move(engine, ticks=-48)
+    assert engine.capture["path"][0]["wrist_flex"] == 2047
+    move(engine, ticks=12)
     command(engine, "capture_touch")
-    move(engine, ticks=-48)
-    command(engine, "capture_clear", hands_clear=True)
+    move(engine, ticks=12)
+    command(engine, "capture_pressed")
+    assert engine.draft["path"][-1]["wrist_flex"] == 2071
+    command(engine, "retreat_from_press", hands_clear=True)
+    assert engine.phase == "home_return" and isinstance(engine.controller, LeaderController)
+    assert not engine.controller.engaged and engine.arm.enabled and not engine.leader.enabled
+    assert engine.arm.current["wrist_flex"] == 2047
+    command(engine, "capture_home_return", path_clear=True)
     assert engine.phase == "holding"
     assert not isinstance(engine.controller, LeaderController)
     assert engine.arm.enabled and not engine.leader.enabled
@@ -62,11 +84,11 @@ def test_leader_press_captures_measured_follower_and_verifies_three_trials(engin
         command(engine, "pass")
     assert {**engine.key_statuses(), **engine.statuses(engine.controls)}[control]["status"] == "registered"
     command(engine, "next", supported=True)
-    assert not engine.arm.enabled
-    assert engine.controller is None
+    assert engine.arm.enabled
+    assert isinstance(engine.controller, LeaderController) and not engine.controller.engaged
 
 
-@pytest.mark.parametrize("control,direction", [("voicing.cw", 48), ("voicing.ccw", -48)])
+@pytest.mark.parametrize("control,direction", [("voicing.cw", 12), ("voicing.ccw", -12)])
 def test_leader_dial_forward_loop_and_handover(engine, control, direction):
     prepare(engine, control)
     command(engine, "dial_capture_start", fixed_pad=True, reference="C major", expected_effect="Small voicing change")
@@ -74,10 +96,11 @@ def test_leader_dial_forward_loop_and_handover(engine, control, direction):
     command(engine, "dial_capture_contact")
     move(engine, motor="wrist_roll", ticks=direction)
     command(engine, "dial_capture_turn", direction_verified=True)
-    move(engine, ticks=-48)
+    move(engine, ticks=-12)
     command(engine, "dial_capture_lift", rim_clear=True)
     move(engine, motor="wrist_roll", ticks=-direction)
     command(engine, "dial_capture_return", hands_clear=True, rim_clear=True)
+    command(engine, "capture_home_return", path_clear=True)
     assert engine.phase == "holding" and engine.arm.enabled
     for _ in range(3):
         command(engine, "test", hands_clear=True, reference_reset=True)
@@ -105,59 +128,94 @@ def test_connection_and_calibration_are_separate_and_persisted(engine):
     assert engine.leader.calibration is None
 
 
-def test_clutch_reanchors_after_large_leader_reposition_without_jump(engine):
+def test_engagement_aligns_absolute_pose_and_pause_keeps_the_follower_still(engine):
     prepare(engine)
     before = dict(engine.arm.current)
     engine.leader.current["shoulder_pan"] += 600
     engine.step()  # Paused input is free to move; no input-jump check.
     assert engine.arm.current == before
     command(engine, "leader_resume", hands_clear=True)
-    assert engine.arm.current == before
+    assert engine.arm.current["shoulder_pan"] == before["shoulder_pan"] + 600
     engine.leader.current["shoulder_pan"] += 4
     engine.step()
-    assert engine.arm.current["shoulder_pan"] == before["shoulder_pan"] + 1
+    assert engine.arm.current["shoulder_pan"] == before["shoulder_pan"] + 604
     command(engine, "leader_pause")
     at_pause = dict(engine.arm.current)
     engine.leader.current["shoulder_pan"] -= 500
     engine.step()
-    command(engine, "leader_resume", hands_clear=True)
     assert engine.arm.current == at_pause
+    command(engine, "leader_resume", hands_clear=True)
+    assert engine.arm.current["shoulder_pan"] == at_pause["shoulder_pan"] - 500
 
 
-def test_gripper_input_is_ignored_and_fast_input_is_discarded(engine):
+@pytest.mark.parametrize("pause", ["initial", "button", "visibility"])
+def test_paused_hold_keeps_one_target_despite_small_follower_drift(engine, pause):
     prepare(engine)
+    if pause != "initial":
+        command(engine, "leader_resume", hands_clear=True)
+        engine.leader.current["elbow_flex"] += 4
+        engine.step()
+        # Pause discards a small tracking lag once, then holds that measurement.
+        engine.arm.current["elbow_flex"] -= 1
+        held = dict(engine.arm.current)
+        if pause == "button":
+            command(engine, "leader_pause")
+        else:
+            engine.leader_visible_until = time.monotonic() - 1
+            engine.step()
+    else:
+        held = dict(engine.arm.current)
+    assert not engine.controller.engaged
+    assert engine.controller.previous == held
+    for _ in range(4):
+        engine.arm.current["elbow_flex"] += 3
+        engine.leader.current["elbow_flex"] -= 4
+        engine.step()
+        assert engine.phase == "note_hover", engine.error
+        assert engine.controller.previous == held
+        assert engine.arm.current == held
+    # Repeated Pause requests cannot rebase an already-paused hold either.
+    engine.arm.current["elbow_flex"] += 3
+    command(engine, "leader_pause")
+    assert engine.arm.current == held
+
+
+
+def test_direct_leader_pose_and_paused_reposition_do_not_command_the_gripper(engine):
+    prepare(engine, local=False)
     command(engine, "leader_resume", hands_clear=True)
     before = dict(engine.arm.current)
     engine.leader.current["gripper"] = 10
     engine.leader.current["wrist_flex"] += 100
     engine.step()
-    assert engine.controller.limited
-    assert 0 < engine.arm.current["wrist_flex"] - before["wrist_flex"] <= 2
+    assert engine.arm.current["wrist_flex"] == before["wrist_flex"] + 100
     assert engine.arm.current["gripper"] == before["gripper"]
-    after = dict(engine.arm.current)
-    for _ in range(8):
-        engine.step()
-    assert engine.arm.current == after  # No queued destination/catch-up.
+    command(engine, "leader_pause")
+    held = dict(engine.arm.current)
+    assert engine.recording_error and engine.snapshot()["recording_error"]
+    rejected = reject(engine, "capture_key_clearance", path_clear=True)
+    assert "Recording cannot be used" in rejected["message"]
+    assert engine.phase == "home_approach"
+    engine.leader.current["wrist_flex"] += 300
+    engine.step()
+    command(engine, "leader_resume", hands_clear=True)
+    engine.step()
+    assert engine.arm.current["wrist_flex"] == held["wrist_flex"] + 300
+    assert engine.arm.current["gripper"] == held["gripper"]
+    command(engine, "release", supported=True)
+    assert engine.recording_error is None
 
 
-@pytest.mark.parametrize("reason", ["leader_jump", "leader_unplugged", "leader_torque", "leader_limit", "tracking", "follower_grip", "loop_gap", "lease", "stop"])
+@pytest.mark.parametrize("reason", ["invalid_encoder", "leader_unplugged", "leader_torque", "lease", "stop"])
 def test_following_faults_hold_without_torque_drop_or_motion_resume(engine, reason):
     prepare(engine)
     command(engine, "leader_resume", hands_clear=True)
-    if reason == "leader_jump":
-        engine.leader.current["wrist_flex"] += 129
+    if reason == "invalid_encoder":
+        engine.leader.current["wrist_flex"] = -1
     elif reason == "leader_unplugged":
         engine.leader.connected = False
     elif reason == "leader_torque":
         engine.leader.enabled = True
-    elif reason == "leader_limit":
-        engine.leader.current["elbow_flex"] = 1000
-    elif reason == "tracking":
-        engine.arm.current["elbow_flex"] += 9
-    elif reason == "follower_grip":
-        engine.arm.current["gripper"] += 4
-    elif reason == "loop_gap":
-        engine.clock.sleep(0.3)
     elif reason == "lease":
         engine.lease_until = time.monotonic() - 1
     else:
@@ -178,7 +236,7 @@ def test_visibility_lease_pauses_and_requires_explicit_reengagement(engine):
     before = dict(engine.arm.current)
     engine.step()
     assert not engine.controller.engaged and engine.arm.enabled
-    assert engine.arm.current == before and engine.phase == "note_ready"
+    assert engine.arm.current == before and engine.phase == "note_hover"
     engine.heartbeat("operator")
     engine.step()
     assert not engine.controller.engaged  # Returning to the tab does not re-engage.
@@ -188,36 +246,44 @@ def test_capture_requires_paused_powered_hold_and_tests_keep_leader_disengaged(e
     prepare(engine)
     reject(engine, "leader_resume")
     command(engine, "leader_resume", hands_clear=True)
-    reject(engine, "capture_pressed")
-    assert engine.phase == "note_ready" and engine.capture is None
+    reject(engine, "capture_touch")
+    assert engine.phase == "note_hover" and len(engine.capture["path"]) == 1
     reject(engine, "calibrate", supported=True, target="leader")
     reject(engine, "leader_hold", supported=True)
 
 
 def test_recorded_path_uses_measured_positions_not_sent_targets(engine):
     prepare(engine)
-    command(engine, "capture_pressed")
     command(engine, "leader_resume", hands_clear=True)
     engine.arm.jammed = True
     for _ in range(6):
         engine.leader.current["wrist_flex"] += 4
         engine.step()
-    assert engine.phase == "note_pressed"
+    assert engine.phase == "note_hover"
     assert engine.arm.current["wrist_flex"] == 2047
     assert all(p["wrist_flex"] == 2047 for p in engine.capture["path"])
 
 
-def test_proposed_contact_target_rejected_before_it_is_sent(engine):
+def test_unsuitable_recording_does_not_interrupt_native_following_or_become_playback(engine):
     prepare(engine)
-    command(engine, "capture_pressed")
+    move(engine, ticks=12)
+    command(engine, "capture_touch")
     command(engine, "leader_resume", hands_clear=True)
     for _ in range(40):
         engine.leader.current["wrist_flex"] += 4
         engine.step()
-        if engine.phase == "fault":
-            break
-    assert engine.phase == "fault" and "contact stroke" in engine.error
-    assert engine.arm.current["wrist_flex"] <= 2047 + m.MAX_CONTACT_EXCURSION
+    assert engine.phase == "note_touch" and engine.controller.engaged
+    assert "Contact stroke" in engine.recording_error
+    assert engine.arm.current["wrist_flex"] == 2059 + 160
+    command(engine, "leader_pause")
+    reject(engine, "capture_pressed")
+    assert engine.phase == "note_touch" and not engine.controller.engaged
+    assert engine.draft is None
+    command(engine, "leader_resume", hands_clear=True)
+    engine.leader.current["wrist_flex"] -= 160
+    engine.step()
+    assert engine.arm.current["wrist_flex"] == 2059
+    assert engine.recording_error  # Returning does not silently repair a rejected recording.
 
 
 def test_reconnect_restores_both_references_without_powering_or_resuming(engine):
@@ -246,7 +312,7 @@ def test_leader_reload_retains_follower_calibration_and_note_identity(engine):
     assert engine.calibrated and engine.leader_calibrated
 
 
-def test_stale_leader_read_faults_before_follower_target(engine):
+def test_native_read_completion_does_not_use_a_custom_quarter_second_deadline(engine):
     prepare(engine)
     command(engine, "leader_resume", hands_clear=True)
     read = engine.leader.read_raw
@@ -256,7 +322,7 @@ def test_stale_leader_read_faults_before_follower_target(engine):
     engine.leader.read_raw = slow
     before = dict(engine.arm.current)
     engine.step()
-    assert engine.phase == "fault" and engine.arm.current == before and engine.arm.enabled
+    assert engine.phase == "note_hover" and engine.arm.current == before and engine.arm.enabled
 
 
 def test_partial_pair_connection_closes_both_without_torque_commands(tmp_path):
@@ -270,7 +336,9 @@ def test_partial_pair_connection_closes_both_without_torque_commands(tmp_path):
         arm = follower()
         def fail():
             arm.connected = True
-            raise m.SafetyError("Leader connection failed")
+            arm.connection_readings = {"stage": "saved_calibration_readback",
+                                       "voltage_raw": dict.fromkeys(m.MOTORS, 52)}
+            raise RuntimeError("Failed to read 'Min_Position_Limit' on id_=4. [RxPacketError] Input voltage error!")
         arm.open = fail
         return arm
     arms = [{"port": "/dev/test-follower", "role": "follower", "voltage": 12, "motor_ids": list(range(1,7))},
@@ -281,7 +349,14 @@ def test_partial_pair_connection_closes_both_without_torque_commands(tmp_path):
         command(e, "refresh_ports")
         reject(e, "connect", prepared=True, fixture="test", teaching_mode="leader", port="/dev/test-follower", leader_port="/dev/test-follower")
         assert not opened
-        reject(e, "connect", prepared=True, fixture="test", teaching_mode="leader", port="/dev/test-follower", leader_port="/dev/test-leader")
+        result = reject(e, "connect", prepared=True, fixture="test", teaching_mode="leader", port="/dev/test-follower", leader_port="/dev/test-leader")
+        assert "Leader connection failed (/dev/test-leader)" in result["message"]
+        assert "Input voltage error" in result["message"]
+        import json
+        error = next(json.loads(line) for line in e.event_log.path.read_text().splitlines()
+                     if json.loads(line)["kind"] == "connection_failed")
+        assert error["failed_role"] == "leader" and error["failed_port"] == "/dev/test-leader"
+        assert error["connection_readings"]["voltage_raw"]["wrist_flex"] == 52
         assert len(opened) == 2 and all(not arm.connected and not arm.enabled for arm in opened)
         assert e.phase == "disconnected" and e.arm is None and e.leader is None
     finally:

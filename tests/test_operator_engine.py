@@ -1,5 +1,6 @@
 """Full operator workflows, persistence, and failures without a serial device."""
 from copy import deepcopy
+import json
 import time
 import uuid
 
@@ -53,11 +54,53 @@ def calibrate(e):
 
 
 def teach(e):
-    command(e, "capture_pressed")
+    command(e, "capture_hover")
     command(e, "capture_touch")
-    command(e, "capture_clear", supported=True)
+    command(e, "capture_pressed", supported=True)
+    command(e, "retreat_from_press", hands_clear=True)
     assert e.phase == "holding"
     assert e.arm.enabled
+
+
+def test_forward_capture_order_and_reverse_release_preserve_the_taught_stroke(engine):
+    connect(engine)
+    calibrate(engine)
+    command(engine, "note_start", key="C", supported=True)
+    reject(engine, "capture_pressed")
+    reject(engine, "capture_touch")
+    command(engine, "capture_hover")
+    assert engine.phase == "note_hover" and not engine.arm.enabled
+    assert engine.capture["path"][0]["wrist_flex"] == 2047
+    reject(engine, "capture_pressed")
+    command(engine, "capture_touch")
+    assert engine.phase == "note_touch" and not engine.arm.enabled
+    assert engine.capture["path"][engine.capture["touch_index"]]["wrist_flex"] == 2071
+    command(engine, "capture_pressed", supported=True)
+    assert engine.phase == "note_pressed" and engine.arm.enabled
+    captured = deepcopy(engine.draft)
+    assert captured["path"][-1]["wrist_flex"] == 2083
+    reject(engine, "retreat_from_press")
+    assert engine.phase == "note_pressed" and engine.arm.current["wrist_flex"] == 2083
+    # Start from fresh feedback, without aligning back into the captured press.
+    engine.arm.current["wrist_flex"] = 2082
+    command(engine, "retreat_from_press", hands_clear=True)
+    assert engine.draft == captured  # Returning never records a second stroke.
+    engine.log.flush()
+    with open(engine.log.name) as stream:
+        retreat_events = [json.loads(line) for line in stream]
+    assert not any(event["stage"] in ("down", "down_settle", "hover_alignment") for event in retreat_events)
+    targets = [event["target"]["wrist_flex"] for event in retreat_events if event["stage"] in ("retreat", "retreat_settle")]
+    assert targets and targets[0] == 2082 and targets[-1] == 2047
+    assert targets == sorted(targets, reverse=True)
+    assert engine.phase == "holding" and engine.arm.current == captured["path"][0]
+    command(engine, "test", hands_clear=True)
+    engine.log.flush()
+    with open(engine.log.name) as stream:
+        release_targets = [event["target"] for line in stream if (event := json.loads(line))["stage"] == "up"]
+    path = m.plan(captured)
+    expected = [target for a, b in zip(reversed(path), reversed(path[:-1])) for target in m.segment(a, b)]
+    assert release_targets == expected
+    assert engine.arm.current == captured["path"][0]
 
 
 def accept_trial(e):
@@ -361,7 +404,7 @@ def test_large_manual_jump_stops_capture(engine):
     connect(engine)
     calibrate(engine)
     command(engine, "note_start", key="C", supported=True)
-    command(engine, "capture_pressed")
+    command(engine, "capture_hover")
     engine.arm.current["wrist_flex"] += 30
     engine.step()
     assert engine.phase == "fault"
@@ -372,7 +415,7 @@ def test_large_manual_jump_stops_capture(engine):
 def test_cancel_during_handover_never_enables_torque(engine, monkeypatch):
     held(engine)
     command(engine, "retry", supported=True)
-    command(engine, "capture_pressed")
+    command(engine, "capture_hover")
     command(engine, "capture_touch")
     original = GuardedController.arm_here
     def interrupt_during_stability(controller):
@@ -382,7 +425,7 @@ def test_cancel_during_handover_never_enables_torque(engine, monkeypatch):
         return original(controller)
     monkeypatch.setattr(GuardedController, "arm_here", interrupt_during_stability)
     engine.heartbeat("operator")
-    engine.submit("operator", "clear", "capture_clear", engine.revision, {"supported": True})
+    engine.submit("operator", "press", "capture_pressed", engine.revision, {"supported": True})
     engine.step()
     assert engine.phase == "fault"
     assert not engine.arm.enabled

@@ -11,17 +11,48 @@ import uuid
 
 from . import motion as m
 from . import dial
+from . import home
 from .controls import CATALOG, group_members
 from .devices import HardwareArm, HardwareLeader, SimulatedArm, validate_calibration
 from .discovery import discover_arms, follower_problem, leader_problem
+from .diagnostics import EventLogger
+from .incidents import ERROR_KINDS, IncidentStore
+from . import leader as leader_motion
 from .leader import LeaderController, TEACH_PHASES, FOLLOW_LEASE
 from .storage import Repository
+from . import teach as teach_motion
 from .telemetry import motor_status, pose_angles
 
 RANGE_MOTORS = tuple(name for name in m.MOTORS if name != "wrist_roll")
 REQUIRED_TRIALS = 3
 LEASE_SECONDS = 5.0
+TEACHING_WORKFLOW_VERSION = "leader-record-replay-v1"
 CALIBRATION_SETUP_PHASES = ("connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review")
+TEACH_SESSION_PHASES = ("teach_hold", "teach_follow", "teach_record", "teach_play")
+RECORDING_FORMAT = "leader_recording_v1"
+WAYPOINT_FORMAT = "leader_waypoints_v1"
+RECORDING_FORMATS = (RECORDING_FORMAT, WAYPOINT_FORMAT)
+# Neighbouring steps must stay close (a far one means it was captured in the wrong place). The listed joints
+# are expected to change: the jaws open and close on the dial, and the turn is a wrist roll.
+STROKE_PAIRS = {"key": (("hover", "touch", ()), ("touch", "press", ())),
+                "dial": (("hover", "open", ("gripper",)), ("open", "lower", ("gripper",)), ("lower", "grip", ("gripper",)))}
+DIAL_SHARED = ("hover", "open", "lower", "grip")  # one knob: CW and CCW share every taught step
+DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}
+DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S}
+API_ACTIONS = ("teach_play", "teach_sequence", "teach_settings", "teach_configure", "teach_hold", "teach_go_home", "teach_go_rest")  # default wrist turn per direction (deg); set per direction
+STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)",
+              "open": " (jaws open, still above the knob)", "lower": " (lowered around the knob, not touching it)",
+              "grip": " (jaws closed on the knob)"}
+
+
+def shift_roll(deg, ticks):
+    """A wrist-roll angle (LeRobot degrees) after its encoder zero moves by `ticks`: same physical angle, new number."""
+    raw = (deg * 4095 / 360 + 2047.5 + ticks) % 4096
+    return round((raw - 2047.5) * 360 / 4095, 3)
+
+
+def stroke_gap(a, b, ignore=()):
+    return teach_motion.max_gap({k: v for k, v in a.items() if k not in ignore}, {k: v for k, v in b.items() if k not in ignore})
 
 
 class GuardedController(m.Controller):
@@ -37,6 +68,9 @@ class GuardedController(m.Controller):
 
     def arm_here(self):
         # A stop or expired lease during the stability check must precede enable.
+        self.guard()
+        if prepare := getattr(self.arm, "prepare_motion", None):
+            prepare(guard=self.guard)
         current = m.stable_pose(self.arm, self.sleep)
         self.check_start(current)
         self.guard()
@@ -44,6 +78,27 @@ class GuardedController(m.Controller):
         self.arm.arm_at_current(current)
         self.previous, self.last_tick, self.started = current, None, None
         return current
+
+    def retreat(self):
+        """Follow this reversed stroke once, starting at the measured press.
+
+        Never align back to the press or run the downstroke again. The operator
+        has already taught and captured it; only contact then hover remain.
+        """
+        self.guard()
+        m.require(self.enabled, "Establish the captured press hold before retreating.")
+        current = self.arm.read()
+        self.arm.require_torque(True)
+        self.check_start(current)
+        self.previous, self.last_tick, self.started = dict(current), None, self.clock()
+        self.record(stage="retreat_begin", actual=current)
+        for pose in self.path[1:]:
+            for target in m.segment(current, pose):
+                self.tick(target, "retreat")
+            self.settle(pose, "retreat_settle")
+            current = pose
+        self.started = None
+        self.record(stage="retreat_complete", actual=current)
 
 
 class Engine:
@@ -63,7 +118,9 @@ class Engine:
                                         "motor_ids": list(range(1, 7)), "voltage": 5.2,
                                         "connectable": False, "leader_connectable": True, "problem": "Leader input"}]
         self.repo = Repository(directory, mode)
+        self.event_log = EventLogger(self.repo.directory)
         self.calibration = self.repo.get("calibration")
+        self.home = self.repo.get("home")
         self.leader_calibration = self.repo.get("leader_calibration")
         self.leader = None
         self.leader_calibrated = False
@@ -80,6 +137,17 @@ class Engine:
         self.revision, self.phase = 0, "disconnected"
         self.message = "Connect the practice arm to explore the complete workflow." if mode == "simulation" else "Secure the arm clear of Orchid, then choose its follower port."
         self.arm = self.controller = self.log = None
+        self.teach = None  # teach_motion.Session: leader record -> replay, same loop as teach_key.py
+        self.teach_played = None
+        self.teach_points, self.teach_points_for = {}, None  # waypoints being taught, and for which control
+        self.teach_returning = False  # the automatic press -> home return after capturing a press
+        self.teach_going_home = False  # an operator "Go to home" move
+        self.teach_home_doc = self.repo.get("teach_home")  # cached: published every control tick
+        self.teach_rest_doc = self.repo.get("teach_rest")  # a parking pose (Go to rest)
+        self.teach_dial_doc = self.repo.get("teach_dial")  # hover/open/lower/grip shared by both dial directions
+        self.teach_settings = {**DEFAULT_TEACH_SETTINGS, **(self.repo.get("teach_settings") or {})}
+        self.teach_sequence_label = None
+        self.teach_going_rest = None  # "rest" during an operator Go to rest
         self.follower_port = None
         self.current = self.torque = None
         self.feedback_at = None
@@ -87,6 +155,10 @@ class Engine:
         self.diagnostics_error = None
         self.selected = "C"
         self.capture = self.draft = None
+        self.route_approach = self.route_return = None
+        self.home_move_progress = None
+        self.home_arrival_samples = 0
+        self.recording_error = None
         self.touch_index = None
         self.trials = 0
         self.range_index = 0
@@ -110,9 +182,52 @@ class Engine:
         self.thread = None
         self.public = {}
         self.publish()
+        self.incidents = IncidentStore(self.repo.directory, error_logger=self.event_log, clock=clock)
 
-    def event(self, kind, message, detail=None):
-        self.repo.event(kind, message, detail)
+    def record_telemetry(self):
+        self.incidents.record({"phase": self.phase, "stage": self.stage,
+                               "follower": self.current, "leader": self.leader_current,
+                               "torque": self.torque, "leader_torque": self.leader_torque,
+                               "feedback_at": self.feedback_at, "leader_feedback_at": self.leader_feedback_at,
+                               "controller": getattr(self.controller, "last_sample", {})})
+
+    def error_context(self):
+        controller = self.controller
+        return {"mode": self.mode, "instance_id": self.instance_id, "phase": self.phase,
+                "control": self.selected, "follower_port": self.follower_port,
+                "motion_log": str(getattr(self.log, "name", "")),
+                "last_cached_follower": deepcopy(self.current), "last_cached_leader": deepcopy(self.leader_current),
+                "last_cached_torque": deepcopy(self.torque), "last_cached_leader_torque": deepcopy(self.leader_torque),
+                "feedback_at": self.feedback_at, "leader_feedback_at": self.leader_feedback_at,
+                "sample": deepcopy(getattr(controller, "last_sample", {})),
+                "motor_setup": deepcopy(getattr(self.arm, "position_control_setup", {})),
+                "calibration": deepcopy(self.calibration), "leader_calibration": deepcopy(self.leader_calibration),
+                "fixture": deepcopy(self.fixture), "home": deepcopy(self.home),
+                "diagnostics": deepcopy(self.diagnostics),
+                "recent_events": [{k: e[k] for k in ("created", "kind", "message") if k in e} for e in self.events[:40]],
+                "leader_port": getattr(self.leader, "port", None), "teaching_mode": self.teaching_mode,
+                "follower_voltage_at_connect": getattr(self.arm, "voltage", None),
+                "leader_voltage_at_connect": getattr(self.leader, "voltage", None),
+                "policy": {"motion": {k: v for k, v in vars(m).items() if k.isupper() and isinstance(v, (int, float, str))},
+                           "leader": {k: v for k, v in vars(leader_motion).items() if k.isupper() and isinstance(v, (int, float, str))},
+                           "leader_driver": deepcopy(getattr(controller, "settings", {}))},
+                "boundary_joints": list(getattr(controller, "boundary_joints", []))}
+
+    def report_error(self, kind, exc, detail=None):
+        # Cached data only. Reporting must never open ports or add motor reads.
+        context = {**self.error_context(), **(detail or {})}
+        message = str(exc) or type(exc).__name__
+        self.incidents.capture(kind, message, context, exc=exc)
+        self.event_log.emit(kind, message, context, exc)
+
+    def event(self, kind, message, detail=None, *, exc=None):
+        context = self.error_context() if kind in ERROR_KINDS else {"mode": self.mode, "phase": self.phase}
+        context.update(detail or {})
+        if kind in ERROR_KINDS:
+            self.incidents.capture(kind, message, context, exc=exc)
+        # Emit before SQLite so a database failure cannot swallow the cause.
+        self.event_log.emit(kind, message, context, exc)
+        self.repo.event(kind, message, context)
         self.events = self.repo.events()
 
     def transition(self, phase, message):
@@ -129,13 +244,29 @@ class Engine:
         signature = m.fingerprint(self.calibration or {})
         result = {}
         for name, entry in entries.items():
+            if entry and entry.get("format") in RECORDING_FORMATS:
+                valid = (entry.get("calibration_sha256") == signature and entry.get("mode") == self.mode
+                         and not self.waypoint_problem(entry))
+                trials = entry.get("verification", {}).get("successful_trials", 0) if valid else 0
+                result[name] = {"status": "registered" if valid else "needs_reteach",
+                                "trials": trials, "saved_at": entry.get("saved_at"), "recorded": valid,
+                                **({"turn_degrees": entry["turn_degrees"]} if "turn_degrees" in entry else {}),
+                                **({"press_s": entry["press_s"]} if "press_s" in entry else {})}
+                continue
             valid = bool(entry and entry.get("calibration_sha256") == signature
                          and entry.get("fixture_id") == self.fixture["id"]
                          and entry.get("mode") == self.mode)
+            if valid and (self.teaching_mode == "leader" or entry.get("home_motion")):
+                valid = bool(self.home_ready and entry.get("home_motion", {}).get("home_id") == self.home["id"])
             trials = entry.get("verification", {}).get("successful_trials", 0) if valid else 0
             result[name] = {"status": "registered" if trials >= REQUIRED_TRIALS else "testing" if valid else "needs_reteach" if entry else "empty",
-                            "trials": trials, "saved_at": entry.get("saved_at") if entry else None}
+                            "trials": trials, "saved_at": entry.get("saved_at") if entry else None, "recorded": False}
         return result
+
+    @property
+    def home_ready(self):
+        return bool(self.home and self.calibrated and self.home.get("calibration_sha256") == m.fingerprint(self.calibration)
+                    and self.home.get("fixture_id") == self.fixture["id"] and self.home.get("mode") == self.mode)
 
     @property
     def control(self):
@@ -156,12 +287,12 @@ class Engine:
 
     def ready_message(self):
         if self.teaching_mode == "leader":
-            return "Torque OFF. Position the follower just clear of the selected control, support it, then establish a hold for leader teaching."
+            return "Torque OFF. Start at the taught home, support the follower, and establish its hold. Use the leader to teach the approach."
         if self.is_dial:
             return "Torque OFF. Start just clear of the large voicing dial; teach a small turn, lift-off, and clear return."
         if self.control["kind"] == "button":
-            return f"Torque OFF. Support the arm and gently actuate {self.control['label']}. Observe Orchid's response; modifiers may not sound alone."
-        return f"Torque OFF. Support the arm and gently press {self.selected} only until it sounds."
+            return f"Torque OFF. Support the arm and start with the pad hovering above {self.control['label']}."
+        return f"Torque OFF. Support the arm and start with the pad hovering above {self.selected}."
 
     def publish(self):
         with self.lock:
@@ -171,13 +302,9 @@ class Engine:
             leader_reference = self.leader_calibrated or (leader_recording and self.offsets is not None)
             target = (self.controller.previous if self.controller and self.controller.enabled
                       and self.phase != "fault" else None)
-            self.export_data = {"schema_version": 2, "application": "orchid-demo", "mode": self.mode,
-                                "units": m.UNITS, "exported_at": m.stamp(), "calibration": deepcopy(self.calibration),
-                                "leader_calibration": deepcopy(self.leader_calibration),
-                                "fixture": deepcopy(self.fixture), "keys": deepcopy(self.notes),
-                                "controls": deepcopy(self.controls), "events": deepcopy(self.events)}
             self.public = {
                 "instance_id": self.instance_id, "revision": self.revision, "mode": self.mode,
+                "teaching_workflow_version": TEACHING_WORKFLOW_VERSION,
                 "phase": self.phase, "message": self.message, "error": self.error,
                 "connected": self.arm is not None, "calibrated": self.calibrated,
                 "calibrating": self.calibrating,
@@ -192,9 +319,32 @@ class Engine:
                            "pose_angles": pose_angles(self.leader_current, self.leader_calibration if self.leader_calibrated else None, leader_reference),
                            "motor_status": motor_status(self.leader_current, self.leader_torque, self.leader_calibration, self.ranges,
                                                         reference_ready=leader_reference, recording=leader_recording)},
-                "leader_teaching": isinstance(self.controller, LeaderController) and self.controller.enabled,
-                "leader_following": isinstance(self.controller, LeaderController) and self.controller.engaged,
+                "leader_teaching": bool(self.teach) or (isinstance(self.controller, LeaderController) and self.controller.enabled),
+                "leader_following": bool(self.teach and self.teach.mode in ("aligning", "following"))
+                                    or (isinstance(self.controller, LeaderController) and self.controller.engaged),
+                "teach": None if not self.teach else {
+                    "mode": self.teach.mode, "recording": self.teach.frames is not None,
+                    "recorded_seconds": self.teach.recorded_seconds, "progress": self.teach.progress,
+                    "warning": self.teach.warning, "played": self.teach_played,
+                    "clipped_steps": self.teach.clipped_steps, "speed": self.teach.speed,
+                    "points": [n for n in self.point_names(self.teach_points_for) if n in self.teach_points],
+                    "sequence": self.teach_sequence_label,
+                    "points_for": self.teach_points_for,
+                    "home_saved": self.shared_teach_home() is not None, "returning": self.teach_returning,
+                    "going_home": self.teach_going_home,
+                    "home_saved_at": (self.teach_home_doc or {}).get("saved_at") if self.shared_teach_home() else None,
+                    "rest_saved": self.shared_teach_rest() is not None, "going_rest": bool(self.teach_going_rest),
+                    "rest_saved_at": (self.teach_rest_doc or {}).get("saved_at") if self.shared_teach_rest() else None},
+                "leader_gripper_enabled": isinstance(self.controller, LeaderController) and self.controller.follow_gripper,
                 "leader_limited": isinstance(self.controller, LeaderController) and self.controller.limited,
+                "leader_boundary_joints": list(self.controller.boundary_joints) if isinstance(self.controller, LeaderController) else [],
+                "home": deepcopy(self.home), "home_ready": self.home_ready,
+                "home_error": m.distance(self.current, self.home["pose"]) if self.home_ready and self.current else None,
+                "at_home": bool(self.home_ready and self.current and home.at_home(self.current, self.home["pose"])),
+                "home_motion": bool(self.draft and self.draft.get("home_motion")),
+                "home_move_progress": self.home_move_progress,
+                "route_samples": len(self.route_approach or []) + len(self.route_return or []),
+                "recording_error": self.recording_error,
                 "simulated_leader_input": self.simulated_leader_input is not None,
                 "calibration_id": m.fingerprint(self.calibration)[:12] if self.calibration else None,
                 "discovery": deepcopy(self.discovery),
@@ -217,6 +367,7 @@ class Engine:
                 "dial_return_error": (m.distance(self.capture["path"][0], self.current)
                                       if self.is_dial and self.capture and self.current else None),
                 "trials": self.trials, "motion_stage": self.stage,
+                "teach_settings": deepcopy(self.teach_settings),
                 "capture_samples": len(self.capture["path"]) if self.capture else 0,
                 "range_motor": RANGE_MOTORS[self.range_index] if self.phase == "calibration_range" else None,
                 "range_index": self.range_index, "ranges": deepcopy(self.ranges),
@@ -232,7 +383,11 @@ class Engine:
 
     def export_snapshot(self):
         with self.lock:
-            return deepcopy(self.export_data)
+            return deepcopy({"schema_version": 2, "application": "orchid-demo", "mode": self.mode,
+                             "units": m.UNITS, "exported_at": m.stamp(), "calibration": self.calibration,
+                             "leader_calibration": self.leader_calibration, "home": self.home,
+                             "fixture": self.fixture, "keys": self.notes,
+                             "controls": self.controls, "events": self.events})
 
     def heartbeat(self, owner, *, leader_visible=True):
         with self.lock:
@@ -240,7 +395,7 @@ class Engine:
             m.require(self.owner in (None, owner) or self.lease_until <= now,
                       "Another browser is operating this arm. This window is read-only.")
             # Once a powered operation loses its owner, a new owner cannot revive it.
-            if self.owner and self.lease_until <= now and self.controller and self.controller.enabled:
+            if self.owner and self.lease_until <= now and (self.teach or (self.controller and self.controller.enabled)):
                 self.stop_event.set()
             self.owner = owner
             self.lease_until = now + LEASE_SECONDS
@@ -279,6 +434,22 @@ class Engine:
 
     def supported(self, args):
         m.require(args.get("supported") is True, "Confirm that the arm's weight is supported.")
+
+    def open_arm(self, device, role, port):
+        try:
+            device.open()
+        except Exception as exc:
+            # Preserve the role and the already-read values before pair cleanup
+            # discards both device objects. Reporting never probes the motors.
+            self.report_error("connection_failed", exc, {
+                "failed_role": role, "failed_port": port,
+                "connection_readings": deepcopy(getattr(device, "connection_readings", {})),
+            })
+            message = f"{role.title()} connection failed ({port}): {exc}"
+            if "Input voltage error" in str(exc):
+                message += (" Check this arm's motor voltage rating, power supply, and wiring before retrying. "
+                            "No motor settings or torque commands were sent during connection.")
+            raise m.SafetyError(message) from exc
 
     def require_phase(self, *phases):
         m.require(self.phase in phases, "That action is not available at this step.")
@@ -335,12 +506,15 @@ class Engine:
         previous = self.current
         torque = self.arm.torque_status()
         current = self.arm.read_raw()
+        # Preserve the newest manual observation even when validation below fails.
+        self.incidents.record({"phase": self.phase, "stage": "manual_read", "follower": current,
+                               "torque": torque, "leader": self.leader_current, "observed_at": time.time()})
         if self.phase != "connected":
             self.arm.require_torque(False)
             m.require(all(v == 0 for v in torque.values()), "Unexpected enabled motor during manual teaching")
         now = self.clock()
         m.require(now - start <= m.MAX_IO_TIME, "Motor feedback is stale. No new movement will be issued.")
-        recording = self.phase in ("note_pressed", "note_touch", "dial_approach", "dial_contact", "dial_turned", "dial_lifted")
+        recording = self.phase in ("note_hover", "note_touch", "dial_approach", "dial_contact", "dial_turned", "dial_lifted")
         if recording and self.last_read is not None:
             m.require(now - self.last_read <= m.MAX_IO_TIME, "Recording has a gap. Re-teach this control.")
         self.current, self.torque = current, torque
@@ -375,37 +549,61 @@ class Engine:
         self.leader_feedback_at = time.time()
 
     def record_leader_sample(self, current):
-        if self.capture and self.phase in TEACH_PHASES:
-            m.append_capture(self.capture, current, previous_observation=self.current)
-            self.validate_leader_target(current)
+        if self.recording_error:
+            return
+        try:
+            if self.phase in home.TRAVEL_PHASES:
+                path = self.route_approach if self.phase == "home_approach" else self.route_return
+                if path:
+                    home.append(path, current, self.current)
+            if self.capture and self.phase in TEACH_PHASES:
+                m.append_capture(self.capture, current, previous_observation=self.current)
+                self.validate_leader_recording(current)
+        except m.SafetyError as exc:
+            # A recording unsuitable for automatic playback is not a driver
+            # failure. Keep the operator's clutch/control usable, invalidate the
+            # recording, and prevent it being captured or handed to playback.
+            self.recording_error = f"Recording cannot be used for playback: {exc} Following remains available; return to home, release and re-teach this route."
+            self.event("recording_rejected", self.recording_error)
 
-    def validate_leader_target(self, target):
+    def validate_leader_recording(self, target):
         if not self.capture:
             return
-        # Include the last measured sample when decimation skipped it. Validate
-        # the proposed target before sending, then save only measured samples.
+        # Recording validation uses measured samples only, never proposed goals.
         candidate = {**self.capture, "path": self.capture["path"] + [self.current, target]}
         m.validate_entry(candidate)
         if self.is_dial:
             dial.validate(candidate)
-        elif self.phase == "note_pressed":
-            m.require(m.distance(self.capture["path"][0], target) <= m.MAX_CONTACT_EXCURSION,
-                      "Leader contact stroke exceeds the local press limit. Re-teach a smaller stroke.")
+
+    def begin_press_capture(self, current):
+        self.capture = m.teaching_entry(self.arm, True, self.fixture["label"], current)
+        self.capture["contact_surface"] = self.fixture.get("tool", "padded_gripper")
+        self.touch_index = None
+        self.transition("note_hover", "Hover captured. Lower the pad to first contact without pressing the control, then capture.")
 
     def feedback(self, current, stage):
         self.current, self.stage = current, stage
         self.torque = dict.fromkeys(m.MOTORS, 1)
         self.feedback_at = time.time()
+        self.record_telemetry()
         self.publish()
 
-    def reset_note(self):
+    def reset_note(self, *, keep_controller=False):
         self.simulated_leader_input = None
-        self.capture = self.draft = self.controller = None
+        self.capture = self.draft = None
+        if not keep_controller:
+            self.controller = None
+            self.teach = None
+            self.teach_played = None
+        self.route_approach = self.route_return = None
+        self.home_move_progress = None
+        self.home_arrival_samples = 0
+        self.recording_error = None
         self.touch_index = None
         self.trials = 0
         self.last_read = None
         self.stage = None
-        if self.log:
+        if self.log and not keep_controller:
             self.log.close()
             self.log = None
 
@@ -436,20 +634,23 @@ class Engine:
         prefix = "leader_" if self.calibration_target == "leader" else ""
         self.repo.put(prefix + "calibration_backup", {"at": m.stamp(), "hardware": backup, "saved": self.saved_calibration})
 
-    def establish_hold(self, draft, planned):
+    def establish_hold(self, draft, planned, *, phase="holding", message=None):
         self.repo.put("draft", {"key": self.selected, "entry": draft})
         self.draft = draft
         previous = self.controller
         if isinstance(previous, LeaderController):
             m.require(not previous.engaged, "Pause following before switching to a test hold.")
             current = previous.tick(stage="leader_handover")
-            previous.inside(current)
             if self.log:
                 self.log.close()
         self.log = (self.repo.directory / f"trial-{uuid.uuid4().hex}.jsonl").open("x")
-        self.controller = GuardedController(self.arm, planned, self.log, clock=self.clock, sleep=self.sleep,
+        motion_arm = previous.arm if isinstance(previous, LeaderController) else self.arm
+        self.controller = GuardedController(motion_arm, planned, self.log, clock=self.clock, sleep=self.sleep,
+                                            max_run_time=home.MAX_ROUTE_TIME if draft.get("home_motion") else m.MAX_RUN_TIME,
                                             guard=self.guard, feedback=self.feedback)
-        self.transition("arming", "Keep supporting while the motors establish a hold at this captured position.")
+        self.controller.error_reporter = self.report_error
+        self.transition("arming", "Keep hands clear while the follower maintains its powered hold." if isinstance(previous, LeaderController)
+                        else "Keep supporting while the motors establish a hold at this captured position.")
         try:
             self.guard()
             if isinstance(previous, LeaderController):
@@ -463,18 +664,276 @@ class Engine:
         except Exception as exc:
             self.fault(exc)
             raise
-        self.transition("holding", "Holding position, torque ON. Gently clear your hands before testing.")
+        self.transition(phase, message or "Holding position, torque ON. Gently clear your hands before testing.")
+
+    def begin_home_return(self, draft):
+        m.require(m.distance(self.route_approach[-1], draft["path"][0]) <= m.START_TOLERANCE,
+                  "Lift back to the captured key clearance before recording the return home (within 6 ticks).")
+        self.draft, self.capture = draft, None
+        self.route_return = [dict(self.current)]
+        self.controller.set_travel("return", self.current)
+        self.transition("home_return", "Key motion captured. Use the leader to teach a clear return to home, pause, then finish the route.")
+
+    def start_leader_hold(self, current, motion_arm, *, follow_gripper=False):
+        previous, old_log = self.controller, self.log
+        log = (self.repo.directory / f"leader-{uuid.uuid4().hex}.jsonl").open("x")
+        try:
+            controller = LeaderController(motion_arm, self.leader, current, log, guard=self.guard,
+                                           permission=lambda: time.monotonic() < self.leader_visible_until,
+                                           observe=self.record_leader_sample, leader_feedback=self.leader_feedback,
+                                           feedback=self.feedback,
+                                           clock=self.clock, sleep=self.sleep, follow_gripper=follow_gripper)
+        except Exception:
+            log.close()
+            raise
+        self.controller, self.log = controller, log
+        self.controller.error_reporter = self.report_error
+        if old_log:
+            old_log.close()
+        self.actuating = True
+        if previous and previous.enabled:
+            # Switching from a completed trial to teaching must never drop the
+            # supported arm. Preserve the existing motor goals and powered hold.
+            self.controller.previous = dict(previous.previous)
+            self.controller.desired = dict(previous.previous)
+            self.controller.gripper = previous.previous["gripper"]
+            self.controller.enabled = True
+            previous.enabled = False
+            self.controller.tick(stage="leader_handover")
+        else:
+            self.controller.arm_here()
+
+    def save_home_reference(self, current):
+        reference = {"id": uuid.uuid4().hex, "pose": dict(current), "calibration_sha256": m.fingerprint(self.calibration),
+                     "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp()}
+        if isinstance(self.controller, LeaderController) and self.controller.enabled:
+            # The measured home can differ slightly from the holding goal under
+            # gravity. Replay the same goal, and verify arrival against feedback.
+            # This is a sent target, not a motor goal-register readback.
+            reference["hold_target"] = dict(self.controller.previous)
+        self.repo.put("home", reference)
+        self.home = reference
+
+    def read_follower_joints(self):
+        raw, joints = self.arm.teleop_read()
+        self.current = raw
+        return dict(joints)
+
+    def read_leader_joints(self):
+        raw, joints = self.leader.teleop_read()
+        self.leader_current = raw
+        return dict(joints)
+
+    @staticmethod
+    def waypoint_problem(entry):
+        """A saved key whose hover is not near its touch (or touch near press) would swing through that pose."""
+        if entry.get("format") != WAYPOINT_FORMAT:
+            return None
+        points = entry["points"]
+        dial = "grip" in points
+        if dial and ("turn" in points or "lower" not in points):
+            return "it was taught with the earlier dial steps; teach hover, open, lower and grip again"
+        for before, point, ignore in STROKE_PAIRS["dial" if dial else "key"]:
+            joint, gap = stroke_gap(points[point]["goal"], points[before]["goal"], ignore)
+            if gap > teach_motion.STROKE_LIMIT:
+                return f"its {point} is {gap:.0f}° from its {before} on {joint}, so its {before} was captured in the wrong place"
+        return None
+
+    def recording_entry(self, control):
+        entry = self.notes.get(control) if control in m.KEYS else self.controls.get(control)
+        status = {**self.key_statuses(), **self.statuses(self.controls)}[control]
+        m.require(entry and entry.get("format") in RECORDING_FORMATS,
+                  f"{CATALOG[control]['name']} has not been taught yet. Capture its points with the leader first.")
+        problem = self.waypoint_problem(entry)
+        m.require(not problem, f"{CATALOG[control]['name']} needs re-teaching: {problem}. Follow the leader, capture hover just above it, then touch and press.")
+        m.require(status["recorded"], f"{CATALOG[control]['name']} was recorded under a different follower calibration. Record it again.")
+        return entry
+
+    def valid_pose(self, doc):
+        if doc and doc.get("calibration_sha256") == m.fingerprint(self.calibration) and doc.get("mode") == self.mode:
+            return doc["point"]
+        return None
+
+    def shared_teach_home(self):
+        return self.valid_pose(self.teach_home_doc)
+
+    def shared_teach_rest(self):
+        return self.valid_pose(self.teach_rest_doc)
+
+    def pose_doc(self, captured):
+        return {"point": captured, "calibration_sha256": m.fingerprint(self.calibration), "mode": self.mode, "saved_at": m.stamp()}
+
+    def go_to_pose(self, point):
+        """Rate-limited move to one saved pose, through the same playback machinery as a key."""
+        self.teach.play({"key": "pose", "frames": [{"t": 0.0, "goal": point["goal"], "follower": point["measured"]}]},
+                        1.0, force=True, settle_s=0.0)
+
+    @staticmethod
+    def point_names(control):
+        return teach_motion.DIAL_POINTS if control and CATALOG[control]["kind"] == "dial" else teach_motion.POINTS
+
+    def shared_dial_points(self):
+        doc = self.teach_dial_doc
+        if doc and doc.get("calibration_sha256") == m.fingerprint(self.calibration) and doc.get("mode") == self.mode:
+            return doc["points"]
+        return {}
+
+    def points_for(self, control):
+        """This control's own steps (saved ones if still valid), the dial's shared hover/open/grip, and the arm's home."""
+        if self.teach_points_for != control:
+            entry = self.notes.get(control) if control in m.KEYS else self.controls.get(control)
+            valid = {**self.key_statuses(), **self.statuses(self.controls)}[control]["recorded"]
+            saved = deepcopy(entry["points"]) if entry and entry.get("format") == WAYPOINT_FORMAT and valid else {}
+            if CATALOG[control]["kind"] == "dial":
+                saved.update(deepcopy(self.shared_dial_points()))
+            home_point = self.shared_teach_home() or saved.get("home")
+            self.teach_points = {**saved, **({"home": home_point} if home_point else {})}
+            if not home_point:
+                self.teach_points.pop("home", None)
+            self.teach_points_for = control
+        return self.teach_points
+
+    def save_teach_home(self, captured):
+        self.teach_home_doc = self.pose_doc(captured)
+        self.repo.put("teach_home", self.teach_home_doc)
+
+    def apply_roll_lock(self):
+        if self.teach:
+            self.teach.lock_wrist_roll(True)  # keys never turn the wrist; the dial's turn is a computed wrist rotation
+
+    def save_dial_entries(self, points):
+        """Both directions share the taught steps; each keeps its own turn angle."""
+        for control, default in DIAL_DIRECTIONS.items():
+            old = self.controls.get(control) or {}
+            degrees = old.get("turn_degrees", default) if old.get("format") == WAYPOINT_FORMAT else default
+            self.repo.save_control(control, {
+                "format": WAYPOINT_FORMAT, "control_id": control, "points": deepcopy(points), "turn_degrees": degrees,
+                "units": "lerobot_degrees_gripper_0_100", "calibration_sha256": m.fingerprint(self.calibration),
+                "leader_calibration_sha256": m.fingerprint(self.leader_calibration), "fixture_id": self.fixture["id"],
+                "mode": self.mode, "saved_at": m.stamp(), "verification": {"successful_trials": 0}})
+        self.controls = self.repo.controls()
+        self.events = self.repo.events()
+
+    def save_control_entry(self, control, entry):
+        if control in m.KEYS:
+            self.repo.save_note(control, entry)
+            self.notes = self.repo.notes()
+        else:
+            self.repo.save_control(control, entry)
+            self.controls = self.repo.controls()
+
+    def control_motion(self, control, args):
+        """The full motion for a taught control. A press length or dial angle given here becomes its new default."""
+        entry = self.recording_entry(control)
+        if entry["format"] != WAYPOINT_FORMAT:
+            return entry, "the recorded motion"
+        home_point = self.shared_teach_home()
+        dial = CATALOG[control]["kind"] == "dial"
+        points = {**entry["points"], **(self.shared_dial_points() if dial else {}), **({"home": home_point} if home_point else {})}
+        changed = {}
+        try:
+            if dial:
+                degrees = args.get("turn_degrees", entry.get("turn_degrees", DIAL_DIRECTIONS[control]))
+                m.require(type(degrees) in (int, float), "Enter the turn angle in degrees.")
+                recording = teach_motion.dial_recording(points, float(degrees), control)
+                changed = {"turn_degrees": float(degrees)} if degrees != entry.get("turn_degrees") else {}
+                description = f"home → hover → open → lower → grip → turn {degrees:g}° → let go → raise → home"
+            else:
+                press_s = args.get("press_s", entry.get("press_s", self.teach_settings["press_s"]))
+                m.require(type(press_s) in (int, float) and 0 <= press_s <= teach_motion.MAX_PRESS_S,
+                          f"Choose a press length from 0 to {teach_motion.MAX_PRESS_S:g} seconds.")
+                recording = teach_motion.waypoint_recording(points, control, float(press_s))
+                changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
+                description = f"home → hover → touch → press (held {press_s:g} s) and back"
+        except ValueError as exc:
+            raise m.SafetyError(str(exc)) from exc
+        if changed:
+            self.save_control_entry(control, {**entry, **changed, "saved_at": m.stamp()})
+        return recording, description
+
+    def play_speed(self, args):
+        speed = args.get("speed", self.teach_settings["speed"])
+        m.require(type(speed) in (int, float) and 0.1 <= speed <= teach_motion.MAX_PLAY_SPEED,
+                  f"Choose a speed from 0.1× to {teach_motion.MAX_PLAY_SPEED:g}×.")
+        return float(speed)
+
+    def start_playback(self, recording, speed, args):
+        self.teach_played, self.teach_returning, self.teach_going_home, self.teach_going_rest = None, False, False, None
+        # Faster playback also moves to the start faster, up to twice the usual ramp.
+        self.teach.play(recording, speed, force=args.get("force") is True,
+                        ramp_speed=teach_motion.RAMP_SPEED * min(2.0, max(1.0, speed)))
+
+    def api_submit(self, action, args):
+        """Programmatic commands act through the operator console's live session, never around it."""
+        m.require(action in API_ACTIONS or action == "stop", "That action is not available through the API.")
+        with self.lock:
+            m.require(self.owner is not None and self.lease_until > time.monotonic(),
+                      "Open the operator console (http://127.0.0.1:8081) and connect; the API only acts while it is in control.")
+            owner, revision = self.owner, self.revision
+        return self.submit(owner, uuid.uuid4().hex, action, revision, args)
+
+    def teach_control(self, args):
+        selected = args.get("control", self.selected)
+        m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
+        self.selected = selected
+        return CATALOG[selected]["name"]
+
+    def teach_tick(self):
+        event = self.teach.tick()
+        self.torque = dict.fromkeys(m.MOTORS, 1)
+        self.feedback_at = time.time()
+        if self.teach.read_leader:
+            # Leader torque was verified off at teach_begin; HardwareLeader refuses torque enable.
+            self.leader_feedback_at = self.feedback_at
+        self.incidents.record({"phase": self.phase, "stage": f"teach_{self.teach.mode}", "follower": self.current,
+                               "leader": self.leader_current, "goal": dict(self.teach.goal),
+                               "measured": dict(self.teach.measured), "observed_at": self.feedback_at})
+        name = self.control["name"]
+        if event == "aligned":
+            upcoming = next((n for n in self.point_names(self.selected) if n not in self.points_for(self.selected)), None)
+            self.transition("teach_follow", "FOLLOWING the leader 1:1. " + (
+                f"Guide it to {upcoming}{STEP_HINTS.get(upcoming, '')} and capture it (Space)." if upcoming else
+                "Select a step to retrain it, or Play."))
+        elif event == "start_mismatch":
+            self.transition("teach_hold", self.teach.warning)
+        elif event == "played" and self.teach_going_rest:
+            self.teach_going_rest = None
+            self.transition("teach_hold", "At rest, holding.")
+        elif event == "played" and self.teach_going_home:
+            self.teach_going_home = False
+            self.transition("teach_hold", "At home, holding.")
+        elif event == "played" and self.teach_returning:
+            self.teach_returning = False
+            self.transition("teach_hold", f"{name} taught: home → hover → touch → press, and back. The follower is holding at home. "
+                            "Put the leader back at rest before following again. Play it to test.")
+        elif event == "played" and self.teach_sequence_label:
+            label, self.teach_sequence_label = self.teach_sequence_label, None
+            self.transition("teach_hold", f"Played {label}; holding at home.")
+        elif event == "played":
+            self.teach_played = self.selected
+            note = (f" {self.teach.clipped_steps} steps were limited to {teach_motion.FOLLOW_CAP:.0f}° from the measured "
+                    "pose (the arm lagged or was blocked)." if self.teach.clipped_steps else "")
+            # Between key presses the arm waits at home; rest is only visited on request (Go to rest).
+            self.transition("teach_hold", f"Played {name}; holding at home. Space plays it again; pick another key to teach it.{note}")
 
     def fault(self, exc):
         message = str(exc) or type(exc).__name__
+        context = self.error_context()
         if self.controller:
             self.controller.stop()
+        if self.teach:
+            try:
+                self.teach.hold()
+            except Exception as hold_error:
+                self.report_error("hold_failed", hold_error)
+            self.teach = None
         if self.calibrating:
             self.mark_calibrated(False)
             try:
                 self.calibration_arm.abort_calibration()
                 self.calibrating = False
             except Exception as restore_error:
+                self.report_error("cleanup_failed", restore_error, {"operation": "calibration_rollback"})
                 message += f" Calibration restoration unverified: {restore_error}"
         self.phase = "fault" if self.arm is not None else "disconnected"
         self.revision += 1
@@ -485,15 +944,20 @@ class Engine:
         self.feedback_at = None
         self.leader_feedback_at = None
         self.stop_event.clear()
-        self.event("fault", message)
+        self.event("fault", message, context, exc=exc)
         self.publish()
 
     def dispatch(self, action, args):
-        if self.teaching_mode == "leader" and action in ("capture_pressed", "capture_touch", "capture_clear",
+        if self.teaching_mode == "leader" and (action.startswith("capture_") or action.startswith("dial_capture_")):
+            m.require(not self.recording_error, self.recording_error)
+        if self.teaching_mode == "leader" and action in ("capture_hover", "capture_pressed", "capture_touch", "retreat_from_press",
                 "dial_capture_start", "dial_capture_contact", "dial_capture_turn", "dial_capture_lift", "dial_capture_return"):
             m.require(isinstance(self.controller, LeaderController) and self.controller.enabled,
                       "Establish a follower hold for leader teaching first.")
             m.require(not self.controller.engaged, "Pause following before capturing a waypoint.")
+        if action in ("capture_key_clearance", "capture_home_return", "capture_leader_home"):
+            m.require(isinstance(self.controller, LeaderController) and self.controller.enabled and not self.controller.engaged,
+                      "Establish a hold and pause following before capturing the route.")
         if action in ("refresh_ports", "refresh_leader_ports"):
             adding_leader = action == "refresh_leader_ports"
             if adding_leader:
@@ -551,7 +1015,7 @@ class Engine:
             else:
                 candidate = SimulatedArm(self.calibration)
             try:
-                candidate.open()
+                self.open_arm(candidate, "follower", port if self.mode == "hardware" else "simulator")
                 self.arm = candidate
                 self.follower_port = port if self.mode == "hardware" else "simulator"
                 if teaching_mode == "leader":
@@ -559,7 +1023,7 @@ class Engine:
                                    else SimulatedArm(self.leader_calibration))
                     if self.mode == "simulation":
                         self.leader.voltage = 5.2
-                    self.leader.open()
+                    self.open_arm(self.leader, "leader", leader_port if self.mode == "hardware" else "simulator-leader")
                     self.leader_calibrated = bool(self.leader_calibration) and getattr(self.leader, "calibration_matches", True)
                 self.teaching_mode = teaching_mode
                 self.calibration_target = "follower"
@@ -593,7 +1057,7 @@ class Engine:
                 candidate = self.leader_factory(port, self.leader_calibration) if self.mode == "hardware" else SimulatedArm(self.leader_calibration)
                 if self.mode == "simulation":
                     candidate.voltage = 5.2
-                candidate.open()
+                self.open_arm(candidate, "leader", port)
                 candidate.require_torque(False)
                 candidate.read_raw()
                 self.guard()
@@ -710,42 +1174,150 @@ class Engine:
             remaining = "follower" if not self.calibrated else "leader" if self.teaching_mode == "leader" and not self.leader_calibrated else None
             self.transition("ready", f"Calibration verified. Next, calibrate the {remaining}." if remaining else
                             "Calibration verified. Both required references are ready; choose a control to teach.")
+        elif action == "home_start":
+            self.require_phase("connected", "ready")
+            self.supported(args)
+            m.require(self.teaching_mode == "leader" and self.calibrated and self.leader_calibrated,
+                      "Connect and calibrate both arms before positioning home with the leader.")
+            m.require(self.controller is None, "Release the existing hold before positioning a new home.")
+            self.arm.require_torque(False)
+            self.leader.require_torque(False)
+            selected = args.get("control", self.selected)
+            m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
+            current = self.stable(enforce_limits=False)
+            # The initial hold starts at the current pose, independent of any
+            # old home. Live following uses native driver position commands.
+            motion_arm = home.HomeArm(self.arm, current)
+            self.reset_note()
+            self.selected = selected
+            self.transition("home_positioning", "Establishing a hold at the current follower position. Keep supporting it.")
+            self.start_leader_hold(current, motion_arm, follow_gripper=True)
+            self.transition("home_positioning", "Follower holding here. Clear hands from the follower, engage the leader, and guide to your new home.")
+        elif action == "capture_leader_home":
+            self.require_phase("home_positioning", "home_arrival")
+            m.require(args.get("path_clear") is True, "Confirm the new home and its approach are clear of Orchid.")
+            current = self.stable()
+            self.arm.check_calibrated_pose(current)
+            self.save_home_reference(current)
+            # Keep the established hold: capture never releases or re-enables
+            # torque, and the next approach begins at this measured new home.
+            self.controller.arm = home.HomeArm(self.arm, current)
+            self.controller.set_travel("approach", current)
+            self.route_approach = [dict(current)]
+            self.transition("home_approach", f"New home saved. Follower remains holding here. Engage the leader to teach the approach to {self.control['name']}.")
+        elif action == "capture_home":
+            self.require_phase("connected", "ready")
+            self.supported(args)
+            m.require(self.teaching_mode == "leader" and self.calibrated and self.leader_calibrated,
+                      "Connect and calibrate both arms before teaching home.")
+            self.arm.require_torque(False)
+            self.leader.require_torque(False)
+            current = self.stable(enforce_limits=False)
+            self.arm.check_calibrated_pose(current)
+            self.save_home_reference(current)
+            self.transition("ready", "Home saved with torque off. Every new leader-taught control will start and return here.")
         elif action in ("note_start", "control_start"):
             self.require_phase("connected", "ready", "saved")
             self.supported(args)
             m.require(self.calibrated, "Complete motor calibration first.")
             m.require(self.teaching_mode != "leader" or self.leader_calibrated, "Calibrate the leader before teaching.")
+            if self.teaching_mode == "leader":
+                m.require(self.home_ready, "Teach the shared home pose first.")
+                m.require(not isinstance(self.controller, LeaderController) or not self.controller.engaged,
+                          "Pause following before selecting another control.")
+                self.leader.require_torque(False)
+                # A connected arm can already be powered by another session.
+                # Never silently release it or assume ownership of its hold.
+                self.arm.require_torque(bool(self.controller and self.controller.enabled))
+                current = self.arm.read_raw()
+                self.arm.check_calibrated_pose(current)
+                at_home = home.at_home(current, self.home["pose"])
             selected = args.get("control", args.get("key", self.selected))
             m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
             if action == "note_start":
                 m.require(selected in m.KEYS, "Choose one of the twelve notes.")
+            if self.teaching_mode == "leader":
+                motion_arm = home.HomeArm(self.arm, self.home["pose"] if at_home else current)
+                motion_arm.check_pose(current)
+                self.reset_note(keep_controller=True)
+                self.selected = selected
+                if at_home:
+                    self.route_approach = [dict(current)]
+                phase = "home_approach" if at_home else "home_prepare"
+                self.transition(phase, "Establishing the follower hold here. Keep supporting it until the hold is verified.")
+                self.start_leader_hold(current, motion_arm, follow_gripper=not at_home)
+                self.transition(phase, "Follower holding at home. Clear your hands, then engage leader following to teach the approach." if at_home
+                                else "Follower holding here. Clear hands and confirm the entire move to home is clear, then choose Move home & teach.")
+            else:
+                self.actuating = True
+                self.arm.release()
+                if self.leader:
+                    self.leader.release()
+                if self.controller:
+                    self.controller.enabled = False
+                self.reset_note()
+                self.selected = selected
+                self.transition("dial_ready" if self.is_dial else "note_ready", self.ready_message())
+        elif action == "move_home":
+            self.require_phase("home_prepare")
+            m.require(self.home_ready and isinstance(self.controller, LeaderController) and self.controller.enabled,
+                      "Establish the follower hold and verify its saved home first.")
+            m.require(args.get("hands_clear") is True and args.get("path_clear") is True,
+                      "Confirm hands and the entire swept path to home, including the gripper, are clear.")
+            duration = args.get("duration", 0)
+            m.require(type(duration) in (int, float) and (duration == 0 or 1 <= duration <= 60),
+                      "Choose Direct (0) or a home move time from 1 to 60 seconds.")
+            target = self.home.get("hold_target", self.home["pose"])
+            self.arm.check_calibrated_pose(target)
             self.actuating = True
-            self.arm.release()
-            if self.leader:
-                self.leader.release()
-            if self.controller:
-                self.controller.enabled = False
-            self.reset_note()
-            self.selected = selected
-            self.transition("dial_ready" if self.is_dial else "note_ready", self.ready_message())
+            self.home_move_progress = 0
+            self.transition("home_moving", f"Moving to the saved home before teaching {self.control['name']}. Keep hands clear.")
+            def progress(value):
+                self.home_move_progress = value
+                self.publish()
+            self.controller.move_home(target, duration, progress)
+            # Command completion is not proof of physical arrival. Allow native
+            # leader positioning immediately, while keeping route capture tied
+            # to a measured home (or an explicitly accepted replacement).
+            self.controller.follow_gripper = False
+            self.home_arrival_samples = 0
+            self.transition("home_arrival", "Home command sent. Leader positioning is available now. If the held pose differs from saved home, confirm it as your new home before recording the approach.")
         elif action == "leader_hold":
-            self.require_phase("note_ready", "dial_ready")
+            self.require_phase("home_approach")
             self.supported(args)
             m.require(self.teaching_mode == "leader" and self.leader and self.leader_calibrated and self.calibrated,
                       "Connect and calibrate both arms first.")
             m.require(self.controller is None, "A hold is already active.")
             self.arm.require_torque(False)
             self.leader.require_torque(False)
-            current = self.stable()
-            self.log = (self.repo.directory / f"leader-{uuid.uuid4().hex}.jsonl").open("x")
-            self.controller = LeaderController(self.arm, self.leader, current, self.log, guard=self.guard,
-                                               permission=lambda: time.monotonic() < self.leader_visible_until,
-                                               observe=self.record_leader_sample, leader_feedback=self.leader_feedback,
-                                               validate_target=self.validate_leader_target, feedback=self.feedback,
-                                               clock=self.clock, sleep=self.sleep)
-            self.actuating = True
-            self.controller.arm_here()
+            m.require(self.home_ready, "Teach a home for this calibration and placement first.")
+            current = self.stable(enforce_limits=False)
+            motion_arm = home.HomeArm(self.arm, self.home["pose"])
+            motion_arm.check_pose(current)
+            m.require(home.at_home(current, self.home["pose"]), "Return to the taught home before establishing the hold.")
+            self.route_approach = [dict(current)]
+            self.start_leader_hold(current, motion_arm)
             self.transition(self.phase, "Follower holding its current pose. Clear hands from the follower, then engage leader following.")
+        elif action == "capture_key_clearance":
+            self.require_phase("home_approach")
+            m.require(args.get("path_clear") is True, "Confirm the approach and clearance are clear of the instrument.")
+            current = self.stable()
+            self.controller.arm.check_clearance(current)
+            home.append(self.route_approach, current, self.current, force=True)
+            self.controller.set_local(current)
+            if self.is_dial:
+                self.transition("dial_ready", "Approach captured. Teach the local control motion here; pause before every capture.")
+            else:
+                self.begin_press_capture(current)
+        elif action == "capture_home_return":
+            self.require_phase("home_return")
+            m.require(args.get("path_clear") is True, "Confirm the entire return route was clear of the instrument.")
+            current = self.stable()
+            m.require(home.at_home(current, self.home["pose"]), "Return to home within 6 ticks, with the same gripper opening.")
+            home.append(self.route_return, current, self.current, force=True)
+            draft = home.attach(self.draft, self.home, self.route_approach, self.route_return)
+            home.validate(draft, self.home, self.controller.arm)
+            self.establish_hold(draft, home.plan(draft))
         elif action in ("leader_resume", "leader_pause"):
             self.require_phase(*TEACH_PHASES)
             m.require(isinstance(self.controller, LeaderController) and self.controller.enabled, "Establish the supported follower hold first.")
@@ -757,11 +1329,13 @@ class Engine:
                 self.controller.resume()
             else:
                 self.controller.pause()
-            self.transition(self.phase, "Following leader at quarter scale; gripper fixed. Pause before capture." if self.controller.engaged
+            grip = "gripper follows the leader" if self.controller.follow_gripper else "gripper fixed at home opening"
+            self.transition(self.phase, f"Following leader joint positions with LeRobot SO101 defaults; {grip}. Pause before capture." if self.controller.engaged
                             else "Following paused. Follower holds here; reposition the leader or capture the waypoint.")
         elif action == "simulate_leader":
-            self.require_phase(*TEACH_PHASES)
-            m.require(self.mode == "simulation" and isinstance(self.controller, LeaderController), "Simulation-only leader input.")
+            self.require_phase(*TEACH_PHASES, "teach_follow", "teach_record")
+            m.require(self.mode == "simulation" and (isinstance(self.controller, LeaderController) or self.teach),
+                      "Simulation-only leader input.")
             m.require(self.simulated_leader_input is None, "The simulated hand movement is still in progress.")
             name, delta = args.get("motor"), args.get("delta")
             m.require(name in m.MOTORS and type(delta) is int and 0 < abs(delta) <= 96, "Choose a small simulated leader input.")
@@ -818,51 +1392,83 @@ class Engine:
                      "control_id": self.selected, "teaching_mode": "web_dial_forward_loop"}
             if self.teaching_mode == "leader":
                 draft["teaching_mode"] = "web_leader_dial_forward_loop"
-            self.establish_hold(draft, dial.plan(draft))
-        elif action == "capture_pressed":
+            if self.teaching_mode == "leader":
+                self.begin_home_return(draft)
+            else:
+                self.establish_hold(draft, dial.plan(draft))
+        elif action == "capture_hover":
             self.require_phase("note_ready")
-            self.simulate_pose("pressed")
+            self.simulate_pose("clear")
             current = self.stable()
-            self.capture = m.teaching_entry(self.arm, True, self.fixture["label"], current)
-            self.capture["contact_surface"] = self.fixture.get("tool", "padded_gripper")
-            self.transition("note_pressed", "Press captured. Slowly lift until the control has released but the pad still barely touches it.")
+            self.begin_press_capture(current)
         elif action == "capture_touch":
-            self.require_phase("note_pressed")
+            self.require_phase("note_hover")
             self.simulate_pose("touch")
             current = self.stable()
-            m.require(m.distance(self.capture["path"][0], current) > 0, "No release movement measured yet.")
+            m.require(m.distance(self.capture["path"][0], current) > 0, "Move from hover to first contact before capturing.")
             m.append_capture(self.capture, current, force=True)
             self.touch_index = len(self.capture["path"]) - 1
-            self.transition("note_touch", "Contact captured. Lift to a small visible clearance. Keep supporting; the next capture enables a hold.")
-        elif action == "capture_clear":
+            self.capture["touch_index"] = self.touch_index
+            self.transition("note_touch", "First contact captured. Press only until the control activates, then capture the press.")
+        elif action == "capture_pressed":
             self.require_phase("note_touch")
-            if self.teaching_mode == "leader":
-                m.require(args.get("hands_clear") is True, "Keep hands clear of the powered follower.")
-            else:
+            if self.teaching_mode != "leader":
                 self.supported(args)
-            self.simulate_pose("clear")
-            hover = self.stable()
-            m.append_capture(self.capture, hover, force=True)
-            path = list(reversed(self.capture["path"]))
-            draft = {**self.capture, "path": path, "touch_index": len(path) - 1 - self.touch_index,
+            self.simulate_pose("pressed")
+            current = self.stable()
+            m.append_capture(self.capture, current, force=True)
+            draft = {**self.capture, "path": deepcopy(self.capture["path"]),
                      "complete": True, "mode": self.mode, "fixture_id": self.fixture["id"],
-                     "control_id": self.selected, "teaching_mode": "web_release_path"}
-            if self.teaching_mode == "leader":
-                draft["teaching_mode"] = "web_leader_release_path"
+                     "control_id": self.selected, "teaching_mode": "web_leader_forward_path" if self.teaching_mode == "leader" else "web_forward_path"}
             m.validate_entry(draft, complete=True)
-            m.require(m.distance(path[0], path[draft["touch_index"]]) > 0, "Lift clear of the contact pose before capturing.")
             planned = m.plan(draft)
             m.require(m.routine_budget(planned, .2) <= m.MAX_RUN_TIME, "This path is too long; retry with a smaller local stroke.")
-            self.establish_hold(draft, planned)
+            self.draft, self.capture = draft, None
+            message = "Press captured; holding here. Clear hands and choose Retreat to hover. Only the reverse path will run; the press will not repeat."
+            if self.teaching_mode == "leader":
+                self.transition("note_pressed", message)
+            else:
+                self.establish_hold(draft, list(reversed(planned)), phase="note_pressed", message=message)
+        elif action == "retreat_from_press":
+            self.require_phase("note_pressed")
+            m.require(args.get("hands_clear") is True, "Confirm hands are clear before retreating to hover.")
+            m.require(self.controller is not None and self.controller.enabled, "Establish the press hold first.")
+            self.actuating = True
+            draft = self.draft
+            planned = m.plan(draft)
+            previous = self.controller
+            if isinstance(previous, LeaderController):
+                self.establish_hold(draft, list(reversed(planned)), phase="retreating",
+                                    message="Retreating from the captured press through contact to hover. No repeat press.")
+            else:
+                self.controller.path = list(reversed(planned))
+                self.transition("retreating", "Retreating from the captured press through contact to hover. No repeat press.")
+            self.controller.retreat()
+            if isinstance(previous, LeaderController):
+                # Hand back the powered hover hold without releasing/rearming.
+                previous.previous = dict(self.controller.previous)
+                previous.desired = dict(previous.previous)
+                previous.log = self.log
+                previous.enabled = True
+                self.controller.enabled = False
+                self.controller = previous
+                self.begin_home_return(draft)
+            else:
+                self.controller.path = planned
+                self.transition("holding", "Retreated to hover; holding here. The press was not repeated. A full test runs only when you choose Test one press.")
         elif action == "test":
             self.require_phase("holding", "saved")
             m.require(args.get("hands_clear") is True, "Confirm hands are clear of the motion path.")
             if self.is_dial:
                 m.require(args.get("reference_reset") is True, "Restore the reference chord and voicing before each dial trial.")
             self.transition("testing", f"Testing {self.control['name']}: " +
-                            ("one forward nudge, lift-off, and clear return." if self.is_dial else "one press and release, then a hold at hover."))
+                            ("home → approach → control motion → return home." if self.draft.get("home_motion") else
+                             "one forward nudge, lift-off, and clear return." if self.is_dial else "one press and release, then a hold at hover."))
             try:
-                if self.is_dial:
+                if self.draft.get("home_motion"):
+                    home.validate(self.draft, self.home, self.controller.arm)
+                    home.run(self.controller, self.draft)
+                elif self.is_dial:
                     dial.run(self.controller, self.draft)
                 else:
                     self.controller.run(.2, already_holding=True)
@@ -892,24 +1498,359 @@ class Engine:
             self.require_phase("saved")
             m.require(self.trials >= REQUIRED_TRIALS, "Accept three trials before moving to the next control.")
             self.supported(args)
+            statuses = {**self.key_statuses(), **self.statuses(self.controls)}
+            missing = [name for name in group_members(self.selected) if statuses[name]["status"] != "registered"]
+            if self.teaching_mode == "leader":
+                if missing:
+                    self.dispatch("control_start", {**args, "control": missing[0]})
+                else:
+                    self.transition("ready", "This control group is registered. The follower is still holding at home; select another control or use Release torque while supported.")
+                return
             self.actuating = True
             self.arm.release()
             self.controller.enabled = False
             self.reset_note()
-            statuses = {**self.key_statuses(), **self.statuses(self.controls)}
-            missing = [name for name in group_members(self.selected) if statuses[name]["status"] != "registered"]
             if missing:
                 self.selected = missing[0]
-                self.transition("dial_ready" if self.is_dial else "note_ready", self.ready_message())
+                self.transition("home_approach" if self.teaching_mode == "leader" else "dial_ready" if self.is_dial else "note_ready", self.ready_message())
             else:
                 self.transition("ready", "This control group is registered. Rest the arm safely or select another group on the instrument.")
+        elif action == "forget_connection":
+            self.require_phase("fault")
+            m.require(self.arm is not None, "No connection needs recovery.")
+            self.supported(args)
+            m.require(args.get("motor_power_disconnected") is True,
+                      "Disconnect motor power from BOTH arms before forgetting the connection. USB alone is not enough.")
+            # The operator has physically removed motor power. A dead serial
+            # connection cannot verify torque or roll back calibration. Close
+            # handles only; never call stop(), release(), or abort_calibration().
+            if self.controller:
+                self.controller.enabled = False
+            self.calibrating = self.calibrated = self.leader_calibrated = False
+            failures = []
+            for role, device in (("follower", self.arm), ("leader", self.leader)):
+                if device:
+                    try:
+                        device.close()
+                    except Exception as exc:
+                        self.report_error("cleanup_failed", exc, {"operation": f"forget_{role}"})
+                        failures.append(role)
+            m.require(not failures, "Could not close the unavailable connection: " + ", ".join(failures)
+                      + ". Keep motor power disconnected and restart the Python app.")
+            self.reset_note()
+            self.clear_calibration_capture()
+            self.arm = self.leader = None
+            self.follower_port = None
+            self.torque = self.leader_torque = None
+            self.diagnostics = self.diagnostics_error = None
+            self.leader_visible_until = 0.0
+            self.recent.clear()
+            self.stop_event.clear()
+            if self.mode == "hardware":
+                self.discovery = {"ports": [], "scanned_at": None, "scanning": False, "warnings": [], "error": None}
+            self.transition("disconnected", "Unavailable connection forgotten; no torque command was sent. "
+                            "Saved records are retained. Refresh connections after reconnecting. "
+                            "For a replacement arm or interrupted calibration, perform a full calibration and teach a new home.")
+        elif action == "teach_begin":
+            self.require_phase("connected", "ready", "saved", "failed", "fault")
+            m.require(self.teaching_mode == "leader" and self.leader is not None, "Connect the leader to teach by recording.")
+            m.require(self.calibrated and self.leader_calibrated, "Calibrate both arms before teaching.")
+            name = self.teach_control(args)
+            powered = any(self.arm.torque_status().values())
+            # LeRobot's configure() briefly turns torque off while it writes the gains.
+            m.require(not powered or args.get("supported") is True,
+                      "The follower is already powered. Support it with a hand: torque blinks off for a moment while the motor settings are applied.")
+            self.leader_torque = self.leader.require_torque(False)
+            self.reset_note()
+            self.actuating = True
+            self.arm.arm_for_teleop()
+            self.teach = teach_motion.Session(self.read_follower_joints, self.arm.teleop_goal, self.read_leader_joints,
+                                              clock=self.clock)
+            self.teach.send_follower(self.teach.goal)
+            self.teach_points_for, self.teach_returning = None, False
+            points = self.points_for(self.selected)
+            home_note = ""
+            if "home" not in points:
+                points["home"] = self.teach.capture()  # home = where the arm is when you first press Teach
+                self.save_teach_home(points["home"])
+                home_note = " Home saved here."
+            if args.get("follow") is True:
+                self.teach.follow()
+                self.apply_roll_lock()
+                self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s.{home_note} "
+                                "Hands off the follower; hold the leader near its pose.")
+            else:
+                self.transition("teach_hold", f"Follower holding here, torque ON.{home_note} Hands off the follower, then follow the leader to teach {name}.")
+        elif action == "teach_follow":
+            self.require_phase("teach_hold")
+            if "control" in args:  # the key selected on the map becomes the one being taught
+                self.teach_control(args)
+            self.teach.follow()
+            self.apply_roll_lock()
+            self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s. Hold the leader near the follower's pose.")
+        elif action == "teach_hold":
+            self.require_phase("teach_follow", "teach_record", "teach_play")
+            if "control" in args:
+                self.teach_control(args)
+            discarded = self.teach.frames is not None
+            self.teach.hold()
+            self.teach_returning = self.teach_going_home = False
+            self.teach_going_rest = None
+            self.transition("teach_hold", "Holding here." + (" The unfinished recording was discarded." if discarded else ""))
+        elif action == "teach_set_home":
+            self.require_phase("teach_hold", "teach_follow")
+            try:
+                captured = self.teach.capture()
+            except RuntimeError as exc:
+                raise m.SafetyError(str(exc)) from exc
+            self.save_teach_home(captured)
+            if self.teach_points_for:
+                self.teach_points["home"] = captured
+            self.transition(self.phase, "Home set here. Every key now starts and ends at this home.")
+        elif action == "teach_go_home":
+            self.require_phase("teach_hold", "teach_follow")
+            home_point = self.shared_teach_home()
+            m.require(home_point, "No home is set yet. Follow the leader to a clear pose and Set home here.")
+            self.teach_played, self.teach_returning, self.teach_going_home, self.teach_going_rest = None, False, True, None
+            self.go_to_pose(home_point)
+            self.transition("teach_play", f"Moving to home at up to {teach_motion.RAMP_SPEED:.0f}°/s. Stop motion holds the arm.")
+        elif action == "recenter_wrist_roll":
+            # Both arms' wrist-roll zero moves half a turn so work happens mid-encoder, away from the -180/+180 wrap.
+            # Every saved angle gets the same half turn, so taught motions keep pointing at the same physical poses.
+            self.require_phase("connected", "ready")
+            self.supported(args)
+            m.require(self.teaching_mode == "leader" and self.leader is not None and self.calibrated and self.leader_calibrated,
+                      "Connect and calibrate both arms first.")
+            self.arm.require_torque(False)
+            self.leader.require_torque(False)
+            old_signature = m.fingerprint(self.calibration)
+            shifts, backup = {}, {"at": m.stamp(), "calibration": deepcopy(self.calibration),
+                                  "leader_calibration": deepcopy(self.leader_calibration)}
+            self.repo.put("wrist_roll_recenter_backup", backup)
+            self.reset_note()
+            self.actuating = True
+            for role, device, name in (("follower", self.arm, "calibration"), ("leader", self.leader, "leader_calibration")):
+                calibration = deepcopy(getattr(self, name))
+                old_offset, shift = calibration["wrist_roll"]["homing_offset"], 2048
+                new_offset = (old_offset - shift + 2048) % 4096 - 2048  # Present = Actual - Offset
+                if new_offset == -2048:  # outside the ±2047 register; a half turn less one tick is close enough
+                    shift = 2047
+                    new_offset = (old_offset - shift + 2048) % 4096 - 2048
+                calibration["wrist_roll"]["homing_offset"] = new_offset
+                self.guard()
+                device.begin_calibration()
+                device.commit_calibration(calibration, guard=self.guard)
+                if isinstance(device, SimulatedArm):  # the simulator reports the new reference like a real encoder
+                    device.current["wrist_roll"] = (device.current["wrist_roll"] + shift) % 4096
+                self.repo.put(name, calibration)
+                setattr(self, name, calibration)
+                shifts[role] = shift
+            signature, leader_signature = m.fingerprint(self.calibration), m.fingerprint(self.leader_calibration)
+
+            def moved(pose, role="follower"):
+                return {**pose, "wrist_roll": shift_roll(pose["wrist_roll"], shifts[role])} if "wrist_roll" in pose else pose
+
+            def moved_point(point):
+                return {"goal": moved(point["goal"]), "measured": moved(point["measured"])}
+
+            updated, selected = 0, self.selected
+            for control, entry in [*self.notes.items(), *self.controls.items()]:
+                if not entry or entry.get("format") not in RECORDING_FORMATS or entry.get("calibration_sha256") != old_signature:
+                    continue  # never revive a motion that was already stale
+                entry = deepcopy(entry)
+                if "points" in entry:
+                    entry["points"] = {n: moved_point(pt) for n, pt in entry["points"].items()}
+                if "frames" in entry:
+                    entry["frames"] = [{**f, "goal": moved(f["goal"]), "follower": moved(f["follower"]),
+                                        **({"leader": moved(f["leader"], "leader")} if "leader" in f else {})}
+                                       for f in entry["frames"]]
+                entry.update(calibration_sha256=signature, leader_calibration_sha256=leader_signature)
+                self.selected = control
+                self.save_entry(entry)
+                updated += 1
+            for doc_name, attr, field in (("teach_home", "teach_home_doc", "point"), ("teach_rest", "teach_rest_doc", "point"),
+                                          ("teach_dial", "teach_dial_doc", "points")):
+                doc = getattr(self, attr)
+                if doc and doc.get("calibration_sha256") == old_signature:
+                    doc = {**doc, "calibration_sha256": signature,
+                           field: moved_point(doc[field]) if field == "point" else {n: moved_point(pt) for n, pt in doc[field].items()}}
+                    self.repo.put(doc_name, doc)
+                    setattr(self, attr, doc)
+            self.selected, self.teach_points_for = selected, None
+            self.event("wrist_roll_recentered", f"Wrist rotation re-centred on both arms ({shifts}); {updated} taught motions updated.",
+                       {"shifts": shifts, "updated": updated})
+            self.transition("ready", f"Wrist rotation re-centred on both arms. {updated} taught motions, home, rest and the dial "
+                            "were updated to match, so nothing needs re-teaching. Nothing moved.")
+        elif action == "teach_set_rest":
+            self.require_phase("teach_hold", "teach_follow")
+            try:
+                captured = self.teach.capture()
+            except RuntimeError as exc:
+                raise m.SafetyError(str(exc)) from exc
+            self.teach_rest_doc = self.pose_doc(captured)
+            self.repo.put("teach_rest", self.teach_rest_doc)
+            self.transition(self.phase, "Rest set here. Go to rest moves the arm here; playback waits at home between keys.")
+        elif action == "teach_go_rest":
+            self.require_phase("teach_hold", "teach_follow")
+            rest_point = self.shared_teach_rest()
+            m.require(rest_point, "No rest pose is set yet. Follow the leader to it and Set rest here.")
+            self.teach_played, self.teach_returning, self.teach_going_home, self.teach_going_rest = None, False, False, "rest"
+            self.go_to_pose(rest_point)
+            self.transition("teach_play", f"Moving to rest at up to {teach_motion.RAMP_SPEED:.0f}°/s. Stop motion holds the arm.")
+        elif action == "teach_capture":
+            self.require_phase("teach_hold", "teach_follow")
+            name = self.teach_control(args)
+            if self.teach.mode == "following":
+                self.apply_roll_lock()  # switching between a key and the dial while following
+            points = self.points_for(self.selected)
+            names = self.point_names(self.selected)
+            final = names[-1]  # press for a key, turn for the dial
+            point = args.get("point")
+            expected = next((n for n in names if n not in points), None)
+            m.require(point in names and (point == expected or point in points),
+                      f"Capture {expected} next." if expected else "All steps are captured; select one to retrain it, or Play.")
+            try:
+                captured = self.teach.capture()
+            except RuntimeError as exc:
+                raise m.SafetyError(str(exc)) from exc
+            # Retraining one step replaces only that step; the other steps are kept.
+            for a, b, ignore in STROKE_PAIRS["dial" if self.is_dial else "key"]:
+                if point in (a, b) and (b if point == a else a) in points:
+                    other = b if point == a else a
+                    joint, gap = stroke_gap(captured["goal"], points[other]["goal"], ignore)
+                    m.require(gap <= teach_motion.STROKE_LIMIT,
+                              f"{point.title()} would be {gap:.0f}° from {other} on {joint}; neighbouring steps should be close "
+                              f"(hover just above, then a short move down). Nothing was saved. Guide the arm to the right "
+                              f"place, or select {other.title()} and retrain it first.")
+            retrained = point in points
+            points[point] = captured
+            if point == "home":
+                self.save_teach_home(captured)
+            if self.is_dial and point in DIAL_SHARED:
+                shared = {**self.shared_dial_points(), point: captured}
+                self.teach_dial_doc = {**self.pose_doc(None), "points": shared}
+                self.teach_dial_doc.pop("point")
+                self.repo.put("teach_dial", self.teach_dial_doc)
+            complete = all(n in points for n in names)
+            if point == "home" and expected != "home":
+                self.transition(self.phase, "Home moved here. Every key now starts and ends at this home.")
+            elif point == final or (complete and point != "home"):
+                if self.is_dial:
+                    self.save_dial_entries(points)
+                else:
+                    self.save_entry({"format": WAYPOINT_FORMAT, "control_id": self.selected, "points": deepcopy(points),
+                                     "units": "lerobot_degrees_gripper_0_100",
+                                     "calibration_sha256": m.fingerprint(self.calibration),
+                                     "leader_calibration_sha256": m.fingerprint(self.leader_calibration),
+                                     "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp(),
+                                     "verification": {"successful_trials": 0}})
+                if point == final:
+                    self.teach_played, self.teach_returning = None, True
+                    back = teach_motion.dial_return_recording if self.is_dial else teach_motion.return_recording
+                    self.teach.play(back(points, self.selected), 1.0, force=True, settle_s=teach_motion.RETURN_SETTLE_S)
+                    self.transition("teach_play", (
+                        "Grip captured. The follower lets go, raises to the open pose, then goes to hover and home on its own. "
+                        "Set the turn angle for each direction and Play." if self.is_dial else
+                        "Press captured. The follower returns on its own: press → touch → hover → home.")
+                        + " Keep hands off the follower; you can leave the leader where it is.")
+                else:
+                    shared_note = " (shared by both dial directions)" if self.is_dial else ""
+                    self.transition(self.phase, f"{point.title()} retrained for {name}{shared_note} and saved. Its other steps are unchanged.")
+            else:
+                upcoming = next((n for n in names if n not in points), None)
+                self.transition(self.phase, f"{point.title()} {'re-captured' if retrained else 'captured'} for {name}. "
+                                + (f"Next: guide to {upcoming}{STEP_HINTS.get(upcoming, '')}. Then capture it." if upcoming else ""))
+        elif action == "teach_record":
+            self.require_phase("teach_follow")
+            name = self.teach_control(args)
+            m.require(self.teach.mode == "following", "Wait for FOLLOWING before recording.")
+            self.teach.start_recording()
+            self.teach_played = None
+            self.transition("teach_record", f"RECORDING {name}: rest → above it → press until it sounds → lift → back to rest. Then Stop & save.")
+        elif action == "teach_save":
+            self.require_phase("teach_record")
+            try:
+                frames = self.teach.stop_recording()
+            except RuntimeError as exc:
+                self.transition("teach_follow", str(exc))
+                raise m.SafetyError(str(exc)) from exc
+            entry = {"format": RECORDING_FORMAT, "control_id": self.selected, "fps": teach_motion.FPS,
+                     "units": "lerobot_degrees_gripper_0_100", "frames": frames,
+                     "calibration_sha256": m.fingerprint(self.calibration),
+                     "leader_calibration_sha256": m.fingerprint(self.leader_calibration),
+                     "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp(),
+                     "verification": {"successful_trials": 0}}
+            self.save_entry(entry)
+            self.transition("teach_follow", f"Saved {self.control['name']} ({frames[-1]['t']:.1f} s). Still following. "
+                            "Return the arm to rest, then Play it back.")
+        elif action == "teach_play":
+            self.require_phase("teach_hold", "teach_follow")
+            name = self.teach_control(args)
+            speed = self.play_speed(args)
+            recording, description = self.control_motion(self.selected, args)
+            self.teach_sequence_label = None
+            self.start_playback(recording, speed, args)
+            self.transition("teach_play", f"Playing {name} at {speed:g}× speed: {description}. Stop motion holds the arm.")
+        elif action == "teach_sequence":
+            self.require_phase("teach_hold", "teach_follow")
+            steps = args.get("steps")
+            m.require(isinstance(steps, list) and 1 <= len(steps) <= 64 and all(isinstance(x, dict) for x in steps),
+                      "Give 1 to 64 steps, each like {\"control\": \"C\"}.")
+            speed = self.play_speed(args)
+            parts = []
+            for step in steps:
+                control = step.get("control")
+                m.require(isinstance(control, str) and control in CATALOG, f"Unknown control {control!r}.")
+                m.require(((self.notes.get(control) if control in m.KEYS else self.controls.get(control)) or {}).get("format") == WAYPOINT_FORMAT,
+                          f"{CATALOG[control]['name']} has no taught steps; sequences use taught home/hover/touch/press motions.")
+                parts.append(self.control_motion(control, {k: v for k, v in step.items() if k != "control"})[0])
+            self.teach_sequence_label = " → ".join(CATALOG[x["control"]]["label"] for x in steps)
+            self.start_playback(teach_motion.sequence_recording(parts), speed, args)
+            self.transition("teach_play", f"Playing {self.teach_sequence_label} at {speed:g}× speed, through home between "
+                            "controls. Stop motion holds the arm.")
+        elif action == "teach_settings":
+            changes = {}
+            if "speed" in args:
+                changes["speed"] = self.play_speed(args)
+            if "press_s" in args:
+                press_s = args["press_s"]
+                m.require(type(press_s) in (int, float) and 0 <= press_s <= teach_motion.MAX_PRESS_S,
+                          f"Choose a press length from 0 to {teach_motion.MAX_PRESS_S:g} seconds.")
+                changes["press_s"] = float(press_s)
+            m.require(changes, "Give a speed and/or press_s.")
+            self.teach_settings = {**self.teach_settings, **changes}
+            self.repo.put("teach_settings", self.teach_settings)
+            self.event("teach_settings", "Playback settings: " + ", ".join(f"{k} {v:g}" for k, v in self.teach_settings.items()))
+        elif action == "teach_configure":
+            control = args.get("control")
+            m.require(isinstance(control, str) and control in CATALOG, "Choose an instrument control.")
+            allowed = {"turn_degrees"} if CATALOG[control]["kind"] == "dial" else {"press_s"}
+            m.require(set(args) - {"control"} == allowed,
+                      "Give turn_degrees for a dial direction, or press_s for a key or chord button.")
+            self.control_motion(control, args)  # validates and saves the new default
+            self.event("teach_configure", f"{CATALOG[control]['name']}: " + ", ".join(f"{k} {v}" for k, v in args.items() if k != "control"))
+        elif action == "teach_verify":
+            self.require_phase("teach_hold")
+            m.require(self.teach_played == self.selected, "Play this control back before marking it good.")
+            entry = self.recording_entry(self.selected)
+            trials = entry.get("verification", {}).get("successful_trials", 0) + 1
+            self.save_entry({**entry, "verification": {"successful_trials": trials, "verified_at": m.stamp(),
+                             "method": "simulated playback" if self.mode == "simulation" else "operator heard playback"}})
+            self.teach_played = None
+            self.transition("teach_hold", f"{self.control['name']} marked good. Pick another control above, or play it again.")
         elif action in ("release", "disconnect", "retry"):
             m.require(self.arm is not None, "No arm is connected")
             self.supported(args)
             self.actuating = True
-            self.arm.release()
-            if self.leader:
-                self.leader.release()
+            try:
+                self.arm.release()
+                if self.leader:
+                    self.leader.release()
+            except Exception as exc:
+                raise m.SafetyError("Torque release could not be verified. If USB was unplugged or the arm was replaced, "
+                                    "support BOTH arms, disconnect their motor power, then use "
+                                    "01 · Connect the arm → Forget unavailable connection. "
+                                    f"Connection error: {exc}") from exc
             if self.controller:
                 self.controller.enabled = False
             if self.calibrating:
@@ -934,8 +1875,8 @@ class Engine:
                 self.calibrated = False
                 self.transition("disconnected", "Follower disconnected after supported torque release. Saved registrations are retained.")
             else:
-                retry = action == "retry" and self.calibrated and (self.teaching_mode != "leader" or self.leader_calibrated)
-                self.transition(("dial_ready" if self.is_dial else "note_ready") if retry else "connected",
+                retry = action == "retry" and self.calibrated and self.teaching_mode != "leader"
+                self.transition(("home_approach" if self.teaching_mode == "leader" else "dial_ready" if self.is_dial else "note_ready") if retry else "connected",
                                 self.ready_message() if retry else "Torque OFF. Rest the arm safely or continue setup.")
         else:
             raise m.SafetyError("Unknown action")
@@ -943,6 +1884,8 @@ class Engine:
     def process(self, command):
         receipt = self.receipts[command["id"]]
         self.actuating = False
+        self.incidents.record({"stage": "operator_command", "phase": self.phase,
+                               "action": command["action"], "command_id": command["id"], "args": command["args"]})
         try:
             self.guard()
             m.require(command["owner"] == self.owner and time.monotonic() - command["created"] < 5,
@@ -957,7 +1900,7 @@ class Engine:
                 self.fault(exc)
             receipt.update(status="rejected", message=str(exc))
             self.error = str(exc)
-            self.event("rejected", str(exc), {"action": command["action"]})
+            self.event("rejected", str(exc), {"action": command["action"], "command_id": command["id"]}, exc=exc)
         finally:
             with self.lock:
                 self.pending = False
@@ -965,7 +1908,18 @@ class Engine:
 
     def step(self):
         if self.stop_event.is_set():
-            self.fault(m.SafetyError("Stop requested. No automatic retraction or torque release."))
+            if self.teach and self.phase in TEACH_SESSION_PHASES:
+                # Stop motion = hold at a fresh measured pose. Teaching continues from the hold.
+                self.stop_event.clear()
+                try:
+                    self.teach.hold()
+                    self.teach_returning = self.teach_going_home = False
+                    self.teach_going_rest = None
+                    self.transition("teach_hold", "Stopped; holding here. Start following or play again when ready.")
+                except Exception as exc:
+                    self.fault(exc)
+            else:
+                self.fault(m.SafetyError("Stop requested. No automatic retraction or torque release."))
         try:
             command = self.commands.get_nowait()
         except queue.Empty:
@@ -980,9 +1934,20 @@ class Engine:
                     self.leader.current[name] += delta
                     remaining -= delta
                     self.simulated_leader_input = (name, remaining) if remaining else None
-                if self.controller and self.controller.enabled:
+                if self.teach:
+                    self.guard()
+                    self.teach_tick()
+                elif self.controller and self.controller.enabled:
                     self.guard()
                     self.controller.tick(self.controller.previous, "idle_hold")
+                    if self.phase == "home_arrival" and not self.controller.engaged:
+                        self.home_arrival_samples = self.home_arrival_samples + 1 if home.at_home(self.current, self.home["pose"]) else 0
+                        if self.home_arrival_samples >= 3:
+                            self.controller.arm = home.HomeArm(self.arm, self.home["pose"])
+                            self.controller.set_travel("approach", self.current)
+                            self.route_approach = [dict(self.current)]
+                            self.home_move_progress = None
+                            self.transition("home_approach", f"At home and holding. Engage the leader to teach {self.control['name']}.")
                 else:
                     if self.calibrating:
                         self.guard()
@@ -996,27 +1961,35 @@ class Engine:
             while not self.shutdown.is_set():
                 started = self.clock()
                 self.step()
-                self.sleep(max(0, m.PERIOD - (self.clock() - started)))
+                period = teach_motion.PERIOD if self.teach else m.PERIOD
+                self.sleep(max(0, period - (self.clock() - started)))
         except Exception as exc:
             # Even a storage failure must leave a visible fault and enter cleanup.
+            self.report_error("worker_failed", exc)
             self.phase, self.error = "fault", f"Motor worker stopped: {exc}"
             self.message = "Support the arm, inspect the local app, and restart before continuing."
             self.torque = self.feedback_at = None
             self.pending = False
             self.publish()
         finally:
-            if self.controller:
-                self.controller.stop()
-            if self.arm:
-                try:
-                    if self.calibrating:
-                        self.calibration_arm.abort_calibration()
-                finally:
-                    self.arm.close()
-                    if self.leader:
-                        self.leader.close()
-            if self.log:
-                self.log.close()
+            self.cleanup_devices()
+
+    def cleanup_devices(self):
+        operations = []
+        if self.teach:
+            operations.append(("hold_teach", self.teach.hold))
+        if self.controller:
+            operations.append(("stop_controller", self.controller.stop))
+        if self.calibrating and self.arm:
+            operations.append(("calibration_rollback", self.calibration_arm.abort_calibration))
+        for role, device in (("follower", self.arm), ("leader", self.leader), ("motion_log", self.log)):
+            if device:
+                operations.append((f"close_{role}", device.close))
+        for operation, close in operations:
+            try:
+                close()
+            except Exception as exc:
+                self.report_error("cleanup_failed", exc, {"operation": operation})
 
     def start(self):
         self.thread = threading.Thread(target=self.run, name="orchid-motor-owner", daemon=True)
@@ -1029,14 +2002,7 @@ class Engine:
             self.thread.join(timeout=4)
             m.require(not self.thread.is_alive(), "Motor worker did not stop; use the physical stop if needed.")
         else:
-            if self.controller:
-                self.controller.stop()
-            if self.arm:
-                if self.calibrating:
-                    self.calibration_arm.abort_calibration()
-                self.arm.close()
-                if self.leader:
-                    self.leader.close()
-            if self.log:
-                self.log.close()
+            self.cleanup_devices()
+        self.incidents.close()
         self.repo.close()
+        self.event_log.close()

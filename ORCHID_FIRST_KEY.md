@@ -9,13 +9,13 @@ send short voice messages to the agent while your hands guide the arm. The agent
 relays those messages to the local session and reads actual acknowledgements.
 The program does not listen to the microphone itself.
 
-Stop other arm scripts first, with the arm securely supported/resting. Run:
+Stop other arm scripts first, with the arm securely supported/resting. From the repository, with `FOLLOWER_PORT` set as in [Environment and device selection](#environment-and-device-selection), run:
 
 ```bash
-/home/rspectre/.virtualenvs/replay-lw/bin/python \
-  /home/rspectre/workspace/replay-lw/orchid_session.py serve \
-  --port /dev/ttyACM1 \
-  --calibration /home/rspectre/.cache/huggingface/lerobot/calibration/robots/so_follower/so101_follower.json \
+~/.virtualenvs/replay-lw/bin/python \
+  orchid_session.py serve \
+  --port "$FOLLOWER_PORT" \
+  --calibration ~/.cache/huggingface/lerobot/calibration/robots/so_follower/so101_follower.json \
   --contact-ready --fixture-note "Padded fixed gripper; Orchid voice session"
 ```
 
@@ -63,13 +63,13 @@ The human's terminal owns the serial port. These commands only access local
 files, so they also work when the agent's sandbox cannot see `/dev/ttyACM1`:
 
 ```bash
-python3 /home/rspectre/workspace/replay-lw/orchid_session.py status
-python3 /home/rspectre/workspace/replay-lw/orchid_session.py send pressed
-python3 /home/rspectre/workspace/replay-lw/orchid_session.py send touch
-python3 /home/rspectre/workspace/replay-lw/orchid_session.py send clear
-python3 /home/rspectre/workspace/replay-lw/orchid_session.py send test
-python3 /home/rspectre/workspace/replay-lw/orchid_session.py send pass
-python3 /home/rspectre/workspace/replay-lw/orchid_session.py send next --supported
+python3 orchid_session.py status
+python3 orchid_session.py send pressed
+python3 orchid_session.py send touch
+python3 orchid_session.py send clear
+python3 orchid_session.py send test
+python3 orchid_session.py send pass
+python3 orchid_session.py send next --supported
 ```
 
 Read fresh status before acting, confirm the selected key/stage, and send each
@@ -132,17 +132,17 @@ installed LeRobot version and a fingerprint of the arm calibration. Playback
 rejects a mismatch and requires re-teaching after checking the setup.
 
 ```bash
-source /home/rspectre/.virtualenvs/replay-lw/bin/activate
-cd /home/rspectre/workspace/replay-lw
+source ~/.virtualenvs/replay-lw/bin/activate
+cd path/to/replay-lw
 python find_ports.py
 ```
 
 Use the confirmed follower port from that output; the value below is an example.
-The calibration path below is the existing follower file on this machine.
+The calibration path below is LeRobot's default follower file.
 
 ```bash
-export FOLLOWER_PORT=/dev/ttyACM1
-export ORCHID_CALIBRATION=/home/rspectre/.cache/huggingface/lerobot/calibration/robots/so_follower/so101_follower.json
+export FOLLOWER_PORT=/dev/ttyACM1   # macOS: /dev/tty.usbmodem…
+export ORCHID_CALIBRATION=~/.cache/huggingface/lerobot/calibration/robots/so_follower/so101_follower.json
 ```
 
 All live commands require an explicit port, explicit calibration file, and an

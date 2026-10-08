@@ -246,7 +246,7 @@ class ControllerTests(unittest.TestCase):
         c, arm, _, _ = self.controller()
         c.enabled = arm.enabled = True
         arm.fail_read = True
-        with contextlib.redirect_stderr(io.StringIO()) as output:
+        with contextlib.redirect_stdout(io.StringIO()) as output:
             c.stop()
         self.assertEqual(arm.commands, [])
         self.assertIn("hardware power stop", output.getvalue())

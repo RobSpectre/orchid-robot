@@ -127,6 +127,14 @@ def test_usb_candidates_are_deduplicated_and_exclude_ttys(monkeypatch):
     assert all("ttyS" not in p for p in patterns)
 
 
+def test_macos_adapter_names_are_candidates(monkeypatch):
+    mac = {"/dev/tty.usbmodem5A7A0185321": 1, "/dev/tty.wchusbserial14310": 1, "/dev/cu.usbmodem5A7A0185321": 0,
+           "/dev/tty.Bluetooth-Incoming-Port": 0}
+    import fnmatch
+    monkeypatch.setattr(d.glob, "glob", lambda pattern: [p for p in mac if fnmatch.fnmatch(p, pattern)])
+    assert d.serial_candidates() == sorted(p for p, wanted in mac.items() if wanted)
+
+
 @pytest.mark.parametrize("as_json", [False, True])
 def test_cli_missing_voltage_and_warnings(sdk, monkeypatch, capsys, as_json):
     arm = d.probe("/dev/ttyACM0")

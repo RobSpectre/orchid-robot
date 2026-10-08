@@ -36,6 +36,7 @@ def test_startup_has_no_hardware_side_effects_and_serves_ui(client):
     state = client.get("/api/state").json()
     assert state["phase"] == "disconnected"
     assert state["mode"] == "simulation"
+    assert state["teaching_workflow_version"] == "leader-record-replay-v1"
     assert list(state["keys"]) == ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
     assert client.get("/api/ports").json()["ports"][0]["path"] == "simulator"
     response = client.get("/")

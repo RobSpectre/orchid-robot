@@ -7,6 +7,7 @@ supply. These are deliberately chosen limits, not a factory reset.
 
     python repair_leader_voltage.py --port /dev/ttyACM0 --motor-ids 6
     python repair_leader_voltage.py --port /dev/ttyACM0 --motor-ids 6 --apply
+    python repair_leader_voltage.py --port /dev/ttyACM0 --motor-ids 1 2 3 4 5 6 --min-volts 4.5 --max-volts 8.0
 
 Applying saves the original settings to JSON, disables torque, writes and
 verifies the limits, then locks EEPROM. Support the arm before applying;
@@ -27,7 +28,8 @@ MIN_VOLTAGE = 50  # 0.1 V units
 MAX_VOLTAGE = 55
 
 
-def repair(port: str, motor_ids: list[int], *, apply: bool = False, backup: Path | None = None) -> None:
+def repair(port: str, motor_ids: list[int], *, apply: bool = False, backup: Path | None = None,
+           min_voltage: int = MIN_VOLTAGE, max_voltage: int = MAX_VOLTAGE) -> None:
     import scservo_sdk as scs
 
     if not motor_ids or len(set(motor_ids)) != len(motor_ids) or any(i not in range(1, 7) for i in motor_ids):
@@ -35,7 +37,7 @@ def repair(port: str, motor_ids: list[int], *, apply: bool = False, backup: Path
 
     handler = scs.PortHandler(port)
     packet = scs.PacketHandler(0)
-    limits_text = f"{MIN_VOLTAGE / 10:.1f}–{MAX_VOLTAGE / 10:.1f} V"
+    limits_text = f"{min_voltage / 10:.1f}–{max_voltage / 10:.1f} V"
     if not handler.openPort():
         raise RuntimeError(f"Cannot open {port}")
     # PacketHandler resets its timeout for each request. Allow USB/EEPROM
@@ -96,7 +98,7 @@ def repair(port: str, motor_ids: list[int], *, apply: bool = False, backup: Path
                 f"limits={state['minimum_voltage'] / 10:.1f}–{state['maximum_voltage'] / 10:.1f} V "
                 f"-> {limits_text}"
             )
-            if apply and not MIN_VOLTAGE <= state["present_voltage"] <= MAX_VOLTAGE:
+            if apply and not min_voltage <= state["present_voltage"] <= max_voltage:
                 raise RuntimeError(f"Motor {motor_id}: measured voltage must be within {limits_text}")
 
         if not apply:
@@ -119,13 +121,13 @@ def repair(port: str, motor_ids: list[int], *, apply: bool = False, backup: Path
             write(motor_id, 40, 0)
 
         for motor_id in motor_ids:
-            if (read(motor_id, 15), read(motor_id, 14)) == (MIN_VOLTAGE, MAX_VOLTAGE):
+            if (read(motor_id, 15), read(motor_id, 14)) == (min_voltage, max_voltage):
                 write(motor_id, 55, 1)
                 continue
             try:
                 write(motor_id, 55, 0)
-                write(motor_id, 15, MIN_VOLTAGE)
-                write(motor_id, 14, MAX_VOLTAGE)
+                write(motor_id, 15, min_voltage)
+                write(motor_id, 14, max_voltage)
             except BaseException as original_error:
                 try:
                     write(motor_id, 55, 1)
@@ -137,7 +139,7 @@ def repair(port: str, motor_ids: list[int], *, apply: bool = False, backup: Path
 
         for motor_id in motor_ids:
             final_values = tuple(read(motor_id, address) for address in (15, 14, 40, 55))
-            if final_values != (MIN_VOLTAGE, MAX_VOLTAGE, 0, 1):
+            if final_values != (min_voltage, max_voltage, 0, 1):
                 raise RuntimeError(f"Motor {motor_id}: final limits, torque, or lock failed verification")
             model, comm, error = packet.ping(handler, motor_id)
             check(comm, error, f"Motor {motor_id}, final ping")
@@ -154,9 +156,14 @@ def main() -> None:
     parser.add_argument("--motor-ids", type=int, nargs="+", required=True, help="IDs whose labels have been checked")
     parser.add_argument("--apply", action="store_true", help="save limits to confirmed 7.4 V motors; support the arm")
     parser.add_argument("--backup", type=Path, help="new JSON file for original settings (must not already exist)")
+    parser.add_argument("--min-volts", type=float, default=MIN_VOLTAGE / 10, help="minimum-voltage limit (default 5.0)")
+    parser.add_argument("--max-volts", type=float, default=MAX_VOLTAGE / 10, help="maximum-voltage limit (default 5.5)")
     args = parser.parse_args()
+    if not 4.0 <= args.min_volts < args.max_volts <= 8.4:
+        parser.error("limits must satisfy 4.0 <= --min-volts < --max-volts <= 8.4 for 7.4 V motors")
     try:
-        repair(args.port, args.motor_ids, apply=args.apply, backup=args.backup)
+        repair(args.port, args.motor_ids, apply=args.apply, backup=args.backup,
+               min_voltage=round(args.min_volts * 10), max_voltage=round(args.max_volts * 10))
     except Exception as exc:
         print(f"Stopped: {exc}", file=sys.stderr)
         if args.apply:

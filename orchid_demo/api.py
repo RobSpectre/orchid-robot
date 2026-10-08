@@ -4,6 +4,7 @@ import fcntl
 import json
 from pathlib import Path
 import secrets
+import time
 from typing import Any
 from uuid import UUID
 
@@ -25,6 +26,45 @@ class Command(BaseModel):
     action: str = Field(min_length=1, max_length=40)
     revision: StrictInt
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    speed: float | None = Field(default=None, ge=0.1, le=3.0)
+    press_s: float | None = Field(default=None, ge=0, le=5)
+    turn_degrees: float | None = Field(default=None, ge=-90, le=90)
+    wait: bool = True
+
+
+class SequenceStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    control: str = Field(min_length=1, max_length=20)
+    press_s: float | None = Field(default=None, ge=0, le=5)
+    turn_degrees: float | None = Field(default=None, ge=-90, le=90)
+
+
+class SequenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    steps: list[SequenceStep] = Field(min_length=1, max_length=64)
+    speed: float | None = Field(default=None, ge=0.1, le=3.0)
+    wait: bool = True
+
+
+class ControlSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    press_s: float | None = Field(default=None, ge=0, le=5)
+    turn_degrees: float | None = Field(default=None, ge=-90, le=90)
+
+
+class PlaybackSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    speed: float | None = Field(default=None, ge=0.1, le=3.0)
+    press_s: float | None = Field(default=None, ge=0, le=5)
+
+
+class IncidentReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = Field(default="", max_length=1000)
 
 
 def create_app(directory: Path, mode="simulation", *, engine=None):
@@ -107,12 +147,99 @@ def create_app(directory: Path, mode="simulation", *, engine=None):
             return engine.submit(operator(request), str(command.id), command.action,
                                  command.revision, command.args)
         except SafetyError as exc:
+            engine.report_error("rejected", exc, {"action": command.action, "command_id": str(command.id), "source": "http"})
             raise HTTPException(409, str(exc)) from exc
+
+    # --- Control API: list, configure and play taught controls --------------------------------------
+    # Every motion goes through the operator console's live session (Stop/Esc and the lost-page stop
+    # still apply); the API refuses while no console is in control. POSTs need X-Orchid-Token from
+    # GET /api/session, like the console.
+
+    def run(action, args, wait):
+        try:
+            receipt = engine.api_submit(action, {k: v for k, v in args.items() if v is not None})
+        except SafetyError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:  # the worker processes the command between control ticks
+            done = engine.receipts.get(receipt["id"], {})
+            if done.get("status") != "queued":
+                break
+            time.sleep(0.05)
+        done = dict(engine.receipts.get(receipt["id"], {}))
+        if done.get("status") == "rejected":
+            raise HTTPException(409, done.get("message") or "Rejected")
+        moving = action in ("teach_play", "teach_sequence", "teach_go_home", "teach_go_rest")
+        while wait and moving and time.monotonic() < deadline and engine.snapshot()["phase"] == "teach_play":
+            time.sleep(0.1)
+        snap = engine.snapshot()
+        return {"status": done.get("status"), "phase": snap["phase"], "message": snap["message"], "error": snap["error"]}
+
+    @app.get("/api/controls")
+    def controls():
+        snap = engine.snapshot()
+        statuses = {**snap["keys"], **snap["controls"]}
+        return {"phase": snap["phase"], "ready_to_play": snap["phase"] in ("teach_hold", "teach_follow") and snap["lease_live"],
+                "settings": snap["teach_settings"],
+                "controls": [{"id": c["id"], "name": c["name"], "kind": c["kind"], "group": c["group"],
+                              **{k: statuses[c["id"]].get(k) for k in ("status", "press_s", "turn_degrees") if k in statuses[c["id"]]}}
+                             for c in snap["catalog"].values()]}
+
+    @app.post("/api/controls/{control}/play")
+    def play_control(control: str, body: PlayRequest):
+        return run("teach_play", {"control": control, "speed": body.speed, "press_s": body.press_s,
+                                  "turn_degrees": body.turn_degrees}, body.wait)
+
+    @app.post("/api/controls/{control}")
+    def configure_control(control: str, body: ControlSettings):
+        return run("teach_configure", {"control": control, "press_s": body.press_s, "turn_degrees": body.turn_degrees}, False)
+
+    @app.post("/api/sequence")
+    def play_sequence(body: SequenceRequest):
+        steps = [{k: v for k, v in step.model_dump().items() if v is not None} for step in body.steps]
+        return run("teach_sequence", {"steps": steps, "speed": body.speed}, body.wait)
+
+    @app.post("/api/settings")
+    def playback_settings(body: PlaybackSettings):
+        return run("teach_settings", {"speed": body.speed, "press_s": body.press_s}, False)
+
+    @app.post("/api/home")
+    def go_home():
+        return run("teach_go_home", {}, True)
+
+    @app.post("/api/stop")
+    def stop():
+        return run("stop", {}, False)
 
     @app.get("/api/export")
     def export():
         return Response(json.dumps(engine.export_snapshot(), indent=2, allow_nan=False),
                         media_type="application/json", headers={"Content-Disposition": f'attachment; filename="orchid-{mode}-session.json"'})
+
+    @app.get("/api/incidents")
+    def incidents():
+        return engine.incidents.listing()
+
+    @app.get("/api/incidents/{identity}")
+    def incident(identity: str):
+        try:
+            engine.incidents.metadata(identity)
+            path = engine.incidents.path(identity)
+            if not path.is_file():
+                raise FileNotFoundError(identity)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404, "Incident not found or still saving") from exc
+        return FileResponse(path, media_type="application/json", filename=f"orchid-incident-{identity}.json")
+
+    @app.post("/api/incidents/{identity}/report")
+    def report_incident(identity: str, report: IncidentReport):
+        # CSRF protection applies; motor ownership/health is deliberately unrelated.
+        try:
+            return engine.incidents.request_report(identity, report.note)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404, "Incident not found or still saving") from exc
+        except OSError as exc:
+            raise HTTPException(503, "Could not save report request; retry when local storage is available") from exc
 
     @app.get("/")
     def index():

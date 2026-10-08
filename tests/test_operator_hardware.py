@@ -30,6 +30,9 @@ class Bus:
                        "Present_Voltage": dict.fromkeys(m.MOTORS, 120), "Operating_Mode": dict.fromkeys(m.MOTORS, 0),
                        "Present_Position": dict.fromkeys(m.MOTORS, 2047)}
         self.values["Present_Temperature"] = dict.fromkeys(m.MOTORS, 28)
+        for register in ("Phase", "Return_Delay_Time", "Maximum_Acceleration", "Acceleration", "P_Coefficient",
+                         "I_Coefficient", "D_Coefficient", "Max_Torque_Limit", "Protection_Current", "Overload_Torque"):
+            self.values[register] = dict.fromkeys(m.MOTORS, 0)
         for register, field in [("Homing_Offset", "homing_offset"), ("Min_Position_Limit", "range_min"), ("Max_Position_Limit", "range_max")]:
             self.values[register] = {name: getattr(cal, field) for name, cal in self.hardware_calibration.items()}
         self.writes = []
@@ -44,6 +47,21 @@ class Bus:
 
     def sync_read(self, name, **kwargs):
         return dict(self.values[name])
+
+    def sync_write(self, register, values, **kwargs):
+        self.writes.append((register, "all", dict(values)))
+        self.values[register] = dict(values)
+
+    def enable_torque(self, **kwargs):
+        self.writes.append(("Torque_Enable", "all", 1))
+        self.values["Torque_Enable"] = dict.fromkeys(m.MOTORS, 1)
+
+    def configure_motors(self):
+        assert not any(self.values["Torque_Enable"].values())
+        for name in m.MOTORS:
+            for register, value in (("Return_Delay_Time", 0), ("Maximum_Acceleration", 254), ("Acceleration", 254)):
+                self.write(register, name, value)
+            self.write("Phase", name, self.values["Phase"][name] & ~0x10)
 
     def write(self, register, name, value, **kwargs):
         self.writes.append((register, name, value))
@@ -74,6 +92,7 @@ def arm(monkeypatch):
     monkeypatch.setitem(sys.modules, "lerobot.motors", module)
     a = HardwareArm.__new__(HardwareArm)
     a.bus = Bus()
+    a._teleop_driver = SimpleNamespace(config=SimpleNamespace(position_p_coefficient=16, position_i_coefficient=0, position_d_coefficient=32))
     a.calibration = {name: vars(cal).copy() for name, cal in a.bus.hardware_calibration.items()}
     a.signature = m.fingerprint(a.calibration)
     a.backup = a.locks = None
@@ -90,6 +109,119 @@ def test_open_only_reads_and_disconnect_never_drops_torque(arm):
     assert not arm.bus.is_connected
 
 
+def test_failed_calibration_read_keeps_prior_motor_voltages_without_extra_io(arm, monkeypatch):
+    def fail(_):
+        raise RuntimeError("Failed to read 'Min_Position_Limit' on id_=4. [RxPacketError] Input voltage error!")
+    monkeypatch.setattr(Bus, "is_calibrated", property(fail), raising=False)
+    arm.__class__ = HardwareLeader
+    arm.bus.values["Present_Voltage"] = dict.fromkeys(m.MOTORS, 52)
+    arm.bus.values["Present_Voltage"]["wrist_flex"] = 45
+    with pytest.raises(RuntimeError, match="Input voltage"):
+        arm.open()
+    assert arm.connection_readings == {"stage": "saved_calibration_readback",
+                                       "voltage_raw": arm.bus.values["Present_Voltage"]}
+    assert not arm.bus.writes
+    arm.close()
+
+
+def test_goal_readback_is_read_only_and_requires_six_valid_motor_values(arm):
+    arm.open()
+    expected = dict.fromkeys(m.MOTORS, 2048)
+    arm.bus.values["Goal_Position"] = dict(expected)
+    assert arm.read_goal() == expected
+    arm.bus.values["Goal_Position"].pop("elbow_flex")
+    with pytest.raises(m.SafetyError):
+        arm.read_goal()
+    assert not arm.bus.writes
+
+
+def test_replay_motor_setup_stays_off_then_seeds_pose_before_enable(arm):
+    arm.open()
+    calibration = deepcopy(arm.bus.hardware_calibration)
+    locks = dict(arm.bus.values["Lock"])
+    arm.bus.values["Phase"]["elbow_flex"] = 0x14
+    arm.prepare_motion()
+    assert arm.position_control_setup["verified"]
+    assert arm.bus.values["Acceleration"] == dict.fromkeys(m.MOTORS, 254)
+    assert arm.bus.values["Phase"]["elbow_flex"] == 4
+    assert arm.bus.values["P_Coefficient"] == dict.fromkeys(m.MOTORS, 16)
+    assert arm.bus.values["I_Coefficient"] == dict.fromkeys(m.MOTORS, 0)
+    assert arm.bus.values["D_Coefficient"] == dict.fromkeys(m.MOTORS, 32)
+    assert arm.bus.values["Protection_Current"]["gripper"] == 250
+    assert arm.bus.hardware_calibration == calibration
+    assert arm.bus.values["Lock"] == locks
+    assert not any(r in ("Goal_Position", "Torque_Enable") for r, _, _ in arm.bus.writes)
+    pose = dict(arm.bus.values["Present_Position"])
+    arm.arm_at_calibrated(pose)
+    assert arm.bus.writes[-2:] == [("Goal_Position", "all", pose), ("Torque_Enable", "all", 1)]
+
+
+@pytest.mark.parametrize("problem", ["readback", "configure_failure", "stop"])
+def test_replay_setup_failure_restores_locks_and_never_enables(arm, problem):
+    arm.open()
+    original_configure = arm.bus.configure_motors
+    def configure():
+        original_configure()
+        if problem == "readback":
+            arm.bus.values["Acceleration"]["elbow_flex"] = 0
+        if problem == "configure_failure":
+            raise ConnectionError("configure USB failure")
+    arm.bus.configure_motors = configure
+    def guard():
+        if problem == "stop" and arm.bus.values["Acceleration"]["elbow_flex"] == 254:
+            raise m.SafetyError("Operator stopped setup")
+    with pytest.raises((m.SafetyError, ConnectionError)):
+        arm.prepare_motion(guard=guard)
+    assert not arm.position_control_setup["verified"]
+    assert arm.bus.values["Lock"] == dict.fromkeys(m.MOTORS, 1)
+    assert not any(r in ("Goal_Position", "Torque_Enable") for r, _, _ in arm.bus.writes)
+
+
+def test_motor_setup_rejects_powered_arm_and_leader_before_writes(arm):
+    arm.open()
+    arm.bus.values["Torque_Enable"]["elbow_flex"] = 1
+    with pytest.raises(m.SafetyError, match="torque off"):
+        arm.prepare_motion()
+    arm.__class__ = HardwareLeader
+    with pytest.raises(m.SafetyError, match="input-only"):
+        arm.prepare_motion()
+    assert not arm.bus.writes
+
+
+def test_home_hold_seeds_verified_current_endpoint_before_enabling(arm):
+    arm.open()
+    pose = {**arm.bus.values["Present_Position"], "elbow_flex": 3100}
+    arm.bus.values["Present_Position"] = dict(pose)
+    arm.arm_at_calibrated(pose)
+    assert arm.bus.writes == [("Goal_Position", "all", pose), ("Torque_Enable", "all", 1)]
+    assert arm.bus.values["Present_Position"] == pose
+    # The ordinary key adapter still rejects this endpoint.
+    with pytest.raises(m.SafetyError, match="working margin"):
+        arm.check_pose(pose)
+
+
+@pytest.mark.parametrize("problem", ["outside", "unverified", "torque_on", "target_readback", "moved"])
+def test_home_hold_rejects_bad_seed_before_enabling(arm, problem):
+    arm.open()
+    pose = dict(arm.bus.values["Present_Position"])
+    if problem == "outside":
+        pose["elbow_flex"] = 3101
+    elif problem == "unverified":
+        arm.calibration_matches = False
+    elif problem == "torque_on":
+        arm.bus.values["Torque_Enable"]["elbow_flex"] = 1
+    elif problem == "moved":
+        arm.bus.values["Present_Position"]["elbow_flex"] += 3
+    else:
+        read = arm.bus.sync_read
+        arm.bus.sync_read = lambda name, **kw: {} if name == "Goal_Position" else read(name, **kw)
+    with pytest.raises(m.SafetyError):
+        arm.arm_at_calibrated(pose)
+    assert not any(register == "Torque_Enable" for register, _, _ in arm.bus.writes)
+    if problem in ("outside", "unverified", "torque_on"):
+        assert arm.bus.writes == []
+
+
 def test_leader_connection_is_read_only_and_cannot_send_or_enable(arm):
     arm.__class__ = HardwareLeader
     arm.bus.values["Present_Voltage"] = dict.fromkeys(m.MOTORS, 52)
@@ -99,6 +231,10 @@ def test_leader_connection_is_read_only_and_cannot_send_or_enable(arm):
         arm.send(dict.fromkeys(m.MOTORS, 2047))
     with pytest.raises(m.SafetyError, match="torque enable"):
         arm.arm_at_current(dict.fromkeys(m.MOTORS, 2047))
+    with pytest.raises(m.SafetyError, match="input-only"):
+        arm.send_calibrated(dict.fromkeys(m.MOTORS, 2047))
+    with pytest.raises(m.SafetyError, match="torque enable"):
+        arm.arm_at_calibrated(dict.fromkeys(m.MOTORS, 2047))
     assert not arm.bus.writes
     arm.begin_calibration()
     offsets = arm.center(sleep=lambda _: None)
