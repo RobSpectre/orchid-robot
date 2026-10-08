@@ -13,14 +13,14 @@ The console mirrors the instrument's charcoal surface, gold case, chord bank, vo
 `teach_key.py` is a small terminal tool built directly on LeRobot 0.6.1's SO101 drivers, using LeRobot's safety baseline unchanged (calibration check, firmware joint limits, P=16 gains, gripper current limits, leader torque off). It adds a goal-at-measured-pose seed before torque enable, speed-limited ramps to start poses, hold-and-ask instead of dropping the arm on exit, and refuses recordings made under a different calibration. It has no fixture, home route or tracking-tolerance gates. Stop the web app first; both cannot own the ports.
 
 ```bash
-source ~/.virtualenvs/replay-lw/bin/activate
+source ~/.virtualenvs/orchid/bin/activate
 python teach_key.py ports              # follower 12 V / leader 5 V, all six motors each
 python teach_key.py sync-calibration   # motors' current calibration -> LeRobot's JSON files (backs up the old ones)
 python teach_key.py record C           # wait for FOLLOWING; Enter, rest -> press C -> rest, Enter; q
 python teach_key.py play C --speed 0.5 # Enter repeats; then try --speed 1.0
 ```
 
-Recordings are `keys/<key>.json` (commanded goals, leader and measured follower poses at 30 fps). Tests: `PYTHONPATH=. ~/.virtualenvs/replay-lw/bin/python -m unittest discover -s tests -p test_teach_key.py`.
+Recordings are `keys/<key>.json` (commanded goals, leader and measured follower poses at 30 fps). Tests: `PYTHONPATH=. ~/.virtualenvs/orchid/bin/python -m unittest discover -s tests -p test_teach_key.py`.
 
 ## Run locally
 
@@ -46,9 +46,9 @@ python app.py --data-dir /path/to/local/session-data
 
 ### macOS notes
 
-- **Hardware environment.** LeRobot gets its own environment, as on Linux: `python3.12 -m venv ~/.virtualenvs/replay-lw && ~/.virtualenvs/replay-lw/bin/python -m pip install -r requirements-hardware.txt`. Every command in these docs that uses `~/.virtualenvs/replay-lw/bin/python` then works unchanged.
+- **Hardware environment.** LeRobot gets its own environment, as on Linux: `python3.12 -m venv ~/.virtualenvs/orchid && ~/.virtualenvs/orchid/bin/python -m pip install -r requirements-hardware.txt`. Every command in these docs that uses `~/.virtualenvs/orchid/bin/python` then works unchanged.
 - **Ports.** The arms' USB adapters appear as `/dev/tty.usbmodem…` (or `/dev/tty.wchusbserial…` with WCH's CH34x driver), not `/dev/ttyACM…`. The console, `find_ports.py` and `teach_key.py ports` find them by themselves and tell follower (12 V) from leader (5 V) by voltage. No `dialout` group or serial permission step is needed. If no port appears, check the cable and USB hub, then install WCH's CH34x driver.
-- **Keep the Mac awake while the arm is powered.** Sleep cuts USB, and the console then stops with a hold fault. Run it as `caffeinate -i ~/.virtualenvs/replay-lw/bin/python app.py --enable-hardware --port 8081`, and keep the console tab visible: a hidden tab that Safari or Chrome throttles misses heartbeats, and after five seconds the arm stops and holds.
+- **Keep the Mac awake while the arm is powered.** Sleep cuts USB, and the console then stops with a hold fault. Run it as `caffeinate -i ~/.virtualenvs/orchid/bin/python app.py --enable-hardware --port 8081`, and keep the console tab visible: a hidden tab that Safari or Chrome throttles misses heartbeats, and after five seconds the arm stops and holds.
 - Calibration files live in the same place as on Linux (`~/.cache/huggingface/lerobot/calibration/`), and the Claude chime hook in `~/.claude/settings.json` can use `afplay /System/Library/Sounds/Glass.aiff` instead of `pw-play`.
 
 ## Move to another computer
@@ -158,4 +158,4 @@ docs/                     Operator and developer documentation
 
 The 3D geometry's pinned upstream source and license are listed in [third-party notices](THIRD_PARTY_NOTICES.md). Node is used only for development checks; running the app still requires only Python and a browser.
 
-The original replay and terminal utilities remain for development/history: [legacy replay guide](docs/legacy-replay.md), [first-key notes](ORCHID_FIRST_KEY.md), `replay_lw.py`, `find_ports.py`, `orchid_key.py`, `orchid_session.py`, and `orchid_calibrate.py`. Do not run a legacy controller concurrently with the web app. `repair_leader_voltage.py` is a one-off diagnostic/repair utility, not part of normal operation.
+`find_ports.py` lists the arms' ports (read-only). The earlier terminal utilities remain for history: [first-key notes](ORCHID_FIRST_KEY.md), `orchid_key.py`, `orchid_session.py`, and `orchid_calibrate.py`. Do not run a legacy controller concurrently with the web app. `repair_leader_voltage.py` is a one-off diagnostic/repair utility, not part of normal operation.

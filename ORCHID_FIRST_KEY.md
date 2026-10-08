@@ -12,7 +12,7 @@ The program does not listen to the microphone itself.
 Stop other arm scripts first, with the arm securely supported/resting. From the repository, with `FOLLOWER_PORT` set as in [Environment and device selection](#environment-and-device-selection), run:
 
 ```bash
-~/.virtualenvs/replay-lw/bin/python \
+~/.virtualenvs/orchid/bin/python \
   orchid_session.py serve \
   --port "$FOLLOWER_PORT" \
   --calibration ~/.cache/huggingface/lerobot/calibration/robots/so_follower/so101_follower.json \
@@ -125,15 +125,15 @@ to trigger; do not deliberately bottom out the key.
 
 ## Environment and device selection
 
-The implementation was checked against the existing `replay-lw` environment with
-LeRobot 0.6.1. The older replay setup elsewhere in the README pins 0.4.5; do not
-reinstall or change versions as part of this trial. The key file records the
+The implementation was checked against the hardware environment
+(`~/.virtualenvs/orchid`) with LeRobot 0.6.1; do not reinstall or change versions
+as part of this trial. The key file records the
 installed LeRobot version and a fingerprint of the arm calibration. Playback
 rejects a mismatch and requires re-teaching after checking the setup.
 
 ```bash
-source ~/.virtualenvs/replay-lw/bin/activate
-cd path/to/replay-lw
+source ~/.virtualenvs/orchid/bin/activate
+cd path/to/orchid-robot
 python find_ports.py
 ```
 

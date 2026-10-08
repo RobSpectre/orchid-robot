@@ -1,7 +1,7 @@
 """The web console's hardware adapter for record -> replay, over real LeRobot code and a fake bus.
 
 Run with the hardware environment (LeRobot installed):
-    PYTHONPATH=. ~/.virtualenvs/replay-lw/bin/python -m unittest discover -s tests -p test_teach_hardware.py
+    PYTHONPATH=. ~/.virtualenvs/orchid/bin/python -m unittest discover -s tests -p test_teach_hardware.py
 No serial port is opened. Skipped where LeRobot is not installed.
 """
 import importlib.util

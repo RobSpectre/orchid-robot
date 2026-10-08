@@ -1,7 +1,7 @@
 """Offline checks for teach_key.py using the real LeRobot SO101 driver classes over a fake bus.
 
 Run with the hardware environment (LeRobot installed):
-    ~/.virtualenvs/replay-lw/bin/python -m unittest tests.test_teach_key -v
+    ~/.virtualenvs/orchid/bin/python -m unittest tests.test_teach_key -v
 No serial port is opened. Skipped where LeRobot is not installed.
 """
 import contextlib
