@@ -16,6 +16,7 @@ const ARM_NAMES = {a: "Arm A · keys", b: "Arm B · chords & dial"};
 const armStatus = a => !a.connected ? "not connected" : a.tuning ? "calibrating keys" : a.parked ? `parked ${a.parked_reason}` : a.parked_reason;
 function renderArms() {
   const box = $("arm-switch");
+  if (!box) return;
   const shown = arms ? Object.entries(arms).filter(([, a]) => a.available) : [];
   box.hidden = shown.length < 2;  // one follower: the console looks as it always has
   if (box.hidden) return;
@@ -287,7 +288,7 @@ function poseWorkflow(s, pose) {
   const go = saved ? button(`teach_go_${name}`, `Go to ${name}`, true) : "";
   if (following) html += actions(button(`teach_set_${name}`, `Set ${name} here`) + go + button("teach_hold", "Hold here", true));
   else if (p === "teach_follow") html += actions(button("teach_hold", "Hold here", true));
-  else if (p === "teach_hold") html += actions((t.leader ? button("teach_follow", "Follow the leader →") : "") + go);
+  else if (p === "teach_hold") html += actions((t.leader !== false ? button("teach_follow", "Follow the leader →") : "") + go);
   else if (p === "teach_play") html += actions(button("teach_hold", "■ Stop & hold here", true));
   return html;
 }
@@ -337,6 +338,7 @@ function teachWorkflow(s) {
   const p = s.phase, t = s.teach || {}, chosen = activeControl(), name = esc(chosen.name);
   if (POSES[chosen.id]) return poseWorkflow(s, chosen.id);
   const recorded = !!allStatuses()[chosen.id]?.recorded;
+  const lead = t.leader !== false;  // the session follows a leader unless the controller says it has none
   const heard = p === "teach_hold" && t.played === chosen.id;
   const play = (label, secondary = true) => button("teach_play", label, secondary);  // speed comes from the shared setting
   const description = `<p class="description">${esc(s.message)}</p>` + keyCheck(s) + (t.roll_guard ?
@@ -349,7 +351,7 @@ function teachWorkflow(s) {
   const next = retrain || steps.find(n => !got.includes(n));
   const title = p === "teach_play" ? (t.returning ? "Returning to home…" : t.going_rest ? "Returning to rest…" : `Playing ${name}…`) :
     p === "teach_follow" && t.mode !== "following" ? "Matching the leader…" :
-    !t.leader ? (heard ? `Played ${name}.` : recorded ? `Ready to play ${name}.` : `${name} is not taught yet.`) :
+    !lead ? (heard ? `Played ${name}.` : recorded ? `Ready to play ${name}.` : `${name} is not taught yet.`) :
     retrain ? `Retrain ${pointLabels[retrain].toLowerCase()}: ${p === "teach_hold" ? "follow the leader, then" : ""} guide to it, then Space.` :
     next ? (p === "teach_hold" && next !== "home" ? `Holding · ready to teach ${name}.` : `Guide to ${pointLabels[next].toLowerCase()}, then Space.`) :
     heard ? `Played ${name}.` : `${name} is taught.`;
@@ -358,8 +360,8 @@ function teachWorkflow(s) {
       const done = got.includes(n), current = n === next, just = flashing(n, chosen.id);
       const classes = ["teach-point", current ? "current" : done ? "done" : "", just ? "flash" : ""].filter(Boolean).join(" ");
       const shared = dial ? " · both directions" : "";
-      const note = (just ? "captured ✓" : current && done ? "retraining · Space" : current ? "next" : done ? (t.leader ? "tap to retrain" : "taught") : "") + (just ? "" : shared);
-      return `<button type="button" data-target-point="${n}" class="${classes}" aria-pressed="${current}" ${(done || current) && t.leader ? "" : 'data-locked="true"'}><strong>${done && !current ? "✓" : current ? "●" : "○"} ${pointLabels[n]}</strong><small>${note}</small></button>`;
+      const note = (just ? "captured ✓" : current && done ? "retraining · Space" : current ? "next" : done ? (lead ? "tap to retrain" : "taught") : "") + (just ? "" : shared);
+      return `<button type="button" data-target-point="${n}" class="${classes}" aria-pressed="${current}" ${(done || current) && lead ? "" : 'data-locked="true"'}><strong>${done && !current ? "✓" : current ? "●" : "○"} ${pointLabels[n]}</strong><small>${note}</small></button>`;
     }).join("")}<span class="teach-point-return">${dial ? "Play: … grip → turn the wrist → let go → raise → hover → home" : "↩ back the same way"}</span></div>` + description;
   const capture = next === "home" ? button("teach_set_home", "Set home here") :
     next ? button("teach_capture", next === "press" ? `${retrain ? "Recapture" : "Capture"} press & return home ↩` :
@@ -371,7 +373,7 @@ function teachWorkflow(s) {
   const press = allStatuses()[chosen.id]?.press_s ?? settings.press_s;
   const pressField = !dial && !next ? `<label class="form-field turn-field">Press length <input id="press-seconds" type="number" min="0" max="5" step="0.1" value="${esc(pressInput[chosen.id] ?? press)}"> seconds held down <small>Saved for ${name} when you Play.</small></label>` : "";
   html += turnField + pressField;
-  if (p === "teach_hold" && !t.leader) {
+  if (p === "teach_hold" && !lead) {
     // Holding with only the follower: play taught controls; teaching needs the leader.
     if (t.warning) html += actions(button("teach_play", `Play ${name} anyway ▶`, false, 'data-force="true"'));
     else if (recorded) html += actions(play(heard ? "Play again ▶" : `Play ${name} ▶`, false));
@@ -385,7 +387,7 @@ function teachWorkflow(s) {
   }
   if (p === "teach_follow") html += t.mode === "following" ? actions(capture + (!next ? play(`Play ${name} ▶`, false) : "") + button("teach_hold", "Hold here", true)) : actions(button("teach_hold", "Hold here", true));
   html += playback;
-  if (["teach_hold", "teach_follow"].includes(p) && t.leader) html += '<p class="hint"><kbd>Space</kbd> presses the highlighted button. To retrain one step, tap its box, guide the arm there, and press Space; the other steps are kept. ' +
+  if (["teach_hold", "teach_follow"].includes(p) && lead) html += '<p class="hint"><kbd>Space</kbd> presses the highlighted button. To retrain one step, tap its box, guide the arm there, and press Space; the other steps are kept. ' +
     (dial ? "Hover above the knob, open the jaws, lower around it, then grip. Capturing the grip lets go and returns home on its own. Play turns only the wrist by the angle above, lets go, and raises back out; it never turns back while gripping. The steps are shared by CW and CCW; each has its own angle."
           : "Capturing the press returns to home on its own. Play goes home → hover → touch → press and back.") +
     ' Home is set with ⌂ Home on the map.</p>';
@@ -617,7 +619,7 @@ function render() {
   $("mode").className = `badge ${isSim() ? "" : "hardware"}`;
   renderConnection();
   const section = workflowSection();
-  window.OrchidArmView?.setSection(section);
+  globalThis.OrchidArmView?.setSection(section);
   // The keyboard map is for training; connecting and calibrating do not use it.
   document.querySelector(".instrument-shell").style.display = ["connect", "calibration"].includes(section) ? "none" : "";
   $("calibration-tools").hidden = ["connect", "tune"].includes(section);
@@ -918,7 +920,7 @@ async function poll() {
     instances[arm] = instance = session.state.instance_id; token = session.token; state = session.state; online = state.worker_alive !== false;
     arms = session.arms; connectPlan = session.connect_plan;
     if (arm !== "a" && !arms?.[arm]?.available) { arm = "a"; return; }
-    window.OrchidArmView?.setArms(arms);
+    globalThis.OrchidArmView?.setArms(arms);
     renderArms();
     for (const link of document.querySelectorAll("[data-export]")) link.href = `/api/export?arm=${arm}`;
     try { await request("/api/heartbeat", {leader_visible:!document.hidden}); owns = true; operatorError = null; operatorConflictSince = null; }

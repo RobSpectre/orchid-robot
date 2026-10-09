@@ -63,7 +63,7 @@ function consoleHarness() {
   const context = vm.createContext({document, crypto:webcrypto, AbortSignal,
     setTimeout:()=>{}, setInterval:fn=>{interval=fn;return 1;}, clearInterval:()=>{interval=null;},
     fetch:async (path, options) => {
-      if (path === '/api/session') return new Promise(()=>{}); // No background poll in this unit harness.
+      if (path.startsWith('/api/session')) return new Promise(()=>{}); // No background poll in this unit harness.
       commands.push(JSON.parse(options.body));
       return fail ? {ok:false,text:async()=>JSON.stringify({detail:'Capture rejected'})}
         : {ok:true,json:async()=>({status:'queued'})};
@@ -223,12 +223,14 @@ test('leader mode teaches by record and replay without a home pose',()=>{
   assert.match(ui.elements.workflow.innerHTML,/data-confirm="supported"/);  // configure() blinks torque off
 });
 
-test('the connect screen defaults to leader teaching and hand-guide mode says the leader is inactive',()=>{
+test('the connect screen is one button that finds and connects every arm, and hand-guide mode says the leader is inactive',()=>{
   const ui=consoleHarness();
   vm.runInContext(`state.phase="disconnected";state.mode="hardware";state.fixture={label:"x",id:"",tool:"rubber_gloved_tips"};
     state.discovery={ports:[]};state.selected="C";state.catalog={C:{id:"C",label:"C",kind:"key",name:"C"}};
     state.selected_control=state.catalog.C;state.keys={C:{status:"empty"}};state.controls={};workflow();`,ui.context);
-  assert.match(ui.elements.workflow.innerHTML,/<option value="leader" selected>Use leader to teach/);
+  const page = ui.elements.workflow.innerHTML;
+  assert.match(page,/data-action="find_connect_all"[^>]*>Find and connect all arms/);
+  assert.doesNotMatch(page,/<select/);  // no port, leader or teaching-mode pickers
   vm.runInContext(`state.phase="ready";state.teaching_mode="manual";state.calibrated=true;state.torque={};workflow();`,ui.context);
   assert.match(ui.elements.workflow.innerHTML,/leader arm is not connected/);
   vm.runInContext(`state.phase="note_ready";workflow();`,ui.context);
@@ -473,7 +475,7 @@ test('teaching can prepare away from home but capture requires measured alignmen
 
 async function pollHeartbeat(ui, response) {
   ui.context.fetch = async path => {
-    if (path === '/api/session') return {ok:true,json:async()=>({token:'test-token',state:{
+    if (path.startsWith('/api/session')) return {ok:true,json:async()=>({token:'test-token',state:{
       instance_id:'test-app',phase:'connected',connected:true,worker_alive:true,revision:1,pending:false
     }})};
     assert.equal(path,'/api/heartbeat');
