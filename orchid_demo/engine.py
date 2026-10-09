@@ -839,7 +839,7 @@ class Engine:
 
     def off_the_stops(self, point):
         """A home or rest is held for minutes, so hold it LIMIT_MARGIN_TICKS inside each joint's travel. A pose saved
-        at a stop (before check_parking_pose existed, or folded against it) otherwise keeps a motor pushing into its
+        at a stop (folded against it, as a rest often is) otherwise keeps a motor pushing into its
         end of travel, and the arm shivers. Wrist roll turns a full circle and is left as taught."""
         goal = dict(point["goal"])
         for name in m.MOTORS:
@@ -901,14 +901,16 @@ class Engine:
 
     LIMIT_MARGIN_TICKS = 45  # about 4 deg: a parking pose held closer than this to a stop makes the servo push and buzz
 
-    def check_parking_pose(self, label):
-        """Home and rest are held for long stretches: refuse one with a joint at its end of travel."""
+    def parking_note(self, label):
+        """Home and rest are saved where the operator put them; off_the_stops holds them just inside each joint's travel.
+        Says so when a joint is at its end of travel, so the small difference is not a surprise."""
         near = [name for name in m.MOTORS if name != "wrist_roll" and self.current and self.calibration
                 and min(self.current[name] - self.calibration[name]["range_min"],
                         self.calibration[name]["range_max"] - self.current[name]) < self.LIMIT_MARGIN_TICKS]
-        m.require(not near, f"The {', '.join(n.replace('_', ' ') for n in near)} {'is' if len(near) == 1 else 'are'} at the end of "
-                  f"{'its' if len(near) == 1 else 'their'} travel. Holding a {label} there makes the motors push against "
-                  f"the stop and shake: guide it a few degrees back, then set {label} again.")
+        if not near:
+            return ""
+        return (f" The {', '.join(n.replace('_', ' ') for n in near)} {'is' if len(near) == 1 else 'are'} at the end of travel, so "
+                f"the arm holds its {label} about 4° inside {'that stop' if len(near) == 1 else 'those stops'} rather than pushing into it.")
 
     def save_teach_home(self, captured):
         self.teach_home_doc = self.pose_doc(captured)
@@ -2082,7 +2084,7 @@ class Engine:
             self.transition("teach_hold", "Holding here." + (" The unfinished recording was discarded." if discarded else ""))
         elif action == "teach_set_home":
             self.require_phase("teach_hold", "teach_follow")
-            self.check_parking_pose("home")
+            note = self.parking_note("home")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             try:
                 captured = self.teach.capture()
@@ -2091,7 +2093,7 @@ class Engine:
             self.save_teach_home(captured)
             if self.teach_points_for:
                 self.teach_points["home"] = captured
-            self.transition(self.phase, "Home set here. Every key now starts and ends at this home.")
+            self.transition(self.phase, "Home set here. Every key now starts and ends at this home." + note)
         elif action == "teach_go_home":
             self.require_phase("teach_hold", "teach_follow")
             home_point = self.shared_teach_home()
@@ -2170,7 +2172,7 @@ class Engine:
                             "were updated to match, so nothing needs re-teaching. Nothing moved.")
         elif action == "teach_set_rest":
             self.require_phase("teach_hold", "teach_follow")
-            self.check_parking_pose("rest")
+            note = self.parking_note("rest")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             try:
                 captured = self.teach.capture()
@@ -2178,7 +2180,7 @@ class Engine:
                 raise m.SafetyError(str(exc)) from exc
             self.teach_rest_doc = self.pose_doc(captured)
             self.repo.put("teach_rest", self.teach_rest_doc)
-            self.transition(self.phase, "Rest set here. Go to rest moves the arm here; playback waits at home between keys.")
+            self.transition(self.phase, "Rest set here. Go to rest moves the arm here; playback waits at home between keys." + note)
         elif action == "teach_go_rest":
             self.require_phase("teach_hold", "teach_follow")
             rest_point = self.shared_teach_rest()

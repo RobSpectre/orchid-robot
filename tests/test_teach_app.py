@@ -823,13 +823,14 @@ def test_holding_writes_the_goal_once_not_every_tick():
     assert len(sent) == 2
 
 
-def test_home_and_rest_are_refused_at_a_joints_end_of_travel(engine):
+def test_a_rest_at_a_joints_end_of_travel_is_saved_and_held_just_inside_it(engine):
     following(engine)
     engine.arm.current["elbow_flex"] = engine.calibration["elbow_flex"]["range_max"] - 2
     command(engine, "teach_hold")  # held right there, folded against the elbow's stop
-    refused = reject(engine, "teach_set_rest")["message"]
-    assert "elbow flex is at the end of its travel" in refused and "shake" in refused
-    assert "elbow flex" in reject(engine, "teach_set_home")["message"]
+    command(engine, "teach_set_rest")
+    assert "elbow flex is at the end of travel" in engine.message and "about 4° inside that stop" in engine.message
+    held = engine.arm.joint_target(engine.shared_teach_rest()["goal"])
+    assert held["elbow_flex"] == engine.calibration["elbow_flex"]["range_max"] - engine.LIMIT_MARGIN_TICKS
 
 
 def test_a_rest_saved_at_a_stop_is_held_just_inside_it(engine):
