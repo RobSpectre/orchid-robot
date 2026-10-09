@@ -201,6 +201,7 @@ class Session:
         self.clipped_steps = 0
         self.warning = None
         self.last_tick = None
+        self.sent = None  # the goal last written to the follower
 
     # --- operator commands ------------------------------------------------------------------------
 
@@ -214,8 +215,12 @@ class Session:
         """Hold at a fresh measured pose (relieves any push) and drop any recording/playback."""
         self.measured = self.read_follower()
         self.goal = dict(self.measured)
-        self.send_follower(self.goal)
+        self.send(self.goal)
         self.mode, self.frames, self.recording = "holding", None, None
+
+    def send(self, goal):
+        self.send_follower(goal)
+        self.sent = dict(goal)
 
     def follow(self):
         if self.read_leader is None:
@@ -325,5 +330,8 @@ class Session:
             self.clipped_steps += clipped
             if self.index == len(frames) - 1:
                 self.mode, event = "holding", "played"
-        self.send_follower(self.goal)
+        # Holding still: write the goal once, not every tick. Rewriting an unchanged goal 30 times a second restarts
+        # the servos' motion profile each time, which shakes a joint held against its end of travel.
+        if not (self.mode == "holding" and self.sent == self.goal):
+            self.send(self.goal)
         return event

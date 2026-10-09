@@ -808,3 +808,25 @@ def test_each_play_is_checked_against_what_orchid_sent(engine):
     command(engine, "teach_go_home")
     run(engine, 30, until=lambda: engine.phase == "teach_hold")
     assert engine.key_check["play"] == 2  # moving home is not a play to check
+
+
+def test_holding_writes_the_goal_once_not_every_tick():
+    pose = {"shoulder_pan": 1.0, "shoulder_lift": 2.0, "elbow_flex": 3.0, "wrist_flex": 4.0, "wrist_roll": 5.0, "gripper": 6.0}
+    sent = []
+    session = teach.Session(lambda: dict(pose), sent.append, None)
+    session.hold()
+    for _ in range(30):  # a second of holding still
+        session.tick()
+    assert len(sent) == 1  # rewriting an unchanged goal restarts the servos' motion and shakes a joint at its stop
+    session.goal = {**session.goal, "elbow_flex": 3.5}  # a new goal is written at once
+    session.tick()
+    assert len(sent) == 2
+
+
+def test_home_and_rest_are_refused_at_a_joints_end_of_travel(engine):
+    following(engine)
+    engine.arm.current["elbow_flex"] = engine.calibration["elbow_flex"]["range_max"] - 2
+    command(engine, "teach_hold")  # held right there, folded against the elbow's stop
+    refused = reject(engine, "teach_set_rest")["message"]
+    assert "elbow flex is at the end of its travel" in refused and "shake" in refused
+    assert "elbow flex" in reject(engine, "teach_set_home")["message"]

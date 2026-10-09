@@ -870,6 +870,17 @@ class Engine:
             self.teach_points_for = control
         return self.teach_points
 
+    LIMIT_MARGIN_TICKS = 45  # about 4 deg: a parking pose held closer than this to a stop makes the servo push and buzz
+
+    def check_parking_pose(self, label):
+        """Home and rest are held for long stretches: refuse one with a joint at its end of travel."""
+        near = [name for name in m.MOTORS if name != "wrist_roll" and self.current and self.calibration
+                and min(self.current[name] - self.calibration[name]["range_min"],
+                        self.calibration[name]["range_max"] - self.current[name]) < self.LIMIT_MARGIN_TICKS]
+        m.require(not near, f"The {', '.join(n.replace('_', ' ') for n in near)} {'is' if len(near) == 1 else 'are'} at the end of "
+                  f"{'its' if len(near) == 1 else 'their'} travel. Holding a {label} there makes the motors push against "
+                  f"the stop and shake: guide it a few degrees back, then set {label} again.")
+
     def save_teach_home(self, captured):
         self.teach_home_doc = self.pose_doc(captured)
         self.repo.put("teach_home", self.teach_home_doc)
@@ -1970,7 +1981,7 @@ class Engine:
             self.arm.arm_for_teleop()
             self.teach = teach_motion.Session(self.read_follower_joints, self.arm.teleop_goal,
                                               self.read_leader_joints if leader else None, clock=self.clock)
-            self.teach.send_follower(self.teach.goal)
+            self.teach.send(self.teach.goal)
             self.teach_points_for, self.teach_returning = None, False
             points = self.points_for(self.selected)
             home_note = ""
@@ -2004,6 +2015,7 @@ class Engine:
             self.transition("teach_hold", "Holding here." + (" The unfinished recording was discarded." if discarded else ""))
         elif action == "teach_set_home":
             self.require_phase("teach_hold", "teach_follow")
+            self.check_parking_pose("home")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             try:
                 captured = self.teach.capture()
@@ -2091,6 +2103,7 @@ class Engine:
                             "were updated to match, so nothing needs re-teaching. Nothing moved.")
         elif action == "teach_set_rest":
             self.require_phase("teach_hold", "teach_follow")
+            self.check_parking_pose("rest")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             try:
                 captured = self.teach.capture()
