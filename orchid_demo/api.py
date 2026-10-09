@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from . import music
 from .controls import CATALOG
 from .engine import Engine
 from .motion import SafetyError
@@ -33,7 +34,7 @@ class Command(BaseModel):
 class PlayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    press_s: float | None = Field(default=None, ge=0, le=5)
+    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...
     turn_degrees: float | None = Field(default=None, ge=-90, le=90)
     wait: bool = True
 
@@ -43,14 +44,14 @@ class ChordRequest(BaseModel):
     key: str = Field(min_length=1, max_length=20)
     chord: str = Field(min_length=1, max_length=20)
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    press_s: float | None = Field(default=None, ge=0, le=5)
+    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...
 
 
 class SequenceStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    control: str = Field(min_length=1, max_length=20)
+    control: str = Field(min_length=1, max_length=20)  # or "rest": silence for its duration
     chord: str | None = Field(default=None, min_length=1, max_length=20)  # a key played with this chord button held
-    press_s: float | None = Field(default=None, ge=0, le=5)
+    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...
     turn_degrees: float | None = Field(default=None, ge=-90, le=90)
 
 
@@ -63,14 +64,13 @@ class SequenceRequest(BaseModel):
 
 class ControlSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    press_s: float | None = Field(default=None, ge=0, le=5)
     turn_degrees: float | None = Field(default=None, ge=-90, le=90)
 
 
 class PlaybackSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    press_s: float | None = Field(default=None, ge=0, le=5)
+    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...  # the note value when a play gives none
     press_hardness: float | None = Field(default=None, ge=0.1, le=1.0)
 
 
@@ -93,8 +93,9 @@ class IncidentReport(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
-def create_app(directory: Path, mode="simulation", *, engine=None, engines=None, studio_port=None):
-    """studio_port: check each play's notes against Orchid Studio's key monitor on that local port.
+def create_app(directory: Path, mode="simulation", *, engine=None, engines=None, studio_port=None, clock=None):
+    """studio_port: check each play's notes against Orchid Studio's key monitor on that local port, and time plays by
+    its tempo and beat (music.py). Without it (simulation), plays keep 120 BPM time of their own; clock overrides both.
     A second follower (rig.py) is always available; it shows up once detected, and its data lives in directory/arm-b."""
     from .rig import NAMES, LeaderStore, Rig
     if engines is None and engine is not None:
@@ -104,6 +105,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         checker = lambda: KeyChecker(StudioKeys(studio_port)) if studio_port else None  # noqa: E731
         engines = {"a": Engine(directory, mode, key_checker=checker())}
         engines["b"] = Engine(directory / "arm-b", mode, key_checker=checker(), leader_store=LeaderStore(engines["a"].repo))
+    read_clock = clock or (music.StudioClock(studio_port) if studio_port else music.fixed_clock())
     rig = None
     if len(engines) > 1:
         rig = Rig()
@@ -329,26 +331,80 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready,
                 "settings": snap["teach_settings"], "controls": listing}
 
+    # --- Musical time: note values, at Orchid Studio's tempo and on its beat (music.py) -------------------
+
+    def clock_now():
+        try:
+            return music.timing(read_clock())
+        except SafetyError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    def phrase(steps, clock):
+        """Steps with their place in the phrase (beats from its start) and how long each sounds; rests only take time."""
+        default = engine.snapshot()["teach_settings"].get("duration", music.DEFAULT_DURATION)
+        placed, offset = [], 0.0
+        for step in steps:
+            try:
+                length = music.beats(step.get("duration") or default)
+            except SafetyError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if step["control"] not in ("rest", "r"):
+                owner(step["control"])  # an unknown control is a 404 before anything moves
+                placed.append({**{k: v for k, v in step.items() if k != "duration"}, "offset": offset,
+                               "beats": length, "sound_s": length * clock["beat_s"]})
+            offset += length
+        if not placed:
+            raise HTTPException(422, "A phrase needs at least one control, not only rests.")
+        return placed
+
+    def rhythm_of(steps, clock, at=None):
+        return {"timing": clock, "steps": [{"offset": s["offset"]} for s in steps], **({"at": at} if at is not None else {})}
+
+    def timed(step, clock, at=None):
+        """One control's play arguments: its sounding length and when its strike should land."""
+        args = {k: v for k, v in step.items() if k not in ("offset", "beats", "chord")}
+        return {**args, "sound_s": step["sound_s"], "rhythm": rhythm_of([step], clock, at)}
+
+    def played_rhythm(member):
+        return (member.snapshot()["teach"] or {}).get("rhythm")
+
+    def tempo_note(rhythm, clock):
+        slipped = sum(s["slipped_beats"] for s in (rhythm or {}).get("steps", []))
+        where = "on Orchid Studio's beat" if clock["grid"] else "in its own time (Orchid Studio's transport is stopped)"
+        return f" At {clock['bpm']:g} BPM, {where}" + (f"; {slipped} beat{'s' if slipped != 1 else ''} late, the arm could "
+                                                      "not move faster." if slipped else ".")
+
+    @app.get("/api/clock")
+    def clock():
+        """Orchid Studio's tempo and whether its transport runs (plays land on its beat while it does)."""
+        return clock_now()
+
     @app.post("/api/controls/{control}/play")
     def play_control(control: str, body: PlayRequest):
-        return run("teach_play", {"control": control, "speed": body.speed, "press_s": body.press_s,
-                                  "turn_degrees": body.turn_degrees}, body.wait, owner(control))
+        clock = clock_now()
+        step = phrase([{"control": control, **({"duration": body.duration} if body.duration else {}),
+                        **({"turn_degrees": body.turn_degrees} if body.turn_degrees is not None else {})}], clock)[0]
+        member = owner(control)
+        result = run("teach_play", {**timed(step, clock), "speed": body.speed}, body.wait, member)
+        rhythm = played_rhythm(member) if body.wait else None
+        return {**result, "message": result["message"] + (tempo_note(rhythm, clock) if body.wait else ""),
+                "duration": {"beats": step["beats"], "seconds": round(step["sound_s"], 3)}, "rhythm": rhythm}
 
     @app.post("/api/controls/{control}")
     def configure_control(control: str, body: ControlSettings):
-        return run("teach_configure", {"control": control, "press_s": body.press_s, "turn_degrees": body.turn_degrees},
-                   False, owner(control))
+        return run("teach_configure", {"control": control, "turn_degrees": body.turn_degrees}, False, owner(control))
 
-    def play_chord(key, chord, speed=None, press_s=None):
+    def play_chord(step, clock, speed=None, at=None):
         """One chord: orchid-robot runs both arms (rig.Rig.play_chord); this waits for it and for the key check."""
         if rig is None:
             raise HTTPException(409, "Chords need the second follower (Chord Arm) for the chord buttons.")
+        key, chord = step["control"], step["chord"]
         for control in (key, chord):
             if control not in Rig.CONTROLS:
                 raise HTTPException(404, f"Unknown control {control!r}.")
         plays_before = (engine.snapshot()["key_check"] or {}).get("play", 0)
         try:
-            played = rig.play_chord(key, chord, speed, press_s)
+            played = rig.play_chord(key, chord, speed, timed(step, clock, at))
         except SafetyError as exc:
             raise HTTPException(409, str(exc)) from exc
         snap = engine.snapshot()
@@ -359,38 +415,64 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             snap = engine.snapshot()
         checked = engine.key_checker and (snap["key_check"] or {}).get("play", 0) > plays_before
         return {"status": "complete", "phase": snap["phase"], "message": f"Played {key} + {CATALOG[chord]['label']}; both arms home.",
-                "error": None, **played, **({"key_check": snap["key_check"]} if checked else {})}
+                "error": None, **played, "rhythm": played_rhythm(engine), **({"key_check": snap["key_check"]} if checked else {})}
 
     @app.post("/api/chords/play")
     def play_chord_route(body: ChordRequest):
         """Play a key with a chord button held: the chord button goes down first, the key second, and the chord arm
         returns home as soon as the key is down. Both arms' motion is orchid-robot's; this only names the chord."""
-        return play_chord(body.key, body.chord, body.speed, body.press_s)
+        clock = clock_now()
+        step = phrase([{"control": body.key, "chord": body.chord, **({"duration": body.duration} if body.duration else {})}], clock)[0]
+        result = play_chord(step, clock, body.speed)
+        return {**result, "message": result["message"] + tempo_note(result["rhythm"], clock),
+                "duration": {"beats": step["beats"], "seconds": round(step["sound_s"], 3)}}
 
     @app.post("/api/sequence")
     def play_sequence(body: SequenceRequest):
-        steps = [{k: v for k, v in step.model_dump().items() if v is not None} for step in body.steps]
+        clock = clock_now()
+        steps = phrase([{k: v for k, v in step.model_dump().items() if v is not None} for step in body.steps], clock)
         players = {owner(step["control"]) for step in steps}
         if len(players) == 1 and not any("chord" in step for step in steps):
-            return run("teach_sequence", {"steps": steps, "speed": body.speed}, body.wait, players.pop())
-        # Chords, or both arms: one step at a time, each arm back home before the next (the interlock's rule).
-        results = []
+            member = players.pop()
+            result = run("teach_sequence", {"steps": [{k: v for k, v in timed(s, clock).items() if k != "rhythm"} for s in steps],
+                                            "rhythm": rhythm_of(steps, clock), "speed": body.speed}, body.wait, member)
+            rhythm = played_rhythm(member) if body.wait else None
+            return {**result, "message": result["message"] + (tempo_note(rhythm, clock) if body.wait else ""), "rhythm": rhythm}
+        # Chords, or both arms: one step at a time, each arm back home before the next (the interlock's rule). Each
+        # strike is due its offset after the last one that sounded, so the phrase keeps its rhythm across the steps.
+        results, reports, last = [], [], None  # last: (strike time, offset) of the latest timed strike
         for step in steps:
+            at = last[0] + (step["offset"] - last[1]) * clock["beat_s"] if last else None
             if "chord" in step:
-                results.append(play_chord(step["control"], step["chord"], body.speed, step.get("press_s")))
+                result = play_chord(step, clock, body.speed, at)
             else:
-                results.append(run("teach_play", {**step, "speed": body.speed}, True, owner(step["control"])))
-        names = [f"{s['control']} + {CATALOG[s['chord']]['label']}" if "chord" in s else s["control"] for s in steps]
+                member = owner(step["control"])
+                result = run("teach_play", {**timed(step, clock, at), "speed": body.speed}, True, member)
+                result["rhythm"] = played_rhythm(member)
+            strikes = (result.get("rhythm") or {}).get("steps") or []
+            if strikes:
+                last = (strikes[-1]["strike_at"], step["offset"])
+                reports += [{**s, "step": len(results)} for s in strikes]
+            results.append(result)
+        names = [("rest" if s["control"] in ("rest", "r") else f"{s['control']} + {CATALOG[s['chord']]['label']}" if s.get("chord")
+                  else s["control"]) for s in (st.model_dump() for st in body.steps)]
         checks = [r["key_check"] for r in results if r.get("key_check")]
-        return {**results[-1], "message": "Played " + " → ".join(names) + "; holding at home.",
+        rhythm = {"bpm": clock["bpm"], "grid": bool(clock["grid"]), "steps": reports}
+        return {**results[-1], "message": "Played " + " → ".join(names) + "; holding at home." + tempo_note(rhythm, clock),
+                "rhythm": rhythm,
                 **({"key_check": {"status": "ok" if all(c["status"] == "ok" for c in checks) else "problem",
                                   "summary": "; ".join(c["summary"] for c in checks), "steps": [s for c in checks for s in c["steps"]]}}
                    if checks else {})}
 
     @app.post("/api/settings")
     def playback_settings(body: PlaybackSettings):
-        results = [run("teach_settings", {"speed": body.speed, "press_s": body.press_s, "press_hardness": body.press_hardness},
-                       False, member) for member in engines.values()]  # one Arm speed and hardness for both arms
+        if body.duration is not None:
+            try:
+                music.beats(body.duration)
+            except SafetyError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        results = [run("teach_settings", {"speed": body.speed, "duration": body.duration, "press_hardness": body.press_hardness},
+                       False, member) for member in engines.values()]  # one Arm speed, note value and hardness for both arms
         return results[0]
 
     @app.post("/api/home")

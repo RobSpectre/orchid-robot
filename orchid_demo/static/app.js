@@ -372,7 +372,7 @@ function teachWorkflow(s) {
   const turnField = dial && !next ? `<label class="form-field turn-field">Turn ${chosen.direction === "cw" ? "↻" : "↺"} <input id="turn-degrees" type="number" min="-90" max="90" step="1" value="${esc(turnInput[chosen.id] ?? degrees)}"> degrees of wrist rotation <small>If it turns the wrong way, flip the sign.</small></label>` : "";
   const settings = s.teach_settings || {speed: 1, press_s: 0.3};
   const press = allStatuses()[chosen.id]?.press_s ?? settings.press_s;
-  const pressField = !dial && !next ? `<label class="form-field turn-field">Press length <input id="press-seconds" type="number" min="0" max="5" step="0.1" value="${esc(pressInput[chosen.id] ?? press)}"> seconds held down <small>Saved for ${name} when you Play.</small></label>` : "";
+  const pressField = !dial && !next ? `<label class="form-field turn-field">Press length <input id="press-seconds" type="number" min="0" max="60" step="0.1" value="${esc(pressInput[chosen.id] ?? press)}"> seconds held down <small>Saved for ${name} when you Play.</small></label>` : "";
   html += turnField + pressField;
   if (p === "teach_hold" && !lead) {
     // Holding with only the follower: play taught controls; teaching needs the leader.

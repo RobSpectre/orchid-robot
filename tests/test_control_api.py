@@ -74,27 +74,34 @@ def test_list_play_and_configure_through_the_api(console):
     client, engine, command, auth = console
     taught(engine, command)
     listing = client.get("/api/controls").json()
-    assert listing["ready_to_play"] is True and listing["settings"] == {"speed": 1.0, "press_s": 0.3, "press_hardness": 0.5}
+    assert listing["ready_to_play"] is True and listing["settings"]["duration"] == "1/8"
+    assert listing["settings"]["speed"] == 1.0 and listing["settings"]["press_hardness"] == 0.5
     c = next(x for x in listing["controls"] if x["id"] == "C")
     assert c["status"] == "registered" and c["kind"] == "key"
 
-    played = client.post("/api/controls/C/play", json={"speed": 3.0, "press_s": 0.5}, headers=auth)
+    played = client.post("/api/controls/C/play", json={"speed": 3.0, "duration": "1/4"}, headers=auth)
     assert played.status_code == 200, played.text
     body = played.json()
     assert body["phase"] == "teach_hold" and body["message"].startswith("Played C")  # waited until done
-    assert engine.notes["C"]["press_s"] == 0.5
+    assert body["duration"] == {"beats": 1.0, "seconds": 0.5} and "At 120 BPM" in body["message"]  # simulation: 120 BPM
+    assert body["rhythm"]["steps"][0]["slipped_beats"] == 0 and "press_s" not in engine.notes["C"]  # not saved as a default
 
-    assert client.post("/api/controls/C", json={"press_s": 1.2}, headers=auth).status_code == 200
-    assert engine.notes["C"]["press_s"] == 1.2
+    assert client.post("/api/controls/C/play", json={"press_s": 0.5}, headers=auth).status_code == 422  # seconds are gone
+    assert client.post("/api/controls/C/play", json={"duration": "1/5"}, headers=auth).status_code == 422
+    assert client.post("/api/settings", json={"duration": "1/4."}, headers=auth).json()["status"] == "complete"
+    assert client.get("/api/controls").json()["settings"]["duration"] == "1/4."
+    assert client.post("/api/settings", json={"duration": "x"}, headers=auth).status_code == 422
     assert client.post("/api/settings", json={"speed": 2.5}, headers=auth).json()["status"] == "complete"
     assert client.get("/api/controls").json()["settings"]["speed"] == 2.5
     assert client.post("/api/settings", json={"press_hardness": 0.3}, headers=auth).json()["status"] == "complete"
     assert client.get("/api/controls").json()["settings"]["press_hardness"] == 0.3
     assert client.post("/api/settings", json={"press_hardness": 0.05}, headers=auth).status_code == 422
 
-    seq = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "D", "press_s": 0}], "speed": 3.0},
-                      headers=auth).json()
+    seq = client.post("/api/sequence", json={"steps": [{"control": "C", "duration": "1/2"}, {"control": "rest", "duration": "1/4"},
+                                                       {"control": "D", "duration": "1"}], "speed": 3.0}, headers=auth).json()
     assert seq["message"].startswith("Played C → D")
+    first, second = seq["rhythm"]["steps"]
+    assert second["strike_at"] - first["strike_at"] == pytest.approx((3 + second["slipped_beats"]) * 0.5, abs=1e-3)  # C 2 + rest 1
 
 
 def test_api_refusals(console):

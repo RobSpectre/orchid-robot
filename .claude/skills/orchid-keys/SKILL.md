@@ -1,6 +1,6 @@
 ---
 name: orchid-keys
-description: Play, sequence and adjust the taught Orchid synth controls (12 keys, chord buttons, voicing dial) on the SO101 arms through the running operator console's API, including chords (a key played with a chord button held, using both arms). Use when the user asks to play a key, a chord, a dial direction, a melody or a chord progression, change a key's press length or a dial turn angle, change the arms' speed, send an arm home, or stop it.
+description: Play, sequence and adjust the taught Orchid synth controls (12 keys, chord buttons, voicing dial) on the SO101 arms through the running operator console's API, including chords (a key played with a chord button held, using both arms). Use when the user asks to play a key, a chord, a dial direction, a melody, a rhythm or a chord progression, change the default note value or a dial turn angle, change the arms' speed, send an arm home, or stop it.
 ---
 
 # Orchid keys
@@ -16,8 +16,8 @@ Arm plays the key, and once the key is down the Chord Arm lets go and goes home.
 
 ## Before anything moves
 
-1. Run `python3 scripts/orchid.py status`. It lists every control, its status, press length / turn angle,
-   the default speed, and whether the arm is **ready to play**.
+1. Run `python3 scripts/orchid.py status`. It lists every control, its status, turn angle (dial), the default
+   speed and note value, and whether the arm is **ready to play**. `clock` shows Orchid Studio's tempo.
 2. Only `registered` controls can be played. `empty` means not taught; `needs_reteach` means it must be
    taught again in the console (do not try to work around it).
 3. If it is not ready, tell the user what the refusal or `status` says. Usually: in the console at
@@ -28,32 +28,46 @@ Arm plays the key, and once the key is down the Chord Arm lets go and goes home.
    lost-page stop stay in charge). Reloading or closing the console tab while the arm is holding stops it.
    Never start or restart the app, connect arms, or release torque from here.
 
+## Musical time
+
+Durations are **note values**, never seconds: a quarter note is one beat. Write `1/4 1/8 1/2 1 1/16`, dotted `1/8.`
+(×1.5), triplet `1/8t` (×2/3), or the letters `w h q e s` (`q`, `e.`). The tempo is Orchid Studio's. While Studio's
+transport runs, every note lands on its beat grid: the arm waits above the key and strikes on the beat. When it is
+stopped, a phrase keeps its own time at Studio's tempo from its first note. orchid-robot does all the timing. Give it
+the notes and their values, never sleeps or delays between commands.
+
+In a phrase each step's note value is how long it sounds and when the next one comes. `r:1/4` is a rest. The arm goes
+home between notes, which takes about a second or more. When a note comes sooner than the arm can get there, it lands
+late by whole beats and the rest of the phrase moves with it. The reply then says `N beats late, the arm could not move
+faster`. That is not a fault: suggest longer note values, rests, a slower tempo in Studio, or a higher `--speed`.
+A note can be held up to a minute; a longer one is refused.
+
 ## Commands
 
 ```bash
 python3 scripts/orchid.py status
-python3 scripts/orchid.py play C                      # waits until the arm is back home
-python3 scripts/orchid.py play F# --press 0.8         # hold the press 0.8 s (also becomes F#'s default)
-python3 scripts/orchid.py play C --speed 2            # this play only
+python3 scripts/orchid.py clock                       # Studio's BPM; whether notes land on its running beat
+python3 scripts/orchid.py play C                      # the default note value (1/8 unless changed); waits until home
+python3 scripts/orchid.py play F# --duration 1/2      # a half note
+python3 scripts/orchid.py play C --speed 2            # arm speed for this play only
 python3 scripts/orchid.py play cw --turn 25           # dial directions: cw / ccw; turn in degrees
-python3 scripts/orchid.py seq "C E G C"               # one motion through home between controls
-python3 scripts/orchid.py seq "C:0.5 E G:1.2" --speed 1.5   # per-step press length in seconds
-python3 scripts/orchid.py chord C maj                 # C major: the Chord Arm holds Maj, the Keys Arm plays C
-python3 scripts/orchid.py chord A min --press 0.8     # --speed / --press as for play
-python3 scripts/orchid.py seq "C+maj A+min:0.8 F+maj G+sus E"   # KEY+CHORD steps; plain keys mix in
-python3 scripts/orchid.py set C --press 0.5           # default press length for one key
+python3 scripts/orchid.py seq "C:1/4 E:1/4 G:1/2"     # a phrase in time
+python3 scripts/orchid.py seq "C:1/4 r:1/4 G:1/2" --speed 1.5   # r: a rest
+python3 scripts/orchid.py chord C maj --duration 1/2  # C major: the Chord Arm holds Maj, the Keys Arm plays C
+python3 scripts/orchid.py seq "C+maj:1 A+min:1 F+maj:1 G+sus:1"   # a progression; KEY+CHORD steps mix with plain keys
 python3 scripts/orchid.py set ccw --turn -25          # default turn for a dial direction
-python3 scripts/orchid.py speed 2                     # default speed for everything, 0.1–3×
-python3 scripts/orchid.py press 0.4                   # default press for keys without their own
+python3 scripts/orchid.py speed 2                     # arm speed for everything, 0.1–3×
+python3 scripts/orchid.py duration 1/4                # the note value when a step gives none
 python3 scripts/orchid.py hardness 40                 # press hardness 10–100 %: lower presses more gently
 python3 scripts/orchid.py home                        # move to the saved home
 python3 scripts/orchid.py stop                        # hold where it is now
 ```
 
 Names: keys `C C# D D# E F F# G G# A A# B` (lowercase ok); chord buttons `dim min maj sus 6 m7 M7 9`
-(`m7` and `M7` differ); dial `cw` / `ccw`. Limits: speed 0.1–3, press 0–5 s, press hardness 10–100 %, turn ±1–90°.
-A chord is `KEY+BUTTON` in a sequence (`C+maj`, `F#+m7`, `D+sus:0.6`) or `chord KEY BUTTON`. Both the key (Keys Arm)
-and the chord button (Chord Arm) must be `registered`. Extensions (`6 m7 M7 9`) are buttons like the others.
+(`m7` and `M7` differ); dial `cw` / `ccw`. Limits: speed 0.1–3, notes up to a minute long, press hardness
+10–100 %, turn ±1–90°. A chord is `KEY+BUTTON[:NOTE]` in a sequence (`C+maj`, `F#+m7:1/2`) or `chord KEY BUTTON`.
+Both the key (Keys Arm) and the chord button (Chord Arm) must be `registered`. Extensions (`6 m7 M7 9`) are buttons
+like the others.
 
 ## Rules
 
@@ -64,14 +78,14 @@ and the chord button (Chord Arm) must be `registered`. Extensions (`6 m7 M7 9`) 
 - If a command prints an error, a fault, or "start pose" / "something may be in the way", stop and tell
   the user; they must look at the arm.
 - With hardware and Orchid Studio running, `play`/`seq` also print what Orchid actually sent
-  (`Orchid heard: C ✓ velocity 72, 0.11 s into the 0.80 s press, held 0.31 s`). `CHECK THE ARM` means a
+  (`Orchid heard: C ✓ velocity 72, 0.11 s into the 0.80 s press, held 0.49 s`). `CHECK THE ARM` means a
   wrong key, a missed or repeated note: stop and tell the user; do not replay to "fix" it. Chord buttons
   send no MIDI on their own, so they are reported as unchecked. `Note check unavailable` only means
   Studio is not reachable; the play itself still happened. `python3 scripts/orchid.py stop` holds the arm in place.
 - Speed above ~2× is fast. Suggest trying a new key at the default speed first.
-- Press length is how long the key is held down (it shapes the note). Press hardness is how fast the final
+- Speed is how fast the arm moves between notes, not the tempo; the tempo is Studio's. Press hardness is how fast the final
   touch → press stroke moves, as a share of the other strokes (default 50 %); lower is gentler. It applies
-  to every key and chord button; the release is not slowed. Neither changes how deep the press goes. A dial turn angle is pure wrist rotation from the grip pose; flip the sign if it turns the wrong way.
+  to every key and chord button; the release is not slowed. It does not change how deep the press goes. A dial turn angle is pure wrist rotation from the grip pose; flip the sign if it turns the wrong way.
 - Chords: a refusal saying the arms "would come within N mm" means that key and button are too close together for
   both arms at once (modelled on the plate). Do not try to get around it (e.g. by playing the button and then the
   key). Tell the user, and offer another key or voicing. Every refusal of a chord leaves both arms safe. A
@@ -89,12 +103,14 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 
 | Method & path | Body | Result |
 |---|---|---|
-| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,press_s,press_hardness}, controls:[{id,name,kind,group,arm,status,press_s?,turn_degrees?}]}`; with two arms `ready_to_play` is `{a, b}` |
-| `POST /api/controls/{id}/play` | `{speed?, press_s?, turn_degrees?, wait=true}` | `{status, phase, message, error, key_check?}` after it finishes |
-| `POST /api/sequence` | `{steps:[{control, chord?, press_s?, turn_degrees?}], speed?, wait=true}` | same |
-| `POST /api/chords/play` | `{key, chord, speed?, press_s?}` (`chord` is a button id, e.g. `chord.maj`) | `{status, phase, message, key, chord, clearance_mm, key_check?}` once both arms are home |
-| `POST /api/controls/{id}` | `{press_s}` or `{turn_degrees}` | saves the default |
-| `POST /api/settings` | `{speed?, press_s?, press_hardness? (0.1–1)}` | saves defaults |
+| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, controls:[{id,name,kind,group,arm,status,turn_degrees?}]}`; with two arms `ready_to_play` is `{a, b}` |
+| `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
+| `POST /api/controls/{id}/play` | `{speed?, duration?, turn_degrees?, wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
+| `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?, turn_degrees?}], speed?, wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |
+| `POST /api/chords/play` | `{key, chord, speed?, duration?}` (`chord` is a button id, e.g. `chord.maj`) | `{…, key, chord, clearance_mm, duration, rhythm, key_check?}` once both arms are home |
+| `POST /api/controls/{id}` | `{turn_degrees}` (dial directions) | saves the default |
+| `POST /api/settings` | `{speed?, duration? (note value), press_hardness? (0.1–1)}` | saves defaults |
 | `POST /api/home`, `POST /api/stop` | `{}` | |
 
+`duration` is a note value string (`"1/4"`, `"1/8."`, `"1/8t"`, `"q"`); there is no `press_s` in the API.
 Refusals come back as HTTP 409 (state/safety) or 422 (out-of-range value) with `detail`.

@@ -63,8 +63,10 @@ def check_step(step, started, speed, events):
     """One played control against the events inside its window on the shared clock."""
     control = step["key"]
     item = CATALOG[control]
+    clock = step.get("clock") or {"t": started, "at": 0.0}  # a timed play waited at gates: time from the last one
+
     def at(t):  # recording time -> clock time
-        return started + t / speed
+        return clock["t"] + (t - clock["at"]) / speed
 
     low, high = at(step["start"]) - MARGIN_S, at(step["end"]) + MARGIN_S
     inside = [e for e in events if low <= e["t"] <= high]

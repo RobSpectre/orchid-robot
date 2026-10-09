@@ -43,7 +43,7 @@ PRESS_HARDNESS = 0.5  # touch -> press runs at this fraction of the stroke speed
 MIN_PRESS_HARDNESS = 0.1
 RETURN_SETTLE_S = 0.3
 MAX_PLAY_SPEED = 3.0  # playback speed multiplier (1.0 = the taught/planned timing)
-MAX_PRESS_S = 5.0  # longest hold at the bottom of a press
+MAX_PRESS_S = 60.0  # longest hold at the bottom of a press: a full minute, for long expressive notes
 ROLL_JUMP_DEG = 90.0  # a leader wrist-roll change this large in one tick is the -180/+180 wrap, not a real turn
 ROLL_RESUME_DEG = 10.0  # after the wrap, follow the wrist roll again once the leader is back this close
 SETTLED_DEG = 1.0  # the settle before playback ends as soon as the arm is this close to the start
@@ -99,6 +99,7 @@ def _frames(points: dict, legs: list, marks: dict | None = None) -> list:
         frames += [{"t": round(t + dt, 4), "goal": rounded(pose)} for dt, pose in poses]
         t += duration
         marks.setdefault(b, round(t, 4))
+        marks.setdefault(f"{a}>{b}", round(t, 4))  # the end of this leg, e.g. "press>touch" on the way back up
     return frames
 
 
@@ -117,7 +118,20 @@ def waypoint_recording(points: dict, key: str = "", press_s: float = PRESS_DWELL
         ("press", "press", press_s),
         ("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)], marks)
     # When the stroke starts (touch), reaches the bottom (press) and lifts off: what a key check times against.
-    return {"key": key, "frames": frames, "marks": {"touch": marks["touch"], "press": marks["press"], "lift": marks["press_held"]}}
+    # strike and release: where the key is taken to sound and stop, halfway through the strokes down and up (a tuned key
+    # triggers between touch and press). hover: where a timed play waits so its strike lands on the beat.
+    down, up = marks["press"] - marks["touch"], marks["press>touch"] - marks["press_held"]
+    return {"key": key, "frames": frames, "marks": {
+        "hover": marks["hover"], "touch": marks["touch"], "press": marks["press"], "lift": marks["press_held"],
+        "strike": round(marks["touch"] + down / 2, 4), "release": round(marks["press_held"] + up / 2, 4)}}
+
+
+def press_for(sound_s: float, recording: dict, speed: float) -> float:
+    """The press dwell that makes a key sound for sound_s seconds at this speed: the note runs from the strike, halfway
+    down the stroke, to the release, halfway back up. The dwell is in the recording's time, which speed also scales."""
+    marks = recording["marks"]
+    strokes = (marks["press"] - marks["strike"]) + (marks["release"] - marks["lift"])
+    return max(0.0, min(MAX_PRESS_S * speed, sound_s * speed - strokes))  # held at most MAX_PRESS_S of real time
 
 
 def _turned(points: dict, degrees: float) -> dict:
@@ -213,6 +227,9 @@ class Session:
         self.warning = None
         self.last_tick = None
         self.sent = None  # the goal last written to the follower
+        # A timed play (rhythm): the recording waits at each gate (a recording time, at a hover) until timer(i, now)
+        # says, so its strike lands on the beat. play_began is when playback started, before any wait.
+        self.gates, self.timer, self.gate_index, self.gate_until, self.play_began = [], None, 0, None, None
 
     # --- operator commands ------------------------------------------------------------------------
 
@@ -258,7 +275,7 @@ class Session:
             raise RuntimeError("Recording too short; nothing was saved. Record again.")
         return frames
 
-    def play(self, recording: dict, speed=1.0, *, force=False, settle_s=None, ramp_speed=None):
+    def play(self, recording: dict, speed=1.0, *, force=False, settle_s=None, ramp_speed=None, gates=(), timer=None):
         if not 0.1 <= speed <= MAX_PLAY_SPEED:
             raise ValueError(f"Playback speed must be between 0.1 and {MAX_PLAY_SPEED:g}.")
         if not recording.get("frames"):
@@ -268,6 +285,7 @@ class Session:
         self.play_ramp_speed = self.ramp_speed if ramp_speed is None else ramp_speed
         self.mode, self.frames, self.warning, self.clipped_steps = "ramping", None, None, 0
         self.index = 0
+        self.gates, self.timer, self.gate_index, self.gate_until = sorted(gates), timer, 0, None
 
     @property
     def recorded_seconds(self) -> float:
@@ -332,9 +350,18 @@ class Session:
                 self.mode, event = "holding", "start_mismatch"
             else:
                 self.mode, self.play_started, self.index, event = "playing", now, 0, "playing"
+                self.play_began = now
         if self.mode == "playing":
             frames = self.recording["frames"]
             elapsed = (now - self.play_started) * self.speed
+            if self.gate_index < len(self.gates) and elapsed >= self.gates[self.gate_index]:
+                gate = self.gates[self.gate_index]
+                if self.gate_until is None:  # just arrived: when may it go on?
+                    self.gate_until = self.timer(self.gate_index, now) if self.timer else now
+                if now < self.gate_until:  # wait here, the recording's clock stopped at the gate
+                    self.play_started, elapsed = now - gate / self.speed, gate
+                else:
+                    self.gate_index, self.gate_until = self.gate_index + 1, None
             while self.index + 1 < len(frames) and frames[self.index + 1]["t"] <= elapsed + PERIOD / 2:
                 self.index += 1
             self.goal, clipped = clip_to_measured(frames[self.index]["goal"], measured, self.follow_cap)

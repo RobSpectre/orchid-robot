@@ -680,7 +680,7 @@ def test_press_length_holds_the_press_and_becomes_the_keys_default(engine):
         assert max(held) - min(held) == pytest.approx(press_s, abs=0.05)
     assert engine.notes["C"]["press_s"] == 2.0
     assert engine.public["keys"]["C"]["press_s"] == 2.0  # used next time without being given
-    assert "press length" in reject(engine, "teach_play", control="C", press_s=9)["message"]
+    assert "press length" in reject(engine, "teach_play", control="C", press_s=61)["message"]  # up to a minute
 
 
 def test_speed_setting_shortens_playback_and_is_remembered(engine):

@@ -175,10 +175,11 @@ class Rig:
         keys, chords = self.engines["a"], self.engines["b"]
         return kinematics.clearance(keys.chord_path(key), keys.calibration, chords.chord_path(chord), chords.calibration)
 
-    def play_chord(self, key, chord, speed=None, press_s=None):
-        """Chord Arm presses and holds the chord button; The Keys Arm plays the key; once the key is down, the Chord Arm lets go and
-        returns home while the Keys Arm finishes. Waits until both hold at home. Stop motion (or a fault) leaves both arms where they
-        stopped; any other refusal along the way lets the chord button go."""
+    def play_chord(self, key, chord, speed=None, play=None):
+        """The Chord Arm presses and holds the chord button; the Keys Arm plays the key; once the key is down, the Chord Arm
+        lets go and returns home while the Keys Arm finishes. play: more of the key's play arguments (how long it sounds,
+        when it strikes). Waits until both hold at home. Stop motion (or a fault) leaves both arms where they stopped; any
+        other refusal along the way lets the chord button go."""
         m.require(key in KEYS, "Choose a key (C to B) for the chord.")
         m.require(chord in CATALOG and CATALOG[chord]["kind"] == "button", "Choose a chord button (dim, min, maj, sus, 6, m7, M7, 9).")
         keys, chords = self.engines["a"], self.engines["b"]
@@ -207,8 +208,7 @@ class Rig:
                       f"Chord Arm did not get {name} held down: {chords.message}")
             press = float("inf")
             try:
-                self.command(keys, "teach_play", {"control": key, "chord": chord, **pace,
-                                                  **({"press_s": press_s} if press_s is not None else {})})
+                self.command(keys, "teach_play", {**(play or {}), "control": key, "chord": chord, **pace})
                 press = keys.teach.recording["marks"]["press"] + RELEASE_AFTER_S
                 self.wait(lambda: keys.phase != "teach_play" or (keys.play_t or 0) >= press)
             finally:  # never while the Keys Arm is still on its way down to the key

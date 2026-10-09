@@ -10,6 +10,7 @@ import time
 import uuid
 
 from . import motion as m
+from . import music
 from . import dial
 from . import home
 from .controls import CATALOG, group_members
@@ -40,7 +41,8 @@ STROKE_PAIRS = {"key": (("hover", "touch", ()), ("touch", "press", ())),
                 "dial": (("hover", "open", ("gripper",)), ("open", "lower", ("gripper",)), ("lower", "grip", ("gripper",)))}
 DIAL_SHARED = ("hover", "open", "lower", "grip")  # one knob: CW and CCW share every taught step
 DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}
-DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S, "press_hardness": teach_motion.PRESS_HARDNESS}
+DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S, "press_hardness": teach_motion.PRESS_HARDNESS,
+                          "duration": music.DEFAULT_DURATION}  # duration: the API's note value when a play gives none
 API_ACTIONS = ("teach_play", "teach_sequence", "teach_settings", "teach_configure", "teach_hold", "teach_go_home", "teach_go_rest",
                "chord_press", "chord_release")  # default wrist turn per direction (deg); set per direction
 STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)",
@@ -167,6 +169,7 @@ class Engine:
         # A chord button held down by this arm while the other plays a key (rig.Rig.play_chord).
         self.chord_held, self.chord_pressing, self.chord_releasing = None, False, False
         self.play_t, self.stops = None, 0
+        self.rhythm = None  # the last timed play's schedule: when each strike was due and any whole-beat slips
         self.tune = None  # a MIDI-guided tune-up of one key (tune.py); its candidate points are never saved until it passes
         self.tune_queue, self.tune_results, self.tune_next_at = [], {}, 0.0  # keys still to tune; each key's last result
         self.follower_port = None
@@ -376,7 +379,7 @@ class Engine:
                     "mode": self.teach.mode, "recording": self.teach.frames is not None, "leader": self.teach.read_leader is not None,
                     "recorded_seconds": self.teach.recorded_seconds, "progress": self.teach.progress,
                     "warning": self.teach.warning, "played": self.teach_played, "roll_guard": self.teach.roll_guard,
-                    "chord_held": self.chord_held,
+                    "chord_held": self.chord_held, "rhythm": deepcopy(self.rhythm),
                     "clipped_steps": self.teach.clipped_steps, "speed": self.teach.speed,
                     "points": [n for n in self.point_names(self.teach_points_for) if n in self.teach_points],
                     "sequence": self.teach_sequence_label,
@@ -987,8 +990,9 @@ class Engine:
             path = [{j: now[j] + (path[0][j] - now[j]) * i / 6 for j in now} for i in range(6)] + path
         return path
 
-    def control_motion(self, control, args):
-        """The full motion for a taught control. A press length or dial angle given here becomes its new default."""
+    def control_motion(self, control, args, speed=1.0):
+        """The full motion for a taught control. A press length or dial angle given here becomes its new default.
+        sound_s (a musical duration in seconds) sets the press so the note sounds that long at this speed instead."""
         entry = self.recording_entry(control)
         if entry["format"] != WAYPOINT_FORMAT:
             return entry, "the recorded motion"
@@ -1011,7 +1015,15 @@ class Engine:
                 hardness = self.teach_settings["press_hardness"]
                 recording = teach_motion.waypoint_recording(points, control, float(press_s), hardness)
                 changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
-                description = f"home → hover → touch → press ({hardness:.0%} hardness, held {press_s:g} s) and back"
+                if "sound_s" in args:  # a note value: the press is whatever makes it sound that long
+                    sound_s = args["sound_s"]
+                    m.require(type(sound_s) in (int, float) and 0 < sound_s <= 120, "A note must last up to a minute.")
+                    press_s = teach_motion.press_for(float(sound_s), recording, speed)
+                    m.require(press_s < teach_motion.MAX_PRESS_S * speed, f"A {sound_s:.1f} s note is longer than a key is "
+                              f"held (up to {teach_motion.MAX_PRESS_S:g} s): use a shorter note value or a faster tempo.")
+                    recording = teach_motion.waypoint_recording(points, control, press_s, hardness)
+                    changed = {}
+                description = f"home → hover → touch → press ({hardness:.0%} hardness, held {press_s:.2f} s) and back"
         except ValueError as exc:
             raise m.SafetyError(str(exc)) from exc
         if changed:
@@ -1030,9 +1042,31 @@ class Engine:
         self.play_t = None
         self.play_steps = recording.get("steps") or [{"key": self.selected, "start": 0.0, "end": recording["frames"][-1]["t"],
                                                       "marks": recording.get("marks", {})}]
+        gates, timer = self.rhythm_gates(args.get("rhythm"), speed)
         # Faster playback also moves to the start faster, up to twice the usual ramp.
         self.teach.play(recording, speed, force=args.get("force") is True,
-                        ramp_speed=teach_motion.RAMP_SPEED * min(2.0, max(1.0, speed)))
+                        ramp_speed=teach_motion.RAMP_SPEED * min(2.0, max(1.0, speed)), gates=gates, timer=timer)
+
+    def rhythm_gates(self, rhythm, speed):
+        """A timed play (music.Schedule): each key or chord button waits at its hover so its strike lands when the
+        schedule says. Returns the gates (recording times) and the timer the session asks at each one."""
+        self.rhythm = None
+        if not rhythm:
+            return (), None
+        m.require(isinstance(rhythm, dict) and isinstance(rhythm.get("steps"), list) and len(rhythm["steps"]) == len(self.play_steps),
+                  "Give one rhythm step per played step.")
+        timed = [(n, step) for n, step in enumerate(self.play_steps) if "strike" in step["marks"]]
+        schedule = music.Schedule(rhythm["timing"], [rhythm["steps"][n]["offset"] for n, _ in timed], rhythm.get("at"))
+        self.rhythm = {"bpm": rhythm["timing"]["bpm"], "grid": bool(rhythm["timing"].get("grid")), "steps": schedule.report}
+
+        def timer(i, now):
+            n, step = timed[i]
+            lead = (step["marks"]["strike"] - step["marks"]["hover"]) / speed
+            until = schedule.strike(i, now + lead) - lead
+            step["clock"] = {"t": max(now, until), "at": step["marks"]["hover"]}  # recording time -> clock, for the key check
+            schedule.report[-1]["control"] = step["key"]
+            return until
+        return [step["marks"]["hover"] for _, step in timed], timer
 
     def api_submit(self, action, args):
         """Programmatic commands act through the operator console's live session, never around it."""
@@ -1136,6 +1170,9 @@ class Engine:
         if not self.key_checker or not self.play_steps:
             return
         self.plays += 1
+        anchor = {"t": self.teach.play_began, "at": 0.0}
+        for step in self.play_steps:  # a timed play waited at gates: map each step's recording time from its last one
+            anchor = step.setdefault("clock", anchor)
         self.key_check = {"play": self.plays, "status": "pending", "steps": [], "summary": "Checking the notes with Orchid Studio…"}
         self.key_checker.request({"play": self.plays, "started": self.teach.play_started, "speed": self.teach.speed,
                                   "steps": deepcopy(self.play_steps)})
@@ -2294,7 +2331,7 @@ class Engine:
             self.require_phase("teach_hold", "teach_follow")
             name = self.teach_control(args)
             speed = self.play_speed(args)
-            recording, description = self.control_motion(self.selected, args)
+            recording, description = self.control_motion(self.selected, args, speed)
             self.teach_sequence_label = None
             self.start_playback(recording, speed, args)
             chord = args.get("chord")
@@ -2344,7 +2381,7 @@ class Engine:
                 m.require(isinstance(control, str) and control in CATALOG, f"Unknown control {control!r}.")
                 m.require(((self.notes.get(control) if control in m.KEYS else self.controls.get(control)) or {}).get("format") == WAYPOINT_FORMAT,
                           f"{CATALOG[control]['name']} has no taught steps; sequences use taught home/hover/touch/press motions.")
-                parts.append(self.control_motion(control, {k: v for k, v in step.items() if k != "control"})[0])
+                parts.append(self.control_motion(control, {k: v for k, v in step.items() if k != "control"}, speed)[0])
             self.teach_sequence_label = " → ".join(CATALOG[x["control"]]["label"] for x in steps)
             self.start_playback(teach_motion.sequence_recording(parts), speed, args)
             self.transition("teach_play", f"Playing {self.teach_sequence_label} at {speed:g}× speed, through home between "
@@ -2363,10 +2400,13 @@ class Engine:
                 m.require(type(hardness) in (int, float) and teach_motion.MIN_PRESS_HARDNESS <= hardness <= 1,
                           f"Choose a press hardness from {teach_motion.MIN_PRESS_HARDNESS:.0%} to 100%.")
                 changes["press_hardness"] = float(hardness)
-            m.require(changes, "Give a speed, press_s and/or press_hardness.")
+            if "duration" in args:
+                music.beats(args["duration"])
+                changes["duration"] = args["duration"].strip()
+            m.require(changes, "Give a speed, press_s, duration and/or press_hardness.")
             self.teach_settings = {**self.teach_settings, **changes}
             self.repo.put("teach_settings", self.teach_settings)
-            self.event("teach_settings", "Playback settings: " + ", ".join(f"{k} {v:g}" for k, v in self.teach_settings.items()))
+            self.event("teach_settings", "Playback settings: " + ", ".join(f"{k} {v}" for k, v in self.teach_settings.items()))
         elif action == "teach_configure":
             control = args.get("control")
             m.require(isinstance(control, str) and control in CATALOG, "Choose an instrument control.")

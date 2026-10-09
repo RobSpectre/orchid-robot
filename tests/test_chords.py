@@ -88,7 +88,7 @@ def test_a_chord_presses_the_button_first_and_lets_go_once_the_key_is_down(plate
     played = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj", "speed": 3.0}, headers=auth)
     assert played.status_code == 200, played.text
     body = played.json()
-    assert body["message"] == "Played C + Maj; both arms home." and body["clearance_mm"] >= kinematics.CLEARANCE_MM
+    assert body["message"].startswith("Played C + Maj; both arms home. At 120 BPM") and body["clearance_mm"] >= kinematics.CLEARANCE_MM
     moves = [(arm, phase) for arm, phase, _ in order]
     # B presses and holds, then A plays, then B lets go while A is still playing, then both hold at home.
     assert moves.index(("b", "teach_hold")) < moves.index(("a", "teach_play"))
@@ -103,7 +103,7 @@ def test_chords_in_a_sequence_and_refusals(plate, monkeypatch):
     seq = client.post("/api/sequence", json={"steps": [{"control": "C", "chord": "chord.maj"}, {"control": "D"},
                                                        {"control": "D", "chord": "chord.min"}], "speed": 3.0}, headers=auth)
     assert seq.status_code == 200, seq.text
-    assert seq.json()["message"] == "Played C + Maj → D → D + Min; holding at home."
+    assert seq.json()["message"].startswith("Played C + Maj → D → D + Min; holding at home. At 120 BPM")
     untaught = client.post("/api/chords/play", json={"key": "C", "chord": "chord.sus"}, headers=auth)
     assert untaught.status_code == 409 and "Suspended has not been taught" in untaught.json()["detail"]
     wrong = client.post("/api/chords/play", json={"key": "chord.maj", "chord": "C"}, headers=auth)
@@ -117,7 +117,7 @@ def test_chords_in_a_sequence_and_refusals(plate, monkeypatch):
 def test_a_failed_key_lets_the_chord_button_go(plate, monkeypatch):
     client, a, b, command, auth = plate
 
-    def refuse(control, args):
+    def refuse(control, args, speed=1.0):
         raise m.SafetyError(f"{control} cannot play right now.")
     monkeypatch.setattr(a, "control_motion", refuse)
     refused = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj", "speed": 3.0}, headers=auth)

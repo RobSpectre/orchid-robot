@@ -193,17 +193,29 @@ can be about 2 cm off: use it to see where the arms are, not to judge clearance 
 While the console is open, connected and holding (Play, Teach or Follow any control once; playing needs only the follower), taught controls can be played and adjusted from `scripts/orchid.py` or the `orchid-keys` Claude skill. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply.
 
 ```bash
-python3 scripts/orchid.py status                 # controls, press lengths, speed, readiness
-python3 scripts/orchid.py play C --press 0.8     # waits until the arm is back home
-python3 scripts/orchid.py seq "C E G:1.2 C" --speed 1.5
-python3 scripts/orchid.py chord C maj            # both arms: Maj held by the Chord Arm, C played by the Keys Arm
-python3 scripts/orchid.py seq "C+maj A+min F+maj G+sus:0.6"
+python3 scripts/orchid.py status                 # controls, speed, default note value, readiness
+python3 scripts/orchid.py clock                  # Orchid Studio's tempo; whether notes land on its beat
+python3 scripts/orchid.py play C --duration 1/4  # waits until the arm is back home
+python3 scripts/orchid.py seq "C:1/4 E:1/4 r:1/4 G:1/2" --speed 1.5
+python3 scripts/orchid.py chord C maj --duration 1/2   # both arms: Maj held by the Chord Arm, C played by the Keys Arm
+python3 scripts/orchid.py seq "C+maj:1 A+min:1 F+maj:1 G+sus:1"
 python3 scripts/orchid.py set ccw --turn -25     # a dial direction's turn angle
-python3 scripts/orchid.py speed 2                # shared default speed
+python3 scripts/orchid.py speed 2                # shared arm speed
+python3 scripts/orchid.py duration 1/4           # the note value when none is given
 python3 scripts/orchid.py home | stop
 ```
 
-HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `POST /api/controls/{id}/play`, `POST /api/controls/{id}`, `POST /api/sequence`, `POST /api/chords/play` (`key`, `chord`, `speed?`, `press_s?`), `POST /api/settings` (`speed`, `press_s`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence on one arm is one motion that passes through home between controls. A sequence with chords or with both arms' controls plays one step at a time, each arm back home before the next.
+**Musical time.** The API takes note values, not seconds: a quarter note is one beat. You can write `1/4`, `1/8`,
+`1/2`, `1`, dotted `1/8.`, triplet `1/8t`, or `q`/`e`/`h`/`w`/`s`. Each note sounds for its value at Orchid Studio's
+tempo, read from Studio's timeline (`clock` command), the same timeline its MIDI clock output follows. The note runs
+from the strike, halfway down the press stroke, to the release, halfway back up; the hold at the bottom fills the rest.
+While Studio's transport runs, the arm waits above each key and strikes on Studio's beat. The first note goes on the
+next beat it can make, and each later note goes its written length after the one before. When it is stopped, a phrase
+keeps its own time from its first note. The arm returns home between notes, so a note that comes sooner than the arm can
+get there lands late by whole beats, and the rest of the phrase moves with it. The reply says how many beats late it was.
+Simulation, with no Studio, keeps 120 BPM. The console's own Play still uses the press length in seconds.
+
+HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `GET /api/clock`, `POST /api/controls/{id}/play` (`duration?`, `speed?`, `turn_degrees?`), `POST /api/controls/{id}` (`turn_degrees`), `POST /api/sequence` (steps `{control or "rest", chord?, duration?}`), `POST /api/chords/play` (`key`, `chord`, `speed?`, `duration?`), `POST /api/settings` (`speed`, `duration`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence on one arm is one motion that passes through home between controls. A sequence with chords or with both arms' controls plays one step at a time, each arm back home before the next, keeping the rhythm across steps.
 
 ## Register the eight chord buttons
 
