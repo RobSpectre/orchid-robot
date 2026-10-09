@@ -837,10 +837,35 @@ class Engine:
             return self.off_the_stops(doc["point"])
         return None
 
+    ROLL_REACH_DEG = 4.0  # the wrist rotation reaches about ±169°; a goal past where it got to keeps its motor straining
+
+    def capture_pose(self):
+        """The leader's pose as the follower holds it, refused when the follower's wrist could not turn that far."""
+        try:
+            captured = self.teach.capture()
+        except RuntimeError as exc:
+            raise m.SafetyError(str(exc)) from exc
+        goal, got = captured["goal"]["wrist_roll"], captured["measured"]["wrist_roll"]
+        m.require(abs(goal - got) <= self.ROLL_REACH_DEG,
+                  f"The follower's wrist rotation stopped at {got:.0f}° but the leader is turned to {goal:.0f}°: it cannot "
+                  "turn that far, and its motor would keep straining at this pose. Turn the leader's wrist back toward the "
+                  "middle until the follower's catches up, then capture again.")
+        return captured
+
+    @classmethod
+    def reachable(cls, point):
+        """A saved pose whose wrist rotation never got where it was told (taught past what it reaches): ask for where
+        it got to instead, so the wrist motor is not left straining."""
+        goal, got = point["goal"].get("wrist_roll"), point.get("measured", {}).get("wrist_roll")
+        if goal is None or got is None or abs(goal - got) <= cls.ROLL_REACH_DEG:
+            return point
+        return {**point, "goal": {**point["goal"], "wrist_roll": got}}
+
     def off_the_stops(self, point):
         """A home or rest is held for minutes, so hold it LIMIT_MARGIN_TICKS inside each joint's travel. A pose saved
         at a stop (folded against it, as a rest often is) otherwise keeps a motor pushing into its
-        end of travel, and the arm shivers. Wrist roll turns a full circle and is left as taught."""
+        end of travel, and the arm shivers. Wrist roll turns a full circle: it is only held where it reached (reachable)."""
+        point = self.reachable(point)
         goal = dict(point["goal"])
         for name in m.MOTORS:
             if name == "wrist_roll" or name not in goal:
@@ -944,7 +969,7 @@ class Engine:
                   "Re-teach it with the leader.")
         home = self.shared_teach_home()
         m.require(home, "No home is set for this arm. Set home with the leader first.")
-        return {**{k: v for k, v in entry["points"].items() if k in teach_motion.POINTS}, "home": home}
+        return {**{k: self.reachable(v) for k, v in entry["points"].items() if k in teach_motion.POINTS}, "home": home}
 
     def chord_path(self, control, poses=30):
         """Every pose one chord play takes this arm through, from where it is now (rig.Rig.play_chord checks the two
@@ -970,6 +995,7 @@ class Engine:
         home_point = self.shared_teach_home()
         dial = CATALOG[control]["kind"] == "dial"
         points = {**entry["points"], **(self.shared_dial_points() if dial else {}), **({"home": home_point} if home_point else {})}
+        points = {name: self.reachable(point) if isinstance(point, dict) and "goal" in point else point for name, point in points.items()}
         changed = {}
         try:
             if dial:
@@ -2086,10 +2112,7 @@ class Engine:
             self.require_phase("teach_hold", "teach_follow")
             note = self.parking_note("home")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
-            try:
-                captured = self.teach.capture()
-            except RuntimeError as exc:
-                raise m.SafetyError(str(exc)) from exc
+            captured = self.capture_pose()
             self.save_teach_home(captured)
             if self.teach_points_for:
                 self.teach_points["home"] = captured
@@ -2174,10 +2197,7 @@ class Engine:
             self.require_phase("teach_hold", "teach_follow")
             note = self.parking_note("rest")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
-            try:
-                captured = self.teach.capture()
-            except RuntimeError as exc:
-                raise m.SafetyError(str(exc)) from exc
+            captured = self.capture_pose()
             self.teach_rest_doc = self.pose_doc(captured)
             self.repo.put("teach_rest", self.teach_rest_doc)
             self.transition(self.phase, "Rest set here. Go to rest moves the arm here; playback waits at home between keys." + note)
@@ -2199,10 +2219,7 @@ class Engine:
             expected = next((n for n in names if n not in points), None)
             m.require(point in names and (point == expected or point in points),
                       f"Capture {expected} next." if expected else "All steps are captured; select one to retrain it, or Play.")
-            try:
-                captured = self.teach.capture()
-            except RuntimeError as exc:
-                raise m.SafetyError(str(exc)) from exc
+            captured = self.capture_pose()
             # Retraining one step replaces only that step; the other steps are kept.
             for a, b, ignore in STROKE_PAIRS["dial" if self.is_dial else "key"]:
                 if point in (a, b) and (b if point == a else a) in points:

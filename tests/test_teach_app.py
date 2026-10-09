@@ -849,3 +849,21 @@ def test_a_rest_saved_at_a_stop_is_held_just_inside_it(engine):
     assert rest["wrist_roll"] == doc["point"]["goal"]["wrist_roll"] and engine.repo.get("teach_rest") == doc  # stored as taught
     moved = engine.shared_teach_rest()["measured"]["elbow_flex"] - doc["point"]["measured"]["elbow_flex"]
     assert moved == pytest.approx(rest["elbow_flex"] - beyond)  # parked is judged where the arm will be held
+
+
+def test_a_pose_the_wrist_could_not_turn_to_is_refused_and_an_old_one_is_held_where_it_reached(engine):
+    following(engine)
+    command(engine, "teach_hold")
+    engine.arm.jammed = True  # the wrist stops short, as it does near +-180 deg
+    engine.teach.goal = {**engine.teach.goal, "wrist_roll": engine.teach.measured["wrist_roll"] + 11.25}
+    refused = reject(engine, "teach_set_rest")["message"]
+    assert "cannot turn that far" in refused and "straining" in refused
+    engine.arm.jammed = False
+    engine.teach.hold()  # back where the wrist actually is
+    command(engine, "teach_set_rest")
+    doc = engine.repo.get("teach_rest")
+    doc["point"]["goal"] = {**doc["point"]["goal"], "wrist_roll": 180.0}  # saved before the guard: told 180, reached 168.75
+    doc["point"]["measured"] = {**doc["point"]["measured"], "wrist_roll": 168.75}
+    engine.repo.put("teach_rest", doc)
+    engine.teach_rest_doc = doc
+    assert engine.shared_teach_rest()["goal"]["wrist_roll"] == 168.75
