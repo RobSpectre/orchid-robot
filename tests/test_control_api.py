@@ -1,5 +1,6 @@
 """HTTP control API (list, configure, play, sequence) against the running worker, in simulation."""
 from copy import deepcopy
+import threading
 import time
 from uuid import uuid4
 
@@ -31,7 +32,17 @@ def console(tmp_path):
             assert engine.receipts[identity]["status"] == "complete", engine.receipts[identity]
             client.post("/api/heartbeat", json={"leader_visible": True}, headers=headers)
 
+        beating = threading.Event()
+
+        def heartbeat():  # the console page keeps the lease while it is open, however long a play takes
+            while not beating.wait(0.2):
+                client.post("/api/heartbeat", json={"leader_visible": True}, headers=headers)
+        beat = threading.Thread(target=heartbeat, daemon=True)
+        beat.start()
+        client.close_console = lambda: (beating.set(), beat.join())
         yield client, engine, command, {"x-orchid-token": token}
+        beating.set()
+        beat.join()
 
 
 def taught(engine, command):
@@ -92,6 +103,7 @@ def test_api_refusals(console):
     assert client.post("/api/controls/E/play", json={}, headers=auth).status_code == 409  # not taught
     assert client.post("/api/controls/C/play", json={"speed": 9}, headers=auth).status_code == 422  # out of range
     assert client.post("/api/controls/C/play", json={}).status_code == 403  # no token
+    client.close_console()
     engine.lease_until = time.monotonic() - 1  # the console closed
     refused = client.post("/api/controls/C/play", json={}, headers=auth)
     assert refused.status_code == 409 and "operator console" in refused.json()["detail"]
