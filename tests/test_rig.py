@@ -289,12 +289,14 @@ def test_the_leader_moves_to_the_other_arm_in_one_step_and_each_arm_selects_its_
         client.post("/api/heartbeat", json={}, headers=auth)
         client.post("/api/connect-all", json={"prepared": True}, headers=auth)
         deadline = clock.monotonic() + 5
-        while clock.monotonic() < deadline and not (a.leader and b.arm):
+        # Both connections finished, not just begun: a command sent while one is still running is refused as busy.
+        while clock.monotonic() < deadline and not (a.leader and b.arm and not a.pending and not b.pending):
             client.post("/api/heartbeat", json={}, headers=auth)
             clock.sleep(0.02)
         assert a.leader and b.arm and not b.leader
         assert b.public["selected"] in ROLES["b"]  # never C, the keys arm's control
-        assert client.post("/api/leader/move", json={"to": "b"}, headers=auth).json()["message"].endswith("Chord Arm.")
+        moved = client.post("/api/leader/move", json={"to": "b"}, headers=auth)
+        assert moved.status_code == 200 and moved.json()["message"].endswith("Chord Arm."), moved.text
         assert a.leader is None and b.leader is not None and a.teaching_mode == "manual"
         assert b.leader_calibration == a.leader_calibration  # one shared leader calibration (none yet in this fresh setup)
         assert client.post("/api/leader/move", json={"to": "b"}, headers=auth).json()["message"] == "This arm already has the leader."
