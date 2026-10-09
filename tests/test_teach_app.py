@@ -830,3 +830,21 @@ def test_home_and_rest_are_refused_at_a_joints_end_of_travel(engine):
     refused = reject(engine, "teach_set_rest")["message"]
     assert "elbow flex is at the end of its travel" in refused and "shake" in refused
     assert "elbow flex" in reject(engine, "teach_set_home")["message"]
+
+
+def test_a_rest_saved_at_a_stop_is_held_just_inside_it(engine):
+    """A rest saved folded against the elbow's stop (before that was refused) is held 4° off the stop, not into it."""
+    following(engine)
+    command(engine, "teach_set_rest")
+    cal, doc = engine.calibration, engine.repo.get("teach_rest")
+    beyond = (cal["elbow_flex"]["range_max"] + 6 - (cal["elbow_flex"]["range_min"] + cal["elbow_flex"]["range_max"]) / 2) * 360 / 4095
+    doc["point"]["goal"] = {**doc["point"]["goal"], "elbow_flex": beyond, "gripper": 0.0}  # past the stop, jaws shut
+    engine.repo.put("teach_rest", doc)
+    engine.teach_rest_doc = doc
+    rest = engine.shared_teach_rest()["goal"]
+    held = engine.arm.joint_target(rest)
+    assert held["elbow_flex"] == cal["elbow_flex"]["range_max"] - engine.LIMIT_MARGIN_TICKS
+    assert held["gripper"] - cal["gripper"]["range_min"] >= engine.LIMIT_MARGIN_TICKS - 1
+    assert rest["wrist_roll"] == doc["point"]["goal"]["wrist_roll"] and engine.repo.get("teach_rest") == doc  # stored as taught
+    moved = engine.shared_teach_rest()["measured"]["elbow_flex"] - doc["point"]["measured"]["elbow_flex"]
+    assert moved == pytest.approx(rest["elbow_flex"] - beyond)  # parked is judged where the arm will be held

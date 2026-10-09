@@ -834,8 +834,30 @@ class Engine:
 
     def valid_pose(self, doc):
         if doc and doc.get("calibration_sha256") == m.fingerprint(self.calibration) and doc.get("mode") == self.mode:
-            return doc["point"]
+            return self.off_the_stops(doc["point"])
         return None
+
+    def off_the_stops(self, point):
+        """A home or rest is held for minutes, so hold it LIMIT_MARGIN_TICKS inside each joint's travel. A pose saved
+        at a stop (before check_parking_pose existed, or folded against it) otherwise keeps a motor pushing into its
+        end of travel, and the arm shivers. Wrist roll turns a full circle and is left as taught."""
+        goal = dict(point["goal"])
+        for name in m.MOTORS:
+            if name == "wrist_roll" or name not in goal:
+                continue
+            low, high = self.calibration[name]["range_min"], self.calibration[name]["range_max"]
+            if name == "gripper":  # 0..100 across the range
+                margin = self.LIMIT_MARGIN_TICKS * 100 / (high - low)
+                goal[name] = min(max(goal[name], margin), 100 - margin)
+            else:  # LeRobot degrees about the range's midpoint (devices.joint_action)
+                half = (high - low) / 2 * 360 / 4095
+                margin = self.LIMIT_MARGIN_TICKS * 360 / 4095
+                goal[name] = min(max(goal[name], -half + margin), half - margin)
+        if goal == point["goal"]:
+            return point
+        # Where the arm will then sit moves by as much (parked() compares against this).
+        measured = {name: value + goal.get(name, value) - point["goal"].get(name, value) for name, value in point["measured"].items()}
+        return {**point, "goal": goal, "measured": measured}
 
     def shared_teach_home(self):
         return self.valid_pose(self.teach_home_doc)
