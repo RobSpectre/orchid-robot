@@ -163,3 +163,13 @@ def test_the_model_keeps_two_arms_apart_and_measures_them():
     assert 0 < near < 1000  # the mounts are 400 mm apart
     assert kinematics._segment_distance((0, 0, 0), (10, 0, 0), (5, 5, 0), (5, 10, 0)) == pytest.approx(5)
     assert kinematics._segment_distance((0, 0, 0), (10, 0, 0), (20, 0, 0), (30, 0, 0)) == pytest.approx(10)
+
+
+def test_a_chord_sweeps_on_for_bars(plate):
+    client, a, b, command, auth = plate
+    started = time.monotonic()
+    played = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj", "duration": "2bars", "speed": 3.0},
+                         headers=auth)
+    assert played.status_code == 200, played.text
+    assert played.json()["duration"] == {"beats": 8.0, "seconds": 4.0}  # two 4/4 bars at 120 BPM
+    assert time.monotonic() - started >= 4.0 and b.parked_now[0]  # held the whole time; the Chord Arm let go long before

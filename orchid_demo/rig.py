@@ -200,6 +200,9 @@ class Rig:
         stopped = lambda: (keys.stops, chords.stops) != stops or "fault" in (keys.phase, chords.phase)  # noqa: E731
         pace = {"chord_run": run["id"], **({"speed": speed} if speed is not None else {})}
         name = CATALOG[chord]["name"]
+        # A held note (bars of it) and a wait for its beat lengthen the chord; the timeouts allow for both.
+        held = float((play or {}).get("sound_s") or 0.0)
+        due = max(0.0, float(((play or {}).get("rhythm") or {}).get("at") or 0.0) - time.monotonic())
         try:
             self.command(chords, "chord_press", {"control": chord, **pace})
             self.wait(lambda: chords.phase != "teach_play")
@@ -210,12 +213,12 @@ class Rig:
             try:
                 self.command(keys, "teach_play", {**(play or {}), "control": key, "chord": chord, **pace})
                 press = keys.teach.recording["marks"]["press"] + RELEASE_AFTER_S
-                self.wait(lambda: keys.phase != "teach_play" or (keys.play_t or 0) >= press)
+                self.wait(lambda: keys.phase != "teach_play" or (keys.play_t or 0) >= press, CHORD_TIMEOUT_S + due)
             finally:  # never while the Keys Arm is still on its way down to the key
                 if not stopped() and chords.phase == "teach_hold" and chords.chord_held == chord and \
                         (keys.phase != "teach_play" or (keys.play_t or 0) >= press):
                     self.command(chords, "chord_release", pace)
-            self.wait(lambda: "teach_play" not in (keys.phase, chords.phase))
+            self.wait(lambda: "teach_play" not in (keys.phase, chords.phase), CHORD_TIMEOUT_S + held)
             m.require(not stopped(), "Stopped during the chord; both arms hold where they are.")
             m.require(keys.teach_played == key, f"Keys Arm did not play {key}: {keys.message}")
             self.wait(lambda: keys.parked_now[0] and chords.parked_now[0], 2.0)  # so the next chord sees both parked

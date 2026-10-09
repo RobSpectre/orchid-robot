@@ -199,6 +199,7 @@ python3 scripts/orchid.py play C --duration 1/4  # waits until the arm is back h
 python3 scripts/orchid.py seq "C:1/4 E:1/4 r:1/4 G:1/2" --speed 1.5
 python3 scripts/orchid.py chord C maj --duration 1/2   # both arms: Maj held by the Chord Arm, C played by the Keys Arm
 python3 scripts/orchid.py seq "C+maj:1 A+min:1 F+maj:1 G+sus:1"
+python3 scripts/orchid.py chord C maj --duration 4bars   # a long sweeping chord: the Keys Arm holds C for four bars
 python3 scripts/orchid.py set ccw --turn -25     # a dial direction's turn angle
 python3 scripts/orchid.py speed 2                # shared arm speed
 python3 scripts/orchid.py duration 1/4           # the note value when none is given
@@ -206,7 +207,9 @@ python3 scripts/orchid.py home | stop
 ```
 
 **Musical time.** The API takes note values, not seconds: a quarter note is one beat. You can write `1/4`, `1/8`,
-`1/2`, `1`, dotted `1/8.`, triplet `1/8t`, or `q`/`e`/`h`/`w`/`s`. Each note sounds for its value at Orchid Studio's
+`1/2`, `1`, dotted `1/8.`, triplet `1/8t`, or `q`/`e`/`h`/`w`/`s`. Long notes are bars of 4/4 (`4bars`), and `+` ties
+values (`2bars+1/2`). A note can be held for any number of bars, for long sweeping chords; Stop motion ends it early. While a key or chord button is held, the arm does not keep pushing toward the taught press. About 0.15 s after it reaches the bottom, it holds where the key actually stopped it, plus a 0.5° preload that keeps the key down. It writes that goal once, and lifts from there.
+Each note sounds for its value at Orchid Studio's
 tempo, read from Studio's timeline (`clock` command), the same timeline its MIDI clock output follows. The note runs
 from the strike, halfway down the press stroke, to the release, halfway back up; the hold at the bottom fills the rest.
 While Studio's transport runs, the arm waits above each key and strikes on Studio's beat. The first note goes on the

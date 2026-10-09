@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Play and configure taught Orchid controls through the running operator console's API, in musical time.
 
-Durations are note values (a quarter note is one beat): 1/4 1/8 1/2 1 1/16, dotted 1/8. and triplet 1/8t (or q e h w s).
+Durations are note values (a quarter note is one beat): 1/4 1/8 1/2 1 1/16, dotted 1/8. and triplet 1/8t (or q e h w s),
+or bars of 4/4: 2bars, 1bar; tie them with +: 1bar+1/2. A note can be held for any number of bars.
 They follow Orchid Studio's tempo, and while its transport runs every note lands on its beat.
 
     python3 scripts/orchid.py status                  # taught controls, speed, default note value, readiness
@@ -13,6 +14,7 @@ They follow Orchid Studio's tempo, and while its transport runs every note lands
     python3 scripts/orchid.py seq "C:1/4 r:1/4 E:1/2" # r: a rest
     python3 scripts/orchid.py chord C maj --duration 1/2   # C with the Maj button held (Chord Arm)
     python3 scripts/orchid.py seq "C+maj:1 A+min:1 F+maj:1 G+sus:1"   # chords in a phrase; mix with plain keys
+    python3 scripts/orchid.py chord C maj --duration 4bars              # a long sweeping chord
     python3 scripts/orchid.py set ccw --turn -25      # a dial direction's default turn
     python3 scripts/orchid.py speed 2                 # arm speed for everything (0.1-3)
     python3 scripts/orchid.py duration 1/4            # the note value when none is given
@@ -48,14 +50,15 @@ class Console:
         self.url = url.rstrip("/")
         self.token = None
 
-    def call(self, method: str, path: str, body: dict | None = None, timeout: float = 330):
+    def call(self, method: str, path: str, body: dict | None = None, timeout: float | None = None):
+        """No timeout by default: a play waits for its notes, however many bars they are held."""
         if method == "POST" and self.token is None:
             self.token = self.call("GET", "/api/session")["token"]
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(self.url + path, data=data, method=method,
                                          headers={"Content-Type": "application/json", **({"X-Orchid-Token": self.token} if self.token else {})})
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout if timeout or method != "GET" else 10) as response:
                 return json.loads(response.read() or b"{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")
@@ -94,7 +97,7 @@ def main(argv=None) -> None:
     chord.add_argument("chord", help="dim, min, maj, sus, 6, m7, M7 or 9")
     for p in (play, seq, chord):
         p.add_argument("--speed", type=float)
-        p.add_argument("--duration", help="note value: 1/4, 1/8, 1/2, 1/8., 1/8t ... (keys and chords)")
+        p.add_argument("--duration", help="note value or bars: 1/4, 1/8., 1/8t, 2bars, 1bar+1/2 ... (keys and chords)")
         if p is not chord:
             p.add_argument("--no-wait", action="store_true", help="return as soon as playback starts")
     play.add_argument("--turn", type=float, help="dial turn in degrees (negative = the other way)")

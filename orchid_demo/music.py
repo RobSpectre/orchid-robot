@@ -2,7 +2,9 @@
 
 Durations are note values, a quarter note being one beat: "1/4", "1/8", "1/2", "1", "1/16"; a trailing "." dots one
 (x1.5) and a trailing "t" makes it a triplet (x2/3): "1/8.", "1/4t". The letters w h q e s (whole, half, quarter,
-eighth, sixteenth) work too: "q", "e.", "et".
+eighth, sixteenth) work too: "q", "e.", "et". Bars are Studio's 4/4 bars: "2bars", "1bar", "1.5bars"; there is no
+upper limit, so a chord can sweep on for as many bars as wanted (Stop motion ends it any time). "+" ties values
+together: "2bars+1/2", "1/4+1/16".
 
 Tempo and the beat grid come from Orchid Studio's timeline, the clock its MIDI clock output (24 PPQN) is made from,
 read over its loopback API with the time.monotonic() stamp both programs share. While Studio's transport runs, a
@@ -22,23 +24,33 @@ from . import motion as m
 
 LETTERS = {"w": Fraction(4), "h": Fraction(2), "q": Fraction(1), "e": Fraction(1, 2), "s": Fraction(1, 4)}
 NOTATION = re.compile(r"^(?:(?P<letter>[whqes])|(?P<num>\d+)(?:/(?P<den>\d+))?)(?P<mod>[.t]?)$")
-MAX_BEATS = 240  # sixty whole notes; the arm holds a note up to a minute (teach.MAX_PRESS_S)
+BARS = re.compile(r"^(?P<bars>\d+(?:\.\d+)?)\s*bars?$")
+BEATS_PER_BAR = 4  # Studio's bars (its loops and drum patterns are 4/4)
 DEFAULT_DURATION = "1/8"
+HOW = "Write a duration as a note value (1/4, 1/8, 1/2, 1, dotted 1/8., triplet 1/8t), bars (2bars), or tied with + (1bar+1/4)"
 
 
 def beats(value) -> float:
-    """A note value in beats (quarter note = 1). Raises SafetyError with how to write it."""
-    match = NOTATION.match(value.strip()) if isinstance(value, str) else None
-    m.require(match, f"Write a duration as a note value: 1/4, 1/8, 1/2, 1, a dotted 1/8. or a triplet 1/8t (not {value!r}).")
+    """A duration in beats (quarter note = 1): note values and bars, tied with "+". Raises SafetyError with how to write it."""
+    m.require(isinstance(value, str) and value.strip(), f"{HOW}, not {value!r}.")
+    total = sum(_part(part.strip(), value) for part in value.split("+"))
+    m.require(total > 0, f"{value!r} has no length. {HOW}.")
+    return float(total)
+
+
+def _part(text, value):
+    bars = BARS.match(text)
+    if bars:
+        return Fraction(bars["bars"]) * BEATS_PER_BAR
+    match = NOTATION.match(text)
+    m.require(match, f"{HOW}, not {value!r}.")
     if match["letter"]:
         length = LETTERS[match["letter"]]
     else:
         m.require(match["den"] is None or int(match["den"]) in (1, 2, 4, 8, 16, 32, 64),
                   f"{value!r}: the note value's lower number must be 1, 2, 4, 8, 16, 32 or 64.")
         length = Fraction(int(match["num"])) * 4 / int(match["den"] or 1)
-    length *= {"": 1, ".": Fraction(3, 2), "t": Fraction(2, 3)}[match["mod"]]
-    m.require(0 < length <= MAX_BEATS, f"{value!r} is out of range: up to sixty whole notes.")
-    return float(length)
+    return length * {"": 1, ".": Fraction(3, 2), "t": Fraction(2, 3)}[match["mod"]]
 
 
 class StudioClock:

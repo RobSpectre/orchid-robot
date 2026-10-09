@@ -1017,10 +1017,8 @@ class Engine:
                 changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
                 if "sound_s" in args:  # a note value: the press is whatever makes it sound that long
                     sound_s = args["sound_s"]
-                    m.require(type(sound_s) in (int, float) and 0 < sound_s <= 120, "A note must last up to a minute.")
+                    m.require(type(sound_s) in (int, float) and 0 < sound_s < float("inf"), "A note needs a length.")
                     press_s = teach_motion.press_for(float(sound_s), recording, speed)
-                    m.require(press_s < teach_motion.MAX_PRESS_S * speed, f"A {sound_s:.1f} s note is longer than a key is "
-                              f"held (up to {teach_motion.MAX_PRESS_S:g} s): use a shorter note value or a faster tempo.")
                     recording = teach_motion.waypoint_recording(points, control, press_s, hardness)
                     changed = {}
                 description = f"home → hover → touch → press ({hardness:.0%} hardness, held {press_s:.2f} s) and back"
@@ -2365,7 +2363,8 @@ class Engine:
                       "from its press). Send the arm home instead.")
             speed = self.play_speed(args)
             self.teach_sequence_label = None
-            self.start_playback(teach_motion.return_recording(points, held), speed, {"force": True})  # letting go never waits
+            recording = teach_motion.no_deeper(teach_motion.return_recording(points, held), self.teach.goal, points)
+            self.start_playback(recording, speed, {"force": True})  # letting go never waits
             self.play_steps = None
             self.chord_held, self.chord_releasing = held, True
             self.transition("teach_play", f"Letting go of {CATALOG[held]['name']} and returning home.")

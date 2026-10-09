@@ -88,6 +88,13 @@ Each taught stroke stores six raw encoder positions per waypoint, a contact inde
 | Speed / acceleration | 24 ticks/s / 80 ticks/s² |
 | Single trial limit | 45 s |
 
+Taught plays (`teach.py`) have no single-trial limit, because a written note can be held for any number of bars. A
+held press is soft. After `HOLD_SETTLE_S` (0.15 s) at the bottom of a key or chord-button press, the goal becomes the
+measured position plus at most `HOLD_PUSH_DEG` (0.5°) toward the taught press, never the full taught depth. On the way
+up it never asks for more depth than that. Goals are written to the servos only when they change, never re-sent each
+tick, because re-sending restarts their motion profile and buzzes a joint held against a stop or a key's bottom. Stop
+motion ends any hold.
+
 A stop attempts a measured-position hold using fresh feedback inside the taught envelope. It never issues a blind retract and never drops torque automatically. If that read/write fails, the previous motor target can remain active. OS scheduling, serial I/O, mechanical faults, and missing force sensing prevent any safety-rated guarantee.
 
 ## Persistence and migration

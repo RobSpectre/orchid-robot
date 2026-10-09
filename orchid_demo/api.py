@@ -31,10 +31,15 @@ class Command(BaseModel):
     arm: str = Field(default="a", pattern="^[ab]$")
 
 
+DURATION = ("How long the note sounds, in musical time at Orchid Studio's tempo: a note value (1/4, 1/8, 1/2, 1, dotted "
+            "1/8., triplet 1/8t, or q e h w s), bars of 4/4 (2bars, 1.5bars), or values tied with + (2bars+1/2). Any "
+            "number of bars: the key is held softly (no continued push) and the request returns once the note is done.")
+
+
 class PlayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...
+    duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)
     turn_degrees: float | None = Field(default=None, ge=-90, le=90)
     wait: bool = True
 
@@ -44,14 +49,14 @@ class ChordRequest(BaseModel):
     key: str = Field(min_length=1, max_length=20)
     chord: str = Field(min_length=1, max_length=20)
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...
+    duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)
 
 
 class SequenceStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     control: str = Field(min_length=1, max_length=20)  # or "rest": silence for its duration
     chord: str | None = Field(default=None, min_length=1, max_length=20)  # a key played with this chord button held
-    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...
+    duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)
     turn_degrees: float | None = Field(default=None, ge=-90, le=90)
 
 
@@ -70,7 +75,7 @@ class ControlSettings(BaseModel):
 class PlaybackSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    duration: str | None = Field(default=None, min_length=1, max_length=8)  # a note value: 1/4, 1/8., 1/8t, q ...  # the note value when a play gives none
+    duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)  # the note value when a play gives none
     press_hardness: float | None = Field(default=None, ge=0.1, le=1.0)
 
 
@@ -292,7 +297,11 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             receipt = engine.api_submit(action, {k: v for k, v in args.items() if v is not None})
         except SafetyError as exc:
             raise HTTPException(409, str(exc)) from exc
-        deadline = time.monotonic() + 300
+        # However long its notes are held (bars of them) and however long it waits for its first beat, plus margin.
+        held = args.get("sound_s") or 0.0
+        held += sum(step.get("sound_s", 0.0) for step in args.get("steps") or ())
+        due = (args.get("rhythm") or {}).get("at")
+        deadline = time.monotonic() + 300 + held + max(0.0, (due or 0.0) - time.monotonic())
         while time.monotonic() < deadline:  # the worker processes the command between control ticks
             done = engine.receipts.get(receipt["id"], {})
             if done.get("status") != "queued":
@@ -381,6 +390,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.post("/api/controls/{control}/play")
     def play_control(control: str, body: PlayRequest):
+        """Play one taught control for `duration` (default: settings.duration), on Orchid Studio's beat while its
+        transport runs. Returns when the note has been held and the arm is home, with when it struck (`rhythm`)."""
         clock = clock_now()
         step = phrase([{"control": control, **({"duration": body.duration} if body.duration else {}),
                         **({"turn_degrees": body.turn_degrees} if body.turn_degrees is not None else {})}], clock)[0]
@@ -419,8 +430,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.post("/api/chords/play")
     def play_chord_route(body: ChordRequest):
-        """Play a key with a chord button held: the chord button goes down first, the key second, and the chord arm
-        returns home as soon as the key is down. Both arms' motion is orchid-robot's; this only names the chord."""
+        """Play a key with a chord button held: the chord button goes down first, the key second, and the Chord Arm
+        returns home as soon as the key is down. The key is then held for `duration` (any number of bars) and the chord
+        sounds the whole time. Both arms' motion is orchid-robot's; this only names the chord and how long it lasts."""
         clock = clock_now()
         step = phrase([{"control": body.key, "chord": body.chord, **({"duration": body.duration} if body.duration else {})}], clock)[0]
         result = play_chord(step, clock, body.speed)
@@ -429,6 +441,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.post("/api/sequence")
     def play_sequence(body: SequenceRequest):
+        """A phrase: each step sounds for its duration and the next comes after it ({"control": "rest"} for silence).
+        Steps may be chords ({"control": "C", "chord": "chord.maj", "duration": "4bars"}). Returns when it is done."""
         clock = clock_now()
         steps = phrase([{k: v for k, v in step.model_dump().items() if v is not None} for step in body.steps], clock)
         players = {owner(step["control"]) for step in steps}

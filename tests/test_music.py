@@ -11,8 +11,9 @@ from test_teach_app import engine, following, run, teach_points  # noqa: F401  (
 def test_note_values_are_beats():
     assert [music.beats(x) for x in ("1", "1/2", "1/4", "1/8", "1/16", "1/8.", "1/4t", "3/8", "q", "e.", "w", "st")] == \
         pytest.approx([4, 2, 1, 0.5, 0.25, 0.75, 2 / 3, 1.5, 1, 0.75, 4, 1 / 6])
-    for bad in ("1/5", "0", "quarter", "", "1/4..", 0.5, "61"):
-        with pytest.raises(SafetyError, match="note value|out of range"):
+    assert [music.beats(x) for x in ("2bars", "1bar", "1.5bars", "16 bars", "1bar+1/2", "1/4+1/16")] == [8, 4, 6, 64, 6, 1.25]
+    for bad in ("1/5", "0", "quarter", "", "1/4..", 0.5, "0bars", "1/4+", "+"):
+        with pytest.raises(SafetyError, match="note value|no length|lower number"):
             music.beats(bad)
 
 
@@ -63,7 +64,7 @@ def test_a_note_sounds_for_its_length():
         marks = teach.waypoint_recording(points, "C", press_s)["marks"]
         assert (marks["release"] - marks["strike"]) / speed == pytest.approx(0.75, abs=1e-3)
     assert teach.press_for(0.01, shaped, 1.0) == 0.0  # shorter than the strokes: as short as it goes
-    assert teach.press_for(90, shaped, 3.0) == teach.MAX_PRESS_S * 3  # held at most a minute, whatever the speed
+    assert teach.press_for(600, shaped, 1.0) > 590  # ten minutes of a sweeping chord: no limit on a written note
 
 
 def test_the_engine_lands_a_key_on_the_grid_and_reports_it(engine):  # noqa: F811
@@ -95,3 +96,47 @@ def test_the_key_check_times_each_note_from_where_it_waited():
     note = {"type": "press", "t": 50.35, "name": "C", "velocity": 60, "notes": [60]}
     result = check_step(step, 10.0, 1.0, [note])  # without the gate the window would start at 10.0 and miss it
     assert result["status"] == "ok" and result["into_stroke_s"] == pytest.approx(0.15)
+
+
+def test_a_held_press_stops_pushing_once_the_key_bottoms_out():
+    """The taught press is 3 deg past where this key bottoms out. After settling, the arm holds where it stopped plus a
+    light preload, writes that goal once for the whole hold, and lifts without pushing back down."""
+    pose = dict.fromkeys(("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"), 0.0)
+    points = {name: {"goal": {**pose, "shoulder_lift": lift}, "measured": {**pose, "shoulder_lift": lift}}
+              for name, lift in (("home", 0.0), ("hover", 10.0), ("touch", 14.0), ("press", 17.0))}
+    bottom = 14.0 + 1.0  # the key's bottom
+    recording = teach.waypoint_recording(points, "C", 3.0)  # a 3 s hold
+    marks, now, arm, sent = recording["marks"], [0.0], dict(pose), []
+
+    def send(goal):
+        sent.append((now[0], dict(goal)))
+        arm.update(goal, shoulder_lift=min(goal["shoulder_lift"], bottom))
+    session = teach.Session(lambda: dict(arm), send, clock=lambda: now[0], settle_s=0.0)
+    session.play(recording, 1.0)
+    while session.mode != "holding":
+        now[0] += teach.PERIOD
+        session.tick()
+    started = session.play_began
+    settled = started + marks["press"] + teach.HOLD_SETTLE_S + teach.PERIOD
+    during = [goal["shoulder_lift"] for t, goal in sent if settled <= t < started + marks["lift"]]
+    held = [goal for t, goal in sent if t < settled][-1]["shoulder_lift"]  # what the arm holds through the note
+    assert held == pytest.approx(bottom + teach.HOLD_PUSH_DEG)  # not 17: where it stopped plus a 0.5 deg preload
+    assert during == []  # nothing rewritten for the rest of the 3 s hold
+    after = [goal["shoulder_lift"] for t, goal in sent if t >= started + marks["lift"]]
+    assert max(after) <= bottom + teach.HOLD_PUSH_DEG + 1e-9  # lifts from the soft hold, never deeper
+
+
+def test_a_held_chord_button_is_held_softly_and_let_go_without_pushing():
+    pose = dict.fromkeys(("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"), 0.0)
+    points = {name: {"goal": {**pose, "shoulder_lift": lift}, "measured": {**pose, "shoulder_lift": lift}}
+              for name, lift in (("home", 0.0), ("hover", 10.0), ("touch", 14.0), ("press", 17.0))}
+    now, arm = [0.0], dict(pose)
+    session = teach.Session(lambda: dict(arm), lambda g: arm.update(g, shoulder_lift=min(g["shoulder_lift"], 15.0)),
+                            clock=lambda: now[0], settle_s=0.0)
+    session.play(teach.hold_recording(points, "chord.maj"), 1.0)
+    while session.mode != "holding" or now[0] < 10:
+        now[0] += teach.PERIOD
+        session.tick()
+    assert session.goal["shoulder_lift"] == pytest.approx(15.5)  # held down softly until let go
+    release = teach.no_deeper(teach.return_recording(points, "chord.maj"), session.goal, points)
+    assert max(f["goal"]["shoulder_lift"] for f in release["frames"]) == pytest.approx(15.5)

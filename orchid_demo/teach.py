@@ -43,7 +43,12 @@ PRESS_HARDNESS = 0.5  # touch -> press runs at this fraction of the stroke speed
 MIN_PRESS_HARDNESS = 0.1
 RETURN_SETTLE_S = 0.3
 MAX_PLAY_SPEED = 3.0  # playback speed multiplier (1.0 = the taught/planned timing)
-MAX_PRESS_S = 60.0  # longest hold at the bottom of a press: a full minute, for long expressive notes
+# Soft hold: once a press has had HOLD_SETTLE_S to bottom out, hold where the arm actually stopped plus at most
+# HOLD_PUSH_DEG toward the taught press, not the full taught depth (which can sit past the key's bottom and keep the
+# motor pushing for as long as the note is held). The small preload keeps the key down.
+HOLD_SETTLE_S = 0.15
+HOLD_PUSH_DEG = 0.5
+MAX_PRESS_S = 60.0  # the longest press length in seconds (console); note values (music.py) have no limit
 ROLL_JUMP_DEG = 90.0  # a leader wrist-roll change this large in one tick is the -180/+180 wrap, not a real turn
 ROLL_RESUME_DEG = 10.0  # after the wrap, follow the wrist roll again once the leader is back this close
 SETTLED_DEG = 1.0  # the settle before playback ends as soon as the arm is this close to the start
@@ -121,17 +126,18 @@ def waypoint_recording(points: dict, key: str = "", press_s: float = PRESS_DWELL
     # strike and release: where the key is taken to sound and stop, halfway through the strokes down and up (a tuned key
     # triggers between touch and press). hover: where a timed play waits so its strike lands on the beat.
     down, up = marks["press"] - marks["touch"], marks["press>touch"] - marks["press_held"]
-    return {"key": key, "frames": frames, "marks": {
+    return {"key": key, "frames": frames, "holds": [_hold(points, marks["press"], marks["press>touch"])], "marks": {
         "hover": marks["hover"], "touch": marks["touch"], "press": marks["press"], "lift": marks["press_held"],
         "strike": round(marks["touch"] + down / 2, 4), "release": round(marks["press_held"] + up / 2, 4)}}
 
 
 def press_for(sound_s: float, recording: dict, speed: float) -> float:
     """The press dwell that makes a key sound for sound_s seconds at this speed: the note runs from the strike, halfway
-    down the stroke, to the release, halfway back up. The dwell is in the recording's time, which speed also scales."""
+    down the stroke, to the release, halfway back up. The dwell is in the recording's time, which speed also scales.
+    No upper limit: a note value can be held for as many bars as written; Stop motion ends it any time."""
     marks = recording["marks"]
     strokes = (marks["press"] - marks["strike"]) + (marks["release"] - marks["lift"])
-    return max(0.0, min(MAX_PRESS_S * speed, sound_s * speed - strokes))  # held at most MAX_PRESS_S of real time
+    return max(0.0, sound_s * speed - strokes)
 
 
 def _turned(points: dict, degrees: float) -> dict:
@@ -174,14 +180,16 @@ def dial_return_recording(points: dict, key: str = "") -> dict:
 def sequence_recording(recordings: list, key: str = "sequence") -> dict:
     """Recordings that each start and end at home, played back to back on one timeline.
     steps says where each one starts and ends on that timeline, with its marks shifted to match."""
-    frames, offset, steps = [], 0.0, []
+    frames, offset, steps, holds = [], 0.0, [], []
     for recording in recordings:
         part = recording["frames"]
         frames += [{**f, "t": round(offset + f["t"], 4)} for f in (part if not frames else part[1:])]
+        holds += [{**h, "start": round(offset + h["start"], 4), "until": None if h["until"] is None else round(offset + h["until"], 4)}
+                  for h in recording.get("holds", ())]
         steps.append({"key": recording.get("key"), "start": offset, "end": frames[-1]["t"],
                       "marks": {k: round(offset + v, 4) for k, v in recording.get("marks", {}).items()}})
         offset = frames[-1]["t"]
-    return {"key": key, "frames": frames, "steps": steps}
+    return {"key": key, "frames": frames, "steps": steps, "holds": holds}
 
 
 def hold_recording(points: dict, key: str = "", hardness: float = PRESS_HARDNESS) -> dict:
@@ -192,7 +200,30 @@ def hold_recording(points: dict, key: str = "", hardness: float = PRESS_HARDNESS
     marks = {}
     frames = _frames(points, [("home", "hover", TRAVEL_SPEED), ("hover", "touch", STROKE_SPEED),
                               ("touch", "press", STROKE_SPEED, 1 / hardness)], marks)
-    return {"key": key, "frames": frames, "marks": {"touch": marks["touch"], "press": marks["press"]}}
+    return {"key": key, "frames": frames, "holds": [_hold(points, marks["press"], None)],
+            "marks": {"touch": marks["touch"], "press": marks["press"]}}
+
+
+def _soften(goal: dict, measured: dict, hold: dict) -> dict:
+    """Where the arm stopped, plus at most HOLD_PUSH_DEG toward the taught press, for the joints that press."""
+    return {j: measured[j] + max(-HOLD_PUSH_DEG, min(HOLD_PUSH_DEG, goal[j] - measured[j])) if hold["into"].get(j) else goal[j]
+            for j in goal}
+
+
+def no_deeper(recording: dict, goal: dict, points: dict) -> dict:
+    """A recording that starts at the bottom of a press (letting a held chord button go), never asking for more depth
+    than the soft hold the arm is at (goal), so it lifts without first pushing back down to the taught press."""
+    into = _hold(points, 0.0, None)["into"]
+    return {**recording, "frames": [{**f, "goal": {j: goal[j] if into.get(j) and (v - goal[j]) * into[j] > 0 else v
+                                                   for j, v in f["goal"].items()}} for f in recording["frames"]]}
+
+
+def _hold(points: dict, start: float, until) -> dict:
+    """A soft hold at the bottom of a press (Session): from start (the press reached) until `until` (back up at touch;
+    None: for as long as the arm holds there). into: which way each joint moves to press deeper."""
+    touch, press = points["touch"]["goal"], points["press"]["goal"]
+    return {"start": start, "until": until,
+            "into": {j: (press[j] > touch[j]) - (press[j] < touch[j]) for j in press if j in touch}}
 
 
 def return_recording(points: dict, key: str = "") -> dict:
@@ -230,6 +261,8 @@ class Session:
         # A timed play (rhythm): the recording waits at each gate (a recording time, at a hover) until timer(i, now)
         # says, so its strike lands on the beat. play_began is when playback started, before any wait.
         self.gates, self.timer, self.gate_index, self.gate_until, self.play_began = [], None, 0, None, None
+        self.soft = None  # (hold, goal): the soft hold in force at the bottom of a press
+        self.soft_due = None  # (hold, time): a press the recording ends on (a held chord button) softens once settled
 
     # --- operator commands ------------------------------------------------------------------------
 
@@ -245,6 +278,7 @@ class Session:
         self.goal = dict(self.measured)
         self.send(self.goal)
         self.mode, self.frames, self.recording = "holding", None, None
+        self.soft = self.soft_due = None
 
     def send(self, goal):
         self.send_follower(goal)
@@ -254,6 +288,7 @@ class Session:
         if self.read_leader is None:
             raise RuntimeError("Connect the leader to follow it.")
         self.mode, self.frames, self.recording, self.warning = "aligning", None, None, None
+        self.soft = self.soft_due = None
 
     def lock_wrist_roll(self, locked: bool):
         """Hold the wrist roll where it is now, or release it; releasing ramps it to the leader instead of jumping."""
@@ -286,6 +321,7 @@ class Session:
         self.mode, self.frames, self.warning, self.clipped_steps = "ramping", None, None, 0
         self.index = 0
         self.gates, self.timer, self.gate_index, self.gate_until = sorted(gates), timer, 0, None
+        self.soft = self.soft_due = None
 
     @property
     def recorded_seconds(self) -> float:
@@ -364,12 +400,35 @@ class Session:
                     self.gate_index, self.gate_until = self.gate_index + 1, None
             while self.index + 1 < len(frames) and frames[self.index + 1]["t"] <= elapsed + PERIOD / 2:
                 self.index += 1
-            self.goal, clipped = clip_to_measured(frames[self.index]["goal"], measured, self.follow_cap)
+            self.goal, clipped = clip_to_measured(self.softened(frames[self.index]["goal"], elapsed, measured),
+                                                  measured, self.follow_cap)
             self.clipped_steps += clipped
             if self.index == len(frames) - 1:
                 self.mode, event = "holding", "played"
-        # Holding still: write the goal once, not every tick. Rewriting an unchanged goal 30 times a second restarts
-        # the servos' motion profile each time, which shakes a joint held against its end of travel.
-        if not (self.mode == "holding" and self.sent == self.goal):
+                hold = next((h for h in self.recording.get("holds", ()) if h["until"] is None and h["start"] <= elapsed), None)
+                if hold is not None and (self.soft is None or self.soft[0] is not hold):
+                    self.soft_due = (hold, now + max(0.0, hold["start"] + HOLD_SETTLE_S * self.speed - elapsed) / self.speed)
+        if self.mode == "holding" and self.soft_due and now >= self.soft_due[1]:
+            hold, self.soft_due = self.soft_due[0], None
+            self.soft = (hold, _soften(self.goal, measured, hold))
+            self.goal = self.soft[1]
+        # Write a goal once, not every tick. Rewriting an unchanged goal 30 times a second restarts the servos' motion
+        # profile each time, which shakes a joint held against its end of travel or a key's bottom.
+        if self.sent != self.goal:
             self.send(self.goal)
         return event
+
+    def softened(self, goal: dict, elapsed: float, measured: dict) -> dict:
+        """At the bottom of a press, once it has settled: hold where the arm stopped, plus at most HOLD_PUSH_DEG toward
+        the taught press, and on the way back up never ask for more depth than that."""
+        hold = next((h for h in self.recording.get("holds", ()) if h["start"] <= elapsed
+                     and (h["until"] is None or elapsed < h["until"])), None)
+        if hold is None:
+            self.soft = None
+            return goal
+        if (self.soft is None or self.soft[0] is not hold) and elapsed >= hold["start"] + HOLD_SETTLE_S * self.speed:
+            self.soft = (hold, _soften(goal, measured, hold))
+        if self.soft is None or self.soft[0] is not hold:
+            return goal
+        soft = self.soft[1]
+        return {j: soft[j] if hold["into"].get(j) and (goal[j] - soft[j]) * hold["into"][j] > 0 else goal[j] for j in goal}

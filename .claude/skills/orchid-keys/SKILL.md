@@ -31,7 +31,8 @@ Arm plays the key, and once the key is down the Chord Arm lets go and goes home.
 ## Musical time
 
 Durations are **note values**, never seconds: a quarter note is one beat. Write `1/4 1/8 1/2 1 1/16`, dotted `1/8.`
-(×1.5), triplet `1/8t` (×2/3), or the letters `w h q e s` (`q`, `e.`). The tempo is Orchid Studio's. While Studio's
+(×1.5), triplet `1/8t` (×2/3), or the letters `w h q e s` (`q`, `e.`). Long notes are bars of 4/4 (`2bars`, `1bar`,
+`1.5bars`), and `+` ties values (`2bars+1/2`, `1/4+1/16`). The tempo is Orchid Studio's. While Studio's
 transport runs, every note lands on its beat grid: the arm waits above the key and strikes on the beat. When it is
 stopped, a phrase keeps its own time at Studio's tempo from its first note. orchid-robot does all the timing. Give it
 the notes and their values, never sleeps or delays between commands.
@@ -40,7 +41,35 @@ In a phrase each step's note value is how long it sounds and when the next one c
 home between notes, which takes about a second or more. When a note comes sooner than the arm can get there, it lands
 late by whole beats and the rest of the phrase moves with it. The reply then says `N beats late, the arm could not move
 faster`. That is not a fault: suggest longer note values, rests, a slower tempo in Studio, or a higher `--speed`.
-A note can be held up to a minute; a longer one is refused.
+
+## Long notes and sweeping chords
+
+A note can be held for **any number of bars**: there is no upper limit. Use it for long, sweeping chords and pads.
+
+```bash
+python3 scripts/orchid.py chord C maj --duration 4bars                     # one chord held for four bars
+python3 scripts/orchid.py play E --duration 2bars+1/2                      # a single key, tied past the bar
+python3 scripts/orchid.py seq "C+maj:4bars A+min:4bars F+maj:2bars G+sus:2bars"   # a slow progression
+python3 scripts/orchid.py seq "C+maj:2bars r:1bar F+maj:4bars"            # a bar of silence between them
+```
+
+How a long note plays:
+
+- **The chord sounds from the held key.** The Chord Arm presses the button before the strike and lets go as soon as
+  the key is down, then goes home. Only the Keys Arm stays on the key for the bars written. Orchid keeps the chord
+  sounding while the key is held.
+- **The arm does not keep pushing.** About 0.15 s after the key bottoms out, the arm holds where the key stopped it,
+  plus a light 0.5° preload that keeps the key down. It writes that goal once and leaves it. So a long hold neither
+  strains nor buzzes the motor, and it lifts straight up from there. Held chord buttons are held the same way.
+- **The command waits for the whole note**, plus the trip home. Before starting a long note, tell the user how long it
+  will take: 4 bars is 16 beats, so 16 × 60 / BPM seconds (about 11 s at 90 BPM). Use `clock` for the BPM.
+- **`stop` ends a held note early** and holds the arm where it is. Use it if the user asks you to stop. The next play
+  starts from home again.
+- In a phrase, a long note pushes everything after it back by its length, as written. The next note does not overlap it.
+
+With Orchid Studio running, the key check line ends with how long Orchid held the note (`held 10.62 s`). If that is
+well short of the note's `duration.seconds`, the light preload did not keep that key down. Stop and tell the user. It
+is a setting in orchid-robot (`HOLD_PUSH_DEG`), not something to work around by replaying.
 
 ## Commands
 
@@ -64,7 +93,7 @@ python3 scripts/orchid.py stop                        # hold where it is now
 ```
 
 Names: keys `C C# D D# E F F# G G# A A# B` (lowercase ok); chord buttons `dim min maj sus 6 m7 M7 9`
-(`m7` and `M7` differ); dial `cw` / `ccw`. Limits: speed 0.1–3, notes up to a minute long, press hardness
+(`m7` and `M7` differ); dial `cw` / `ccw`. Limits: speed 0.1–3, notes of any length, press hardness
 10–100 %, turn ±1–90°. A chord is `KEY+BUTTON[:NOTE]` in a sequence (`C+maj`, `F#+m7:1/2`) or `chord KEY BUTTON`.
 Both the key (Keys Arm) and the chord button (Chord Arm) must be `registered`. Extensions (`6 m7 M7 9`) are buttons
 like the others.
@@ -105,12 +134,15 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 |---|---|---|
 | `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, controls:[{id,name,kind,group,arm,status,turn_degrees?}]}`; with two arms `ready_to_play` is `{a, b}` |
 | `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
-| `POST /api/controls/{id}/play` | `{speed?, duration?, turn_degrees?, wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
+| `POST /api/controls/{id}/play` | `{speed?, duration? ("1/4", "2bars", "1bar+1/2"), turn_degrees?, wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?, turn_degrees?}], speed?, wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |
 | `POST /api/chords/play` | `{key, chord, speed?, duration?}` (`chord` is a button id, e.g. `chord.maj`) | `{…, key, chord, clearance_mm, duration, rhythm, key_check?}` once both arms are home |
 | `POST /api/controls/{id}` | `{turn_degrees}` (dial directions) | saves the default |
 | `POST /api/settings` | `{speed?, duration? (note value), press_hardness? (0.1–1)}` | saves defaults |
 | `POST /api/home`, `POST /api/stop` | `{}` | |
 
-`duration` is a note value string (`"1/4"`, `"1/8."`, `"1/8t"`, `"q"`); there is no `press_s` in the API.
+`duration` is a note value string (`"1/4"`, `"1/8."`, `"1/8t"`, `"q"`, `"4bars"`, `"1bar+1/2"`); there is no `press_s`
+in the API. Long durations are fine: the request blocks until the note has been held and both arms are home, so give
+your HTTP client no timeout or one longer than the music (`duration.seconds` in the reply says how long the note was).
+`POST /api/stop` from another request ends it early.
 Refusals come back as HTTP 409 (state/safety) or 422 (out-of-range value) with `detail`.
