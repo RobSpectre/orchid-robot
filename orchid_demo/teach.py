@@ -170,6 +170,17 @@ def sequence_recording(recordings: list, key: str = "sequence") -> dict:
     return {"key": key, "frames": frames, "steps": steps}
 
 
+def hold_recording(points: dict, key: str = "", hardness: float = PRESS_HARDNESS) -> dict:
+    """A chord button pressed and held: home -> hover -> touch -> press, ending held down (no return)."""
+    missing = [name for name in POINTS if name not in points]
+    if missing:
+        raise ValueError("Capture " + ", ".join(missing) + " first.")
+    marks = {}
+    frames = _frames(points, [("home", "hover", TRAVEL_SPEED), ("hover", "touch", STROKE_SPEED),
+                              ("touch", "press", STROKE_SPEED, 1 / hardness)], marks)
+    return {"key": key, "frames": frames, "marks": {"touch": marks["touch"], "press": marks["press"]}}
+
+
 def return_recording(points: dict, key: str = "") -> dict:
     """The reverse half only, starting at the captured press: press -> touch -> hover -> home."""
     return {"key": key, "frames": _frames(points, [

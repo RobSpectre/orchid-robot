@@ -25,7 +25,7 @@
     const xs=vertices.filter((_,i)=>i%3===0),ys=vertices.filter((_,i)=>i%3===1),zs=vertices.filter((_,i)=>i%3===2);
     return {vertices,triangles,bounds:[[Math.min(...xs)/1e5,Math.min(...ys)/1e5,Math.min(...zs)/1e5],[Math.max(...xs)/1e5,Math.max(...ys)/1e5,Math.max(...zs)/1e5]]};
   }
-  // A mock Orchid: the measured body; keys placed where arm A's taught presses land; chord buttons and dial approximate.
+  // A mock Orchid: the measured body; keys placed where Keys Arm's taught presses land; chord buttons and dial approximate.
   function mockOrchid(o) {
     const [cx,cy]=o.center,[sx,sy]=o.size,top=o.floor_z+o.height;
     const front=cy-sy/2,white=16.5,left=-4;

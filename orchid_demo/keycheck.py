@@ -5,6 +5,8 @@ name, velocity and time.monotonic() arrival time; this app plays on the same clo
 check reads those events for the play's time window and compares them with what was played:
 
 * keys        the right note name sounded once; velocity, when in the press stroke, how long it held
+* key + chord (the other arm holding a chord button) the press sounded several notes, the key among them, and the
+              chord's tones: pitch classes above the key, so the voicing dial's inversions and octaves do not matter
 * chord       buttons send no MIDI on their own, so none is expected (a note would be a stray press)
 * dial        voicing-dial clicks (CC115 positions) moved during the turn
 
@@ -22,6 +24,11 @@ import urllib.request
 from .controls import CATALOG
 
 STUDIO_PORT = 8765
+NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+# Semitones above the key that each chord button must add (as pitch classes). Sus may be sus2 or sus4.
+CHORD_TONES = {"chord.dim": ({3}, {6}), "chord.min": ({3}, {7}), "chord.maj": ({4}, {7}), "chord.sus": ({2, 5}, {7}),
+               "chord.6": ({9},), "chord.m7": ({10},), "chord.M7": ({11},), "chord.9": ({2},)}
+INTERVAL_NAMES = ("1", "b2", "2", "b3", "3", "4", "b5", "5", "#5", "6", "b7", "7")
 SETTLE_S = 0.25  # let the last note-off reach Studio before reading
 MARGIN_S = 0.15  # around each step's time window: MIDI and servo timing are not exact
 
@@ -74,6 +81,8 @@ def check_step(step, started, speed, events):
             return {**result, "status": "stray", "text": f"{item['name']}: a key sounded ({', '.join(result['notes'])})"}
         return {**result, "status": "unchecked", "text": f"{item['name']}: no MIDI expected from a chord button"}
     expected = item["label"]
+    if step.get("chord"):
+        return check_chord(step, result, presses, at)
     if not presses:
         return {**result, "status": "missed", "text": f"{expected}: missed, no note"}
     if any(e["name"] != expected for e in presses):
@@ -97,6 +106,32 @@ def check_step(step, started, speed, events):
     text += f", held {held:.2f} s" if held is not None else ", release not seen"
     return {**result, "status": "ok", "t": note["t"], "velocity": note["velocity"], "octave": note.get("octave"),
             "held_s": held, **timing, "text": text}
+
+
+def check_chord(step, result, presses, at):
+    """A key played with a chord button held: Orchid sends the whole chord as one press (Studio groups it)."""
+    chord = CATALOG[step["chord"]]
+    label = f"{CATALOG[step['key']]['label']} + {chord['label']}"
+    key = NAMES.index(CATALOG[step["key"]]["label"])
+    mine = [e for e in presses if key in {n % 12 for n in e.get("notes") or ()}]
+    result = {**result, "chord": step["chord"]}
+    if not presses:
+        return {**result, "status": "missed", "text": f"{label}: missed, no note"}
+    if not mine:
+        return {**result, "status": "wrong", "text": f"{label}: wrong key, {', '.join(result['notes'])} sounded"}
+    if len(presses) > 1:
+        return {**result, "status": "repeated", "t": mine[0]["t"], "text": f"{label}: sounded {len(presses)} times"}
+    note = mine[0]
+    tones = sorted({(n - key) % 12 for n in note["notes"]})
+    heard = " ".join(INTERVAL_NAMES[t] for t in tones)
+    result = {**result, "t": note["t"], "velocity": note["velocity"], "tones": tones,
+              "chord_notes": [NAMES[n % 12] for n in note["notes"]]}
+    if len(tones) < 2:
+        return {**result, "status": "no_chord", "text": f"{label}: only {NAMES[key]} sounded; the chord button was not held"}
+    missing = [group for group in CHORD_TONES.get(step["chord"], ()) if not group & set(tones)]
+    if missing:
+        return {**result, "status": "wrong_chord", "text": f"{label}: not a {chord['name'].lower()} chord (heard {heard})"}
+    return {**result, "status": "ok", "text": f"{label} ✓ {' '.join(result['chord_notes'])} ({heard}), velocity {note['velocity']}"}
 
 
 def check(context, events):

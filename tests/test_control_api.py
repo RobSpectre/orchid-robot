@@ -147,9 +147,9 @@ def test_two_followers_share_one_console(tmp_path):
         assert client.post("/api/heartbeat", json={}, headers=auth).status_code == 200
         assert a.owner == b.owner  # one console operates both followers
         mixed = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "chord.maj"}]}, headers=auth)
-        assert mixed.status_code == 409 and "both arms" in mixed.json()["detail"]
+        assert mixed.status_code == 409 and "No arm is connected" in mixed.json()["detail"]  # played step by step, Keys Arm first
         refused = client.post("/api/controls/chord.maj/play", json={}, headers=auth)
-        assert refused.status_code == 409 and "No arm is connected" in refused.json()["detail"]  # routed to arm B
+        assert refused.status_code == 409 and "No arm is connected" in refused.json()["detail"]  # routed to Chord Arm
         listing = client.get("/api/controls").json()
         assert {c["id"]: c["arm"] for c in listing["controls"]}["voicing.cw"] == "b" and set(listing["ready_to_play"]) == {"a", "b"}
         command_id = str(uuid4())

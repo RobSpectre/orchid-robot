@@ -147,13 +147,13 @@ or after changing Arm speed or Press hardness a lot.
 
 A second follower needs no setting. The connection page has one button, **Find and connect all arms**: it searches USB
 and connects every arm it finds. A follower recognised by the calibration in its motors goes to its own arm, a new one to
-the arm with no match, and the leader to arm A (or to the arm being connected). Connecting only reads the motors. When a scan finds two followers (or arm B has been used before), the sidebar
-shows **Arm A · keys** and **Arm B · chords & dial**; with one follower the console looks as it always has. Each follower
+the arm with no match, and the leader to the Keys Arm (or to the arm being connected). Connecting only reads the motors. When a scan finds two followers (or the Chord Arm has been used before), the sidebar
+shows **Keys Arm** and **Chord Arm**; with one follower the console looks as it always has. Each follower
 is recognised by the calibration stored in its motors' position limits (read-only), so the connect page preselects the
-right port and refuses to connect arm A's hardware as arm B, which would overwrite its calibration. A scan never probes a
-port the other arm has open. Each arm is only ever taught and plays its own controls: arm A the twelve keys, arm B the
-chord buttons and voicing dial, whether or not the other arm is connected. Arm B keeps its own data in `DATA_DIR/arm-b` (calibration,
-home, taught controls); arm A's data is unchanged. The console shows the chosen arm's connection, calibration, training
+right port and refuses to connect the Keys Arm's hardware as the Chord Arm, which would overwrite its calibration. A scan never probes a
+port the other arm has open. Each arm is only ever taught and plays its own controls: the Keys Arm the twelve keys, the Chord Arm the
+chord buttons and voicing dial, whether or not the other arm is connected. The Chord Arm keeps its own data in `DATA_DIR/arm-b` (calibration,
+home, taught controls); The Keys Arm's data is unchanged. The console shows the chosen arm's connection, calibration, training
 and key calibration, and greys out the other arm's controls. **Stop motion** and Esc stop both arms.
 
 One leader teaches both, and on the training page it follows the arm you select in the sidebar: the arm that had it stops
@@ -165,12 +165,27 @@ Re-centring wrist rotation is unavailable while the leader is shared.
 The arms' reach overlaps above Orchid, so an **interlock** keeps them apart: an arm may leave its home only while the
 other is parked (holding still within 5° of its own home or rest, or not connected), and only one arm may be away from home at a
 time. A move back home needs only the other arm to hold still. Teach each arm a home and a rest clear of the other arm's reach.
-Sequences across both arms (held chords) are not available yet; the API refuses them.
+
+**Chords.** A key played with a chord button is the one time both arms are away from home together, and orchid-robot runs
+it from one instruction (`orchid.py chord C maj`, `POST /api/chords/play`, or a sequence step with a `chord`):
+
+1. The Chord Arm presses the chord button and holds it down.
+2. The Keys Arm plays the key while the Chord Arm holds.
+3. As soon as the key is down (0.1 s after it reaches its press), the Chord Arm lets go and returns home while the Keys Arm finishes.
+
+Both arms must be holding at home (or A at its rest) first. Before anything moves, both arms' paths are modelled on the plate. A chord whose
+centre lines come within 40 mm is refused. That floor catches a pose taught into the other arm's way. It is not a precise
+gap: the links are about 45 mm wide and the model can be 2 cm off, so teach chord-button motions clear of the Keys Arm by eye. The overlap is allowed only for that chord's own steps:
+any other move on either arm is refused until both are parked again. **Stop motion** during a chord holds both arms
+where they are, the chord button possibly still down. **Hold & keep playing**, then send the Chord Arm home. If the Keys Arm's
+key is refused or does not start, the Chord Arm lets go and returns home. With Orchid Studio, the key check confirms the chord by
+its tones above the key (so the voicing dial's inversions do not matter). It reports a press that sounded only the key
+as "the chord button was not held".
 
 The 3D view's **Plate** button shows the registration plate, Orchid in its pocket and both arms on their mounts with
 their live poses. Each base was placed by fitting the SO101 base's four bolt holes to the plate's four M5 sockets (within
 0.1 mm; see `orchid_demo/layout.py`); Orchid is drawn 43 mm tall. Poses are modelled from encoders and the CAD, so they
-can be about 2 cm off: use it to see where the arms are, not to judge clearance. Rebuild the plate visual with
+can be about 2 cm off: use it to see where the arms are, not to judge clearance by eye (the chord check allows for that error). Rebuild the plate visual with
 `python scripts/build_plate_visual.py PLATE.stl` if the plate changes.
 
 ## Play from scripts or Claude (API)
@@ -181,12 +196,14 @@ While the console is open, connected and holding (Play, Teach or Follow any cont
 python3 scripts/orchid.py status                 # controls, press lengths, speed, readiness
 python3 scripts/orchid.py play C --press 0.8     # waits until the arm is back home
 python3 scripts/orchid.py seq "C E G:1.2 C" --speed 1.5
+python3 scripts/orchid.py chord C maj            # both arms: Maj held by the Chord Arm, C played by the Keys Arm
+python3 scripts/orchid.py seq "C+maj A+min F+maj G+sus:0.6"
 python3 scripts/orchid.py set ccw --turn -25     # a dial direction's turn angle
 python3 scripts/orchid.py speed 2                # shared default speed
 python3 scripts/orchid.py home | stop
 ```
 
-HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `POST /api/controls/{id}/play`, `POST /api/controls/{id}`, `POST /api/sequence`, `POST /api/settings` (`speed`, `press_s`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence is one motion that passes through home between controls.
+HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `POST /api/controls/{id}/play`, `POST /api/controls/{id}`, `POST /api/sequence`, `POST /api/chords/play` (`key`, `chord`, `speed?`, `press_s?`), `POST /api/settings` (`speed`, `press_s`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence on one arm is one motion that passes through home between controls. A sequence with chords or with both arms' controls plays one step at a time, each arm back home before the next.
 
 ## Register the eight chord buttons
 

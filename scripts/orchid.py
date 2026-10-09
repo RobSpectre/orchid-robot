@@ -7,6 +7,8 @@
     python3 scripts/orchid.py play cw --turn 25       # dial directions: cw / ccw (turn angle in degrees)
     python3 scripts/orchid.py seq "C E G C"           # a sequence, through home between controls
     python3 scripts/orchid.py seq "C:0.5 E G:1.2"     # per-step press length in seconds
+    python3 scripts/orchid.py chord C maj             # C with the Maj button held (Chord Arm), which then returns home
+    python3 scripts/orchid.py seq "C+maj A+min:0.6 F+maj G+sus"   # chords in a sequence; mix with plain keys
     python3 scripts/orchid.py set C --press 0.5       # a key's default press length
     python3 scripts/orchid.py set ccw --turn -25      # a dial direction's default turn
     python3 scripts/orchid.py speed 2                 # default speed for everything (0.1-3)
@@ -83,11 +85,15 @@ def main(argv=None) -> None:
     play = sub.add_parser("play")
     play.add_argument("control")
     seq = sub.add_parser("seq")
-    seq.add_argument("steps", help='space-separated controls, optionally with a press length: "C:0.5 E G"')
-    for p in (play, seq):
+    seq.add_argument("steps", help='space-separated controls, optionally with a chord and a press length: "C+maj:0.5 E G"')
+    chord = sub.add_parser("chord", help="play a key with a chord button held (needs both arms)")
+    chord.add_argument("key")
+    chord.add_argument("chord", help="dim, min, maj, sus, 6, m7, M7 or 9")
+    for p in (play, seq, chord):
         p.add_argument("--speed", type=float)
         p.add_argument("--press", type=float, help="press length in seconds (keys)")
-        p.add_argument("--no-wait", action="store_true", help="return as soon as playback starts")
+        if p is not chord:
+            p.add_argument("--no-wait", action="store_true", help="return as soon as playback starts")
     play.add_argument("--turn", type=float, help="dial turn in degrees (negative = the other way)")
     setter = sub.add_parser("set")
     setter.add_argument("control")
@@ -120,12 +126,17 @@ def main(argv=None) -> None:
         steps = []
         for token in args.steps.split():
             name, _, press = token.partition(":")
-            step = {"control": control_id(name)}
+            name, _, held = name.partition("+")
+            step = {"control": control_id(name), **({"chord": control_id(held)} if held else {})}
             if press or args.press is not None:
                 step["press_s"] = float(press) if press else args.press
             steps.append(step)
         body = {"steps": steps, "wait": not args.no_wait, **({"speed": args.speed} if args.speed is not None else {})}
         report(console.call("POST", "/api/sequence", body))
+    elif args.command == "chord":
+        body = {"key": control_id(args.key), "chord": control_id(args.chord),
+                **{k: v for k, v in {"speed": args.speed, "press_s": args.press}.items() if v is not None}}
+        report(console.call("POST", "/api/chords/play", body))
     elif args.command == "set":
         body = {k: v for k, v in {"press_s": args.press, "turn_degrees": args.turn}.items() if v is not None}
         if not body:

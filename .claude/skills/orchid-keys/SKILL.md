@@ -1,6 +1,6 @@
 ---
 name: orchid-keys
-description: Play, sequence and adjust the taught Orchid synth controls (12 keys, chord buttons, voicing dial) on the SO101 arm through the running operator console's API. Use when the user asks to play a key/chord/dial direction or a melody, change a key's press length or a dial turn angle, change the arm's speed, send the arm home, or stop it.
+description: Play, sequence and adjust the taught Orchid synth controls (12 keys, chord buttons, voicing dial) on the SO101 arms through the running operator console's API, including chords (a key played with a chord button held, using both arms). Use when the user asks to play a key, a chord, a dial direction, a melody or a chord progression, change a key's press length or a dial turn angle, change the arms' speed, send an arm home, or stop it.
 ---
 
 # Orchid keys
@@ -8,6 +8,11 @@ description: Play, sequence and adjust the taught Orchid synth controls (12 keys
 The SO101 follower plays controls that were taught in the operator console (home → hover → touch → press for
 keys and chord buttons; hover → open → lower → grip plus a turn angle for the dial). This skill drives them
 through the console's local API with `scripts/orchid.py` (standard library only).
+
+With two followers, the Keys Arm plays the 12 keys and the Chord Arm the chord buttons and dial. **A chord is one instruction**: name
+the key and the chord button, and orchid-robot runs both arms itself. The Chord Arm presses and holds the button, the Keys
+Arm plays the key, and once the key is down the Chord Arm lets go and goes home. Never sequence the arms yourself, for example by playing
+`maj` and then `C`: a chord button pressed on its own only goes down and comes back up, so no chord sounds.
 
 ## Before anything moves
 
@@ -33,6 +38,9 @@ python3 scripts/orchid.py play C --speed 2            # this play only
 python3 scripts/orchid.py play cw --turn 25           # dial directions: cw / ccw; turn in degrees
 python3 scripts/orchid.py seq "C E G C"               # one motion through home between controls
 python3 scripts/orchid.py seq "C:0.5 E G:1.2" --speed 1.5   # per-step press length in seconds
+python3 scripts/orchid.py chord C maj                 # C major: the Chord Arm holds Maj, the Keys Arm plays C
+python3 scripts/orchid.py chord A min --press 0.8     # --speed / --press as for play
+python3 scripts/orchid.py seq "C+maj A+min:0.8 F+maj G+sus E"   # KEY+CHORD steps; plain keys mix in
 python3 scripts/orchid.py set C --press 0.5           # default press length for one key
 python3 scripts/orchid.py set ccw --turn -25          # default turn for a dial direction
 python3 scripts/orchid.py speed 2                     # default speed for everything, 0.1–3×
@@ -44,6 +52,8 @@ python3 scripts/orchid.py stop                        # hold where it is now
 
 Names: keys `C C# D D# E F F# G G# A A# B` (lowercase ok); chord buttons `dim min maj sus 6 m7 M7 9`
 (`m7` and `M7` differ); dial `cw` / `ccw`. Limits: speed 0.1–3, press 0–5 s, press hardness 10–100 %, turn ±1–90°.
+A chord is `KEY+BUTTON` in a sequence (`C+maj`, `F#+m7`, `D+sus:0.6`) or `chord KEY BUTTON`. Both the key (Keys Arm)
+and the chord button (Chord Arm) must be `registered`. Extensions (`6 m7 M7 9`) are buttons like the others.
 
 ## Rules
 
@@ -62,6 +72,13 @@ Names: keys `C C# D D# E F F# G G# A A# B` (lowercase ok); chord buttons `dim mi
 - Press length is how long the key is held down (it shapes the note). Press hardness is how fast the final
   touch → press stroke moves, as a share of the other strokes (default 50 %); lower is gentler. It applies
   to every key and chord button; the release is not slowed. Neither changes how deep the press goes. A dial turn angle is pure wrist rotation from the grip pose; flip the sign if it turns the wrong way.
+- Chords: a refusal saying the arms "would come within N mm" means that key and button are too close together for
+  both arms at once (modelled on the plate). Do not try to get around it (e.g. by playing the button and then the
+  key). Tell the user, and offer another key or voicing. Every refusal of a chord leaves both arms safe. A
+  `CHECK THE ARM` result on a chord says what was heard: `the chord button was not held` (only the key sounded),
+  `not a minor chord (heard 1 3 5)`, a wrong key, or a missed note. Stop and tell the user.
+- A sequence with chords or with both arms' controls plays one step at a time and always waits (`--no-wait` does not
+  apply). It takes longer than a single-arm sequence.
 - Teaching and re-teaching happen in the console with the leader arm, not through this skill.
 - A key that keeps double-triggering or not sounding can be fixed with **04 Calibrate keys** in the console
   (the user beside the arm). Suggest it; it is not available through the API. While it runs, plays are refused.
@@ -72,9 +89,10 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 
 | Method & path | Body | Result |
 |---|---|---|
-| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,press_s,press_hardness}, controls:[{id,name,kind,group,status,press_s?,turn_degrees?}]}` |
+| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,press_s,press_hardness}, controls:[{id,name,kind,group,arm,status,press_s?,turn_degrees?}]}`; with two arms `ready_to_play` is `{a, b}` |
 | `POST /api/controls/{id}/play` | `{speed?, press_s?, turn_degrees?, wait=true}` | `{status, phase, message, error, key_check?}` after it finishes |
-| `POST /api/sequence` | `{steps:[{control, press_s?, turn_degrees?}], speed?, wait=true}` | same |
+| `POST /api/sequence` | `{steps:[{control, chord?, press_s?, turn_degrees?}], speed?, wait=true}` | same |
+| `POST /api/chords/play` | `{key, chord, speed?, press_s?}` (`chord` is a button id, e.g. `chord.maj`) | `{status, phase, message, key, chord, clearance_mm, key_check?}` once both arms are home |
 | `POST /api/controls/{id}` | `{press_s}` or `{turn_degrees}` | saves the default |
 | `POST /api/settings` | `{speed?, press_s?, press_hardness? (0.1–1)}` | saves defaults |
 | `POST /api/home`, `POST /api/stop` | `{}` | |

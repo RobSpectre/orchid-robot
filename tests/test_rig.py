@@ -74,7 +74,7 @@ def test_an_arm_moves_only_while_the_other_is_parked_at_home(rig):
     command(a, "teach_begin", control="C", supported=True)  # a hold only: allowed anywhere
     tick(a, b)
     assert b.parked_now[0] is False and "no home" in b.parked_now[1]
-    assert "Arm B is not parked at its home" in reject(a, "teach_play", control="C")["message"]
+    assert "Chord Arm is not parked at its home" in reject(a, "teach_play", control="C")["message"]
 
     command(b, "teach_begin", control="chord.maj", follow=True)  # B leaves home: A is parked
     tick(a, b, seconds=3)
@@ -86,7 +86,7 @@ def test_an_arm_moves_only_while_the_other_is_parked_at_home(rig):
     command(a, "teach_play", control="C")  # A leaves home and holds the claim while it is away
     tick(a, b)
     assert r.holder == "a" and a.parked_now == (False, "moving")
-    assert "Arm A" in reject(b, "teach_follow", control="chord.maj")["message"]
+    assert "Keys Arm" in reject(b, "teach_follow", control="chord.maj")["message"]
     run(a, 30, until=lambda: a.phase == "teach_hold")
     tick(a, b)
     assert r.holder is None and a.parked_now[0]
@@ -102,7 +102,7 @@ def test_going_home_needs_only_the_other_arm_to_hold_still(rig):
     command(b, "teach_begin", control="chord.maj", follow=True)  # A is parked, so B may move
     tick(a, b, seconds=0.5)
     assert b.parked_now == (False, "moving")
-    assert "Arm B is away from its home (moving)" in reject(a, "teach_go_home")["message"]
+    assert "Chord Arm is away from its home (moving)" in reject(a, "teach_go_home")["message"]
 
 
 def test_recentring_the_shared_leader_is_refused(rig):
@@ -114,7 +114,7 @@ def test_recentring_the_shared_leader_is_refused(rig):
 
 @pytest.fixture
 def dynamic(tmp_path):
-    """Both followers as the app builds them: no fixed roles, arm B's leader calibration shared from arm A."""
+    """Both followers as the app builds them: no fixed roles, Chord Arm's leader calibration shared from Keys Arm."""
     clock = Clock()
     a = Engine(tmp_path, clock=clock, sleep=clock.sleep)
     b = Engine(tmp_path / "arm-b", clock=clock, sleep=clock.sleep, leader_store=LeaderStore(a.repo))
@@ -149,7 +149,7 @@ def test_a_follower_carrying_arm_a_calibration_is_refused_as_arm_b(dynamic):
     scanned = {"port": "/dev/ttyACM1", "role": "follower", "motor_ids": list(range(1, 7)), "voltage": 12.1,
                "limits": {str(i): [1000 + i, 3000 + i] for i in range(1, 7)}}
     as_b, as_a = b.port_entry(scanned), a.port_entry(scanned)
-    assert as_b["arm"] == "a" and not as_b["connectable"] and "Connect it as arm A" in as_b["problem"]
+    assert as_b["arm"] == "a" and not as_b["connectable"] and "Connect it as the Keys Arm" in as_b["problem"]
     assert as_a["arm"] == "a" and as_a["connectable"]
     unknown = b.port_entry({**scanned, "limits": None})
     assert unknown["arm"] is None and unknown["connectable"]
@@ -169,7 +169,7 @@ def test_scans_skip_the_other_arms_ports_and_arm_b_appears_once_a_second_followe
     r.add("b", b)
     try:
         assert not r.available("b", b)  # nothing seen yet: the console looks like one arm
-        a.arm, a.follower_port = object(), "/dev/ttyACM0"  # arm A connected on another port...
+        a.arm, a.follower_port = object(), "/dev/ttyACM0"  # Keys Arm connected on another port...
         a.leader, a.leader_port = object(), "/dev/ttyACM2"  # ...with the leader
         command(b, "refresh_ports")
         assert seen[-1] == ("/dev/ttyACM0", "/dev/ttyACM2")  # neither is probed
@@ -193,7 +193,7 @@ def test_the_plan_sends_each_recognised_follower_home_and_a_new_one_to_the_free_
     assert plan == {"a": {"port": "/dev/orig", "recognised": True, "teaching_mode": "leader", "leader_port": "/dev/L"},
                     "b": {"port": "/dev/new", "recognised": False, "teaching_mode": "manual", "leader_port": None}}
     assert r.plan("manual")["a"]["teaching_mode"] == "manual"
-    r.scan = [follower("/dev/x", "b"), follower("/dev/y")]  # arm B recognised; the unknown one fills arm A
+    r.scan = [follower("/dev/x", "b"), follower("/dev/y")]  # Chord Arm recognised; the unknown one fills Keys Arm
     assert {arm: step["port"] for arm, step in r.plan().items()} == {"a": "/dev/y", "b": "/dev/x"}
     r.scan = [{**follower("/dev/short"), "motor_ids": [1, 2, 3]}]  # a follower that is not ready is never planned
     assert r.plan() == {}
@@ -294,7 +294,7 @@ def test_the_leader_moves_to_the_other_arm_in_one_step_and_each_arm_selects_its_
             clock.sleep(0.02)
         assert a.leader and b.arm and not b.leader
         assert b.public["selected"] in ROLES["b"]  # never C, the keys arm's control
-        assert client.post("/api/leader/move", json={"to": "b"}, headers=auth).json()["message"].endswith("arm B.")
+        assert client.post("/api/leader/move", json={"to": "b"}, headers=auth).json()["message"].endswith("Chord Arm.")
         assert a.leader is None and b.leader is not None and a.teaching_mode == "manual"
         assert b.leader_calibration == a.leader_calibration  # one shared leader calibration (none yet in this fresh setup)
         assert client.post("/api/leader/move", json={"to": "b"}, headers=auth).json()["message"] == "This arm already has the leader."
@@ -333,5 +333,5 @@ def test_an_arm_at_its_rest_is_parked_too(rig):
     run(a, 15, until=lambda: a.phase == "teach_hold")
     a.publish()
     assert a.parked_now == (True, "at rest")
-    r.claim("b", "teach_play", {})  # arm B may move while arm A rests
+    r.claim("b", "teach_play", {})  # Chord Arm may move while Keys Arm rests
     assert r.holder == "b"

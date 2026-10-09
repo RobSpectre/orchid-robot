@@ -12,7 +12,8 @@ let arm = (() => { try { return localStorage.getItem("orchid.arm") === "b" ? "b"
 let arms = null, connectPlan = null;
 const instances = {};
 const selectedArm = () => arm;  // for functions with their own local "arm"
-const ARM_NAMES = {a: "Arm A · keys", b: "Arm B · chords & dial"};
+const ARM_NAMES = {a: "Keys Arm · 12 keys", b: "Chord Arm · chords & dial"};
+const ARM_SHORT = {a: "Keys Arm", b: "Chord Arm"};
 const armStatus = a => !a.connected ? "not connected" : a.tuning ? "calibrating keys" : a.parked ? `parked ${a.parked_reason}` : a.parked_reason;
 function renderArms() {
   const box = $("arm-switch");
@@ -140,7 +141,7 @@ function renderPorts() {
   if (picker.dataset.snapshot === signature) return;
   picker.dataset.snapshot = signature;
   const role = p => (p.role === "simulator" ? "Practice arm" : p.role === "follower" ? "Follower" : p.role === "leader" ? "Leader" : "Unidentified arm") +
-    (p.arm ? ` · arm ${p.arm.toUpperCase()}` : "");  // recognised by the calibration in its motors
+    (p.arm ? ` · ${ARM_SHORT[p.arm]}` : "");  // recognised by the calibration in its motors
   const volts = p => p.voltage === null ? "Voltage unavailable" : `${p.voltage.toFixed(1)} V`;
   const eligible = ports.filter(p => p.connectable);
   if (select) {
@@ -172,7 +173,7 @@ function calibrationSetup() {
     }).join("")}</div>`;
   const otherArm = arms && Object.keys(arms).find(id => id !== selectedArm()), otherHasLeader = otherArm && arms[otherArm].leader;
   if (target === "leader" && !arm?.connected && otherHasLeader) {
-    html += `<p class="notice" role="status">The leader is connected to ${esc(ARM_NAMES[otherArm])}. Switch to it at the top and press <b>Hand the leader over</b> on its leader page, then connect the leader here.</p>`;
+    html += `<p class="notice" role="status">The leader is connected to the ${esc(ARM_SHORT[otherArm])}. Switch to it at the top and press <b>Hand the leader over</b> on its leader page, then connect the leader here.</p>`;
   }
   if (!arm?.connected) {
     html += '<p class="description">Connect the leader here to enable leader teaching. The follower stays connected and its saved calibration is retained.</p>' +
@@ -183,12 +184,12 @@ function calibrationSetup() {
   } else {
     html += `<p class="description">${target === "leader" ? "Calibrate the leader while the follower rests securely. The follower’s saved calibration is retained." : "Capture the follower midpoint, then measure its usable joint ranges."}</p>` +
       (target === "follower" && state.calibration_foreign ?
-        `<p class="notice" role="alert">This follower’s motors do not carry ${esc(arms ? ARM_NAMES[selectedArm()] : "this arm")}’s saved calibration, so it may be a different arm. ` +
+        `<p class="notice" role="alert">This follower’s motors do not carry ${esc(arms ? "the " + ARM_SHORT[selectedArm()] : "this arm")}’s saved calibration, so it may be a different arm. ` +
         `If it is, disconnect and connect it as the other arm. Calibrating here replaces the saved calibration; ${state.calibration_dependents} taught controls recorded with it would need re-teaching.</p>` +
         confirm("replace_calibration", `Replace this arm’s calibration. ${state.calibration_dependents} taught controls will need re-teaching.`, "Replace calibration") : "") +
       support() + actions(button("calibrate", `${arm.calibrated ? "Recalibrate" : "Calibrate"} ${target} →`, false, `data-target="${target}"`));
     if (target === "leader" && otherArm) html += '<p class="hint">One leader teaches both followers. To teach the other arm, hand the leader over: it disconnects here and its calibration stays shared.</p>' +
-      actions(button("leader_detach", `Hand the leader over to ${esc(ARM_NAMES[otherArm])} →`, true));
+      actions(button("leader_detach", `Hand the leader over to the ${esc(ARM_SHORT[otherArm])} →`, true));
   }
   if (referencesReady()) html += actions('<button type="button" class="secondary" data-view="notes">Back to training →</button>');
   return html;
@@ -197,8 +198,8 @@ function calibrationSetup() {
 function leaderStrip() {
   const holder = arms && Object.entries(arms).find(([id, a]) => id !== arm && a.leader)?.[0];
   if (!holder || state.leader?.connected) return "";
-  return `<div class="leader-strip" role="status"><span>The leader is teaching <b>${esc(ARM_NAMES[holder])}</b>.</span>` +
-    button("move_leader", `Use the leader with ${esc(ARM_NAMES[arm].split(" ·")[0])} →`, true) + "</div>";  // secondary: Space stays on Play/Teach
+  return `<div class="leader-strip" role="status"><span>The leader is teaching the <b>${esc(ARM_SHORT[holder])}</b>.</span>` +
+    button("move_leader", `Use the leader with the ${esc(ARM_SHORT[arm])} →`, true) + "</div>";  // secondary: Space stays on Play/Teach
 }
 async function moveLeader() {
   sending = true; error(""); updateButtons();
@@ -308,7 +309,7 @@ function tuneSection() {
     `<b>Set</b>: touch ${limits.margin}° before that point and press ${limits.depth}° past it, so every key gets the same approach and pressure. ` +
     `<b>Verify</b>: ${limits.passes} clean presses in a row at your Arm speed and press hardness save it. Pressing deeper is capped at ${limits.limit_deg}° past what you taught; a wrong key stops for a re-teach with the leader.`);
   if (s.owns && !s.owns.some(k => notes.includes(k)))
-    return html + `<p class="notice" role="status">Key calibration is for the keys arm. Choose <b>${esc(ARM_NAMES.a)}</b> in the sidebar.</p>`;
+    return html + `<p class="notice" role="status">Key calibration is for the keys arm. Choose the <b>${esc(ARM_SHORT.a)}</b> in the sidebar.</p>`;
   if (!s.key_check_available) return html + '<p class="notice" role="status">Tuning listens to Orchid through Orchid Studio, so it needs real hardware and Studio running with <b>--sound-input Orchid</b>.</p>';
   if (busy) {
     const key = t?.status === "running" ? t : null;
@@ -409,7 +410,7 @@ function workflow() {
         "Power the followers and the leader and rest them clear of Orchid. One press finds every arm on USB and connects each to its place. Connecting only reads the motors; nothing moves.") +
       connectSummary() +
       actions(button("find_connect_all", sim ? "Connect practice arms →" : "Find and connect all arms →")) +
-      `<p class="hint">Each follower is recognised by the calibration in its motors, so it always goes back to its own arm; a new follower takes the empty slot. The leader joins arm A${arms?.b?.available ? ", or the arm being connected; hand it over from Calibrate motors → Leader" : ""}.</p>`;
+      `<p class="hint">Each follower is recognised by the calibration in its motors, so it always goes back to its own arm; a new follower takes the empty slot. The leader joins the Keys Arm${arms?.b?.available ? ", or the arm being connected; hand it over from Calibrate motors → Leader" : ""}.</p>`;
   } else if (connectionView) {
     html = intro("Return to connections.", "Support both connected arms before releasing torque and disconnecting. You can then refresh ports or change teaching mode. Saved calibrations and registered motions stay saved; an unfinished teaching attempt ends.") +
       (p.startsWith("calibration_") ? '<p class="hint">The unfinished calibration will be canceled and its previous motor settings restored and verified before disconnecting.</p>' : "") +
@@ -758,7 +759,7 @@ function updateButtons() {
   document.querySelectorAll("[data-note]").forEach(b => {
     const elsewhere = !POSES[b.dataset.note] && !!state.owns && !state.owns.includes(b.dataset.note);
     b.classList.toggle("other-arm", elsewhere);
-    b.title = elsewhere ? `Played by ${ARM_NAMES[arm === "a" ? "b" : "a"]}` : "";
+    b.title = elsewhere ? `Played by the ${ARM_SHORT[arm === "a" ? "b" : "a"]}` : "";
     b.disabled = blocked || elsewhere || !referencesReady() || !(setupIdle() || ["teach_hold","teach_follow"].includes(state.phase));
   });
   document.querySelectorAll("[data-view]").forEach(b => b.disabled = blocked ||

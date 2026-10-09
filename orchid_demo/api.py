@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .controls import CATALOG
 from .engine import Engine
 from .motion import SafetyError
 
@@ -37,9 +38,18 @@ class PlayRequest(BaseModel):
     wait: bool = True
 
 
+class ChordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=20)
+    chord: str = Field(min_length=1, max_length=20)
+    speed: float | None = Field(default=None, ge=0.1, le=3.0)
+    press_s: float | None = Field(default=None, ge=0, le=5)
+
+
 class SequenceStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     control: str = Field(min_length=1, max_length=20)
+    chord: str | None = Field(default=None, min_length=1, max_length=20)  # a key played with this chord button held
     press_s: float | None = Field(default=None, ge=0, le=5)
     turn_degrees: float | None = Field(default=None, ge=-90, le=90)
 
@@ -86,7 +96,7 @@ class IncidentReport(BaseModel):
 def create_app(directory: Path, mode="simulation", *, engine=None, engines=None, studio_port=None):
     """studio_port: check each play's notes against Orchid Studio's key monitor on that local port.
     A second follower (rig.py) is always available; it shows up once detected, and its data lives in directory/arm-b."""
-    from .rig import LeaderStore, Rig
+    from .rig import NAMES, LeaderStore, Rig
     if engines is None and engine is not None:
         engines = {"a": engine}
     if engines is None:
@@ -167,13 +177,13 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         try:
             member.submit(owner, identity, action, member.revision, args)
         except SafetyError as exc:
-            raise HTTPException(409, f"Arm {member.arm_id.upper()}: {exc}") from exc
+            raise HTTPException(409, f"{NAMES[member.arm_id]}: {exc}") from exc
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline and member.receipts.get(identity, {}).get("status") == "queued":
             time.sleep(0.03)
         done = member.receipts.get(identity, {})
         if done.get("status") != "complete":
-            raise HTTPException(409, f"Arm {member.arm_id.upper()}: {done.get('message') or 'did not finish'}")
+            raise HTTPException(409, f"{NAMES[member.arm_id]}: {done.get('message') or 'did not finish'}")
 
     @app.post("/api/leader/move")
     def move_leader(body: LeaderMove, request: Request):
@@ -190,7 +200,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             perform(holder, owner, "teach_hold", {})
         perform(holder, owner, "leader_detach", {})
         perform(target, owner, "connect_leader", {"prepared": True, "leader_port": rig.released_leader})
-        return {"status": "ok", "message": f"The leader now teaches arm {body.to.upper()}."}
+        return {"status": "ok", "message": f"The leader now teaches {NAMES[body.to]}."}
 
     @app.post("/api/connect-all")
     def connect_all(body: ConnectAll, request: Request):
@@ -223,7 +233,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             try:
                 receipts[arm] = member.submit(operator(request), str(uuid4()), "connect", member.revision, args)
             except SafetyError as exc:
-                raise HTTPException(409, f"Arm {arm.upper()}: {exc}") from exc
+                raise HTTPException(409, f"{NAMES[arm]}: {exc}") from exc
         return {"plan": plan, "receipts": receipts}
 
     @app.get("/api/state")
@@ -329,14 +339,53 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         return run("teach_configure", {"control": control, "press_s": body.press_s, "turn_degrees": body.turn_degrees},
                    False, owner(control))
 
+    def play_chord(key, chord, speed=None, press_s=None):
+        """One chord: orchid-robot runs both arms (rig.Rig.play_chord); this waits for it and for the key check."""
+        if rig is None:
+            raise HTTPException(409, "Chords need the second follower (Chord Arm) for the chord buttons.")
+        for control in (key, chord):
+            if control not in Rig.CONTROLS:
+                raise HTTPException(404, f"Unknown control {control!r}.")
+        plays_before = (engine.snapshot()["key_check"] or {}).get("play", 0)
+        try:
+            played = rig.play_chord(key, chord, speed, press_s)
+        except SafetyError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        snap = engine.snapshot()
+        until = time.monotonic() + 3  # the note check reads Orchid Studio just after the play ends
+        while engine.key_checker and time.monotonic() < until and ((snap["key_check"] or {}).get("play", 0) <= plays_before
+                                                                   or snap["key_check"]["status"] == "pending"):
+            time.sleep(0.05)
+            snap = engine.snapshot()
+        checked = engine.key_checker and (snap["key_check"] or {}).get("play", 0) > plays_before
+        return {"status": "complete", "phase": snap["phase"], "message": f"Played {key} + {CATALOG[chord]['label']}; both arms home.",
+                "error": None, **played, **({"key_check": snap["key_check"]} if checked else {})}
+
+    @app.post("/api/chords/play")
+    def play_chord_route(body: ChordRequest):
+        """Play a key with a chord button held: the chord button goes down first, the key second, and the chord arm
+        returns home as soon as the key is down. Both arms' motion is orchid-robot's; this only names the chord."""
+        return play_chord(body.key, body.chord, body.speed, body.press_s)
+
     @app.post("/api/sequence")
     def play_sequence(body: SequenceRequest):
         steps = [{k: v for k, v in step.model_dump().items() if v is not None} for step in body.steps]
         players = {owner(step["control"]) for step in steps}
-        if len(players) > 1:
-            raise HTTPException(409, "This sequence uses both arms. Sequences across both arms (held chords) are not available yet; "
-                                     "play each arm's steps separately.")
-        return run("teach_sequence", {"steps": steps, "speed": body.speed}, body.wait, players.pop())
+        if len(players) == 1 and not any("chord" in step for step in steps):
+            return run("teach_sequence", {"steps": steps, "speed": body.speed}, body.wait, players.pop())
+        # Chords, or both arms: one step at a time, each arm back home before the next (the interlock's rule).
+        results = []
+        for step in steps:
+            if "chord" in step:
+                results.append(play_chord(step["control"], step["chord"], body.speed, step.get("press_s")))
+            else:
+                results.append(run("teach_play", {**step, "speed": body.speed}, True, owner(step["control"])))
+        names = [f"{s['control']} + {CATALOG[s['chord']]['label']}" if "chord" in s else s["control"] for s in steps]
+        checks = [r["key_check"] for r in results if r.get("key_check")]
+        return {**results[-1], "message": "Played " + " → ".join(names) + "; holding at home.",
+                **({"key_check": {"status": "ok" if all(c["status"] == "ok" for c in checks) else "problem",
+                                  "summary": "; ".join(c["summary"] for c in checks), "steps": [s for c in checks for s in c["steps"]]}}
+                   if checks else {})}
 
     @app.post("/api/settings")
     def playback_settings(body: PlaybackSettings):

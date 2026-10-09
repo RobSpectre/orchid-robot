@@ -79,7 +79,7 @@
       for(const [arm,mine] of built.labels){const m=plate.layout.mounts[arm];tag(`${arm==='a'?'ARM A · KEYS':'ARM B · CHORDS & DIAL'}${mine?'':' (other)'}`,[m.xyz[0]/1000,m.xyz[1]/1000+.06,.01],mine?'#ffe3a3':'#c9c3b5');}
       const o=plate.layout.orchid;tag('ORCHID (MOCK)',[o.center[0]/1000,(o.center[1]-o.size[1]/2-12)/1000,(o.floor_z+o.height)/1000],'#e7d6ff');
       context.textAlign='left';context.fillStyle='#c8bea1';context.font='10px ui-sans-serif,system-ui';
-      context.fillText(`Plate · arms on measured M5 mounts · poses ±2 cm · mock Orchid: keys from arm A's presses, buttons & dial approximate`,14,h-15,w-28);
+      context.fillText(`Plate · arms on measured M5 mounts · poses ±2 cm · mock Orchid: keys from Keys Arm's presses, buttons & dial approximate`,14,h-15,w-28);
       return;
     }
     const activeJoint=pose.joints.find(j=>j.name===active);

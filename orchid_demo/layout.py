@@ -6,11 +6,11 @@ Each follower screws into four tapped M5 sockets. The SO101 base's four 5 mm hol
 each base_link origin and the direction the arm faces (base_link +x). The base's ribs sit on the socket slot
 floor (z 2.45); base_link is 2.4 mm above the rib bottoms.
 
-Arm A (keys) is on the right mount: its taught key presses, run through the SO101 model, fall in a row across
-Orchid with the black keys behind the white ones; on the left mount they would not. Arm B (chord buttons and
+Keys Arm (keys) is on the right mount: its taught key presses, run through the SO101 model, fall in a row across
+Orchid with the black keys behind the white ones; on the left mount they would not. Chord Arm (chord buttons and
 dial) is on the left mount. Orchid sits in the rimmed pocket and is about 43 mm tall (measured).
-Display only: joint zeros come from hand-centred calibration midpoints, so modelled positions can be off by
-about 2 cm. Never use this for collision checks.
+Joint zeros come from hand-centred calibration midpoints, so modelled positions can be off by about 2 cm. The display
+uses it as is. The chord clearance check (kinematics.py) uses it only with a margin that covers that error.
 """
 MOUNTS = {
     "a": {"xyz": (200.19, 776.69, 4.85), "yaw_deg": -120.0, "side": "right"},
