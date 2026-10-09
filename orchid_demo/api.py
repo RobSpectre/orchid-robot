@@ -295,7 +295,10 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         snap = engine.snapshot()
         checked = wait and action in ("teach_play", "teach_sequence") and engine.key_checker and done.get("status") == "complete"
         until = time.monotonic() + 3  # the note check reads Orchid Studio just after the play ends
-        while checked and time.monotonic() < until and (snap["key_check"] or {}).get("play", 0) <= plays_before:
+        def pending(snap):  # this play's check is published as "pending" first, then with its result
+            check = snap["key_check"] or {}
+            return check.get("play", 0) <= plays_before or check.get("status") == "pending"
+        while checked and time.monotonic() < until and pending(snap):
             time.sleep(0.05)
             snap = engine.snapshot()
         return {"status": done.get("status"), "phase": snap["phase"], "message": snap["message"], "error": snap["error"],
