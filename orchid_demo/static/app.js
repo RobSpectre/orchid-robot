@@ -227,7 +227,7 @@ function poseWorkflow(s, pose) {
   const go = saved ? button(`teach_go_${name}`, `Go to ${name}`, true) : "";
   if (following) html += actions(button(`teach_set_${name}`, `Set ${name} here`) + go + button("teach_hold", "Hold here", true));
   else if (p === "teach_follow") html += actions(button("teach_hold", "Hold here", true));
-  else if (p === "teach_hold") html += actions(button("teach_follow", "Follow the leader →") + go);
+  else if (p === "teach_hold") html += actions((t.leader ? button("teach_follow", "Follow the leader →") : "") + go);
   else if (p === "teach_play") html += actions(button("teach_hold", "■ Stop & hold here", true));
   return html;
 }
@@ -246,6 +246,7 @@ function teachWorkflow(s) {
   const next = retrain || steps.find(n => !got.includes(n));
   const title = p === "teach_play" ? (t.returning ? "Returning to home…" : t.going_rest ? "Returning to rest…" : `Playing ${name}…`) :
     p === "teach_follow" && t.mode !== "following" ? "Matching the leader…" :
+    !t.leader ? (heard ? `Played ${name}.` : recorded ? `Ready to play ${name}.` : `${name} is not taught yet.`) :
     retrain ? `Retrain ${pointLabels[retrain].toLowerCase()}: ${p === "teach_hold" ? "follow the leader, then" : ""} guide to it, then Space.` :
     next ? (p === "teach_hold" && next !== "home" ? `Holding · ready to teach ${name}.` : `Guide to ${pointLabels[next].toLowerCase()}, then Space.`) :
     heard ? `Played ${name}.` : `${name} is taught.`;
@@ -254,8 +255,8 @@ function teachWorkflow(s) {
       const done = got.includes(n), current = n === next, just = flashing(n, chosen.id);
       const classes = ["teach-point", current ? "current" : done ? "done" : "", just ? "flash" : ""].filter(Boolean).join(" ");
       const shared = dial ? " · both directions" : "";
-      const note = (just ? "captured ✓" : current && done ? "retraining · Space" : current ? "next" : done ? "tap to retrain" : "") + (just ? "" : shared);
-      return `<button type="button" data-target-point="${n}" class="${classes}" aria-pressed="${current}" ${done || current ? "" : 'data-locked="true"'}><strong>${done && !current ? "✓" : current ? "●" : "○"} ${pointLabels[n]}</strong><small>${note}</small></button>`;
+      const note = (just ? "captured ✓" : current && done ? "retraining · Space" : current ? "next" : done ? (t.leader ? "tap to retrain" : "taught") : "") + (just ? "" : shared);
+      return `<button type="button" data-target-point="${n}" class="${classes}" aria-pressed="${current}" ${(done || current) && t.leader ? "" : 'data-locked="true"'}><strong>${done && !current ? "✓" : current ? "●" : "○"} ${pointLabels[n]}</strong><small>${note}</small></button>`;
     }).join("")}<span class="teach-point-return">${dial ? "Play: … grip → turn the wrist → let go → raise → hover → home" : "↩ back the same way"}</span></div>` + description;
   const capture = next === "home" ? button("teach_set_home", "Set home here") :
     next ? button("teach_capture", next === "press" ? `${retrain ? "Recapture" : "Capture"} press & return home ↩` :
@@ -267,7 +268,13 @@ function teachWorkflow(s) {
   const press = allStatuses()[chosen.id]?.press_s ?? settings.press_s;
   const pressField = !dial && !next ? `<label class="form-field turn-field">Press length <input id="press-seconds" type="number" min="0" max="5" step="0.1" value="${esc(pressInput[chosen.id] ?? press)}"> seconds held down <small>Saved for ${name} when you Play.</small></label>` : "";
   html += turnField + pressField;
-  if (p === "teach_hold") {
+  if (p === "teach_hold" && !t.leader) {
+    // Holding with only the follower: play taught controls; teaching needs the leader.
+    if (t.warning) html += actions(button("teach_play", `Play ${name} anyway ▶`, false, 'data-force="true"'));
+    else if (recorded) html += actions(play(heard ? "Play again ▶" : `Play ${name} ▶`, false));
+    if (recorded) html += '<p class="hint"><kbd>Space</kbd> plays the selected control. Pick another taught control above to play it.</p>';
+    html += '<p class="notice" role="status">Teach buttons appear when the leader is connected; this session is guiding the follower by hand, so it can only play. To teach: support the follower, <b>Release torque</b> (Arm status → Release or disconnect), then <b>Calibrate motors → Leader → Find leader → Connect leader</b>.</p>';
+  } else if (p === "teach_hold") {
     if (t.warning) html += actions(button("teach_play", `Play ${name} anyway ▶`, false, 'data-force="true"'));
     else if (!next) html += actions(play(heard ? "Play again ▶" : `Play ${name} ▶`, false) + button("teach_follow", "Re-teach with the leader", true));
     else if (next === "home") html += actions(capture + button("teach_follow", "Follow the leader →", true));
@@ -275,7 +282,7 @@ function teachWorkflow(s) {
   }
   if (p === "teach_follow") html += t.mode === "following" ? actions(capture + (!next ? play(`Play ${name} ▶`, false) : "") + button("teach_hold", "Hold here", true)) : actions(button("teach_hold", "Hold here", true));
   html += playback;
-  if (["teach_hold", "teach_follow"].includes(p)) html += '<p class="hint"><kbd>Space</kbd> presses the highlighted button. To retrain one step, tap its box, guide the arm there, and press Space; the other steps are kept. ' +
+  if (["teach_hold", "teach_follow"].includes(p) && t.leader) html += '<p class="hint"><kbd>Space</kbd> presses the highlighted button. To retrain one step, tap its box, guide the arm there, and press Space; the other steps are kept. ' +
     (dial ? "Hover above the knob, open the jaws, lower around it, then grip. Capturing the grip lets go and returns home on its own. Play turns only the wrist by the angle above, lets go, and raises back out; it never turns back while gripping. The steps are shared by CW and CCW; each has its own angle."
           : "Capturing the press returns to home on its own. Play goes home → hover → touch → press and back.") +
     ' Home is set with ⌂ Home on the map.</p>';
@@ -337,6 +344,23 @@ function workflow() {
         button("teach_begin", `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}" data-follow="true"`)) +
         '<button type="button" class="secondary" data-view="calibration">Back to calibration</button>');
     if (complete) html += '<p class="hint"><a href="/api/export" download>Download the session record →</a></p>';
+  } else if (["connected", "ready"].includes(p) && canTeach && POSES[chosen.id]) {
+    // Without the leader, a saved home or rest can still be visited; setting one needs the leader.
+    const pose = chosen.id, saved = s.poses_saved?.[pose];
+    html = intro(pose === "home" ? "The arm’s home." : "The arm’s rest pose.", saved ?
+      `Go to ${pose} holds the follower where it is, then moves it to the saved ${pose} at up to 30°/s. The leader is not needed.` :
+      `No ${pose} is set yet. Connect the leader to set it: <b>Calibrate motors → Leader → Find leader → Connect leader</b>.`) +
+      (saved && powered() ? confirm("supported", "The follower is already powered. I am supporting it: torque blinks off for a moment while LeRobot’s motor settings are applied.", "Support the follower") : "") +
+      actions((saved ? button("teach_begin", `Go to ${pose} ▶`, false, `data-pose="${pose}" data-play="1"`) : "") +
+        '<button type="button" class="secondary" data-view="calibration">Back to calibration</button>');
+  } else if (["connected", "ready"].includes(p) && allStatuses()[chosen.id]?.recorded) {
+    // A taught control plays with only the follower; teaching it again needs the leader.
+    html = intro(`${esc(chosen.name)} is taught.`,
+      "Play holds the follower where it is, then plays the taught motion through home at the arm speed above. The leader is not needed to play.") +
+      (powered() ? confirm("supported", "The follower is already powered. I am supporting it: torque blinks off for a moment while LeRobot’s motor settings are applied.", "Support the follower") : "") +
+      actions(button("teach_begin", `Play ${esc(chosen.name)} ▶`, false, `data-control="${esc(chosen.id)}" data-play="1"`) +
+        '<button type="button" class="secondary" data-view="calibration">Back to calibration</button>') +
+      '<p class="hint">To re-teach it, connect the leader: <b>Calibrate motors → Leader → Find leader → Connect leader</b>.</p>';
   } else if (["connected", "ready"].includes(p)) {
     html = intro(complete ? "The instrument is registered." : canTeach ? `Ready to teach ${esc(chosen.name)}.` : (leaderMode() ? "Calibrate both arms." : "Give the arm its reference points."), complete ? "All 22 motions have three accepted trials. Rest the arm safely and export your session. Changing the fixture or pad requires re-teaching." : canTeach ? (chosen.kind === "dial" ? "Teach a small turn of the large voicing dial, then lift off and return clear. Each direction has its own path and verification trials." : chosen.kind === "button" ? "Teach this chord button’s lightest reliable press and release. Its musical effect depends on Orchid’s playstyle and reference chord; the button may not sound alone." : leaderMode() ? "Choose any key or control above. Use the leader to teach its route from home and back, then test it three times." : "Choose any key or control above. Teach its local motion by hand, then test it three times.") : "With torque off, capture a supported midpoint, then measure each joint’s usable range. Keep the arm clear of Orchid for the whole calibration.") +
       teachSupport() + actions(button("control_start", leaderMode() ? `Teach ${esc(chosen.name)} & hold →` : `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}"`) +
@@ -360,6 +384,11 @@ function workflow() {
     html = intro("Stopped.", `Stop reason: ${esc(s.error || "Motor feedback is unavailable.")} The follower was asked to hold where it is.`, true) +
       confirm("supported", "I am supporting the follower (torque blinks off for a moment when teaching resumes).", "Support the follower") +
       actions(button("teach_begin", "Hold & keep teaching →", false, `data-control="${esc(chosen.id)}"`) + button("release", "Release torque", true)) +
+      '<p class="hint">If the motors are not responding, use the physical power stop while supporting the arm.</p>';
+  } else if (p === "fault" && canTeach && (allStatuses()[chosen.id]?.recorded || s.poses_saved?.[chosen.id])) {
+    html = intro("Stopped.", `Stop reason: ${esc(s.error || "Motor feedback is unavailable.")} The follower was asked to hold where it is.`, true) +
+      confirm("supported", "I am supporting the follower (torque blinks off for a moment when the hold resumes).", "Support the follower") +
+      actions(button("teach_begin", "Hold & keep playing →", false, POSES[chosen.id] ? `data-pose="${chosen.id}"` : `data-control="${esc(chosen.id)}"`) + button("release", "Release torque", true)) +
       '<p class="hint">If the motors are not responding, use the physical power stop while supporting the arm.</p>';
   } else if (teachSessionPhases.includes(p)) {
     html = teachWorkflow(s);
@@ -573,7 +602,7 @@ function beep() {
 function updateButtons() {
   const blocked = !online || !owns || state?.worker_alive === false || sending || state?.pending || !!timer;
   document.querySelectorAll("[data-confirm]").forEach(b => { b.disabled = blocked; });
-  if ($("arm-speed")) $("arm-speed").disabled = !online || !owns || state?.worker_alive === false;
+  for (const id of Object.keys(topSliders)) if ($(id)) $(id).disabled = !online || !owns || state?.worker_alive === false;
   document.querySelectorAll("[data-action]").forEach(b => {
     const scope = actionScope(b);
     let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.dataset.confirm !== "fixture_unchanged" && c.closest?.("[hidden]")?.hidden !== true).every(confirmed);
@@ -637,10 +666,11 @@ async function submit(action, args = {}, revision = state.revision) {
   catch (err) { error(err.message); }
   finally { sending = false; updateButtons(); }
 }
-async function playAfterHold(args, speed) {
+async function playAfterHold(args) {
   await submit("teach_begin", args);
   for (let i = 0; i < 25 && state.phase !== "teach_hold"; i++) await new Promise(r => setTimeout(r, 200));
-  if (state.phase === "teach_hold") await submit("teach_play", {control: args.control, speed});
+  // Speed comes from the shared Arm speed setting.
+  if (state.phase === "teach_hold") await submit(args.pose ? `teach_go_${args.pose}` : "teach_play", args.pose ? {} : {control: args.control});
 }
 function dispatchButton(b) {
   const action = b.dataset.action;
@@ -662,9 +692,10 @@ function dispatchButton(b) {
   if (action === "teach_play" && $("press-seconds")) args.press_s = Number($("press-seconds").value);
   if (action === "teach_capture") args.point = b.dataset.point;
   if (action === "teach_begin" && b.dataset.follow === "true") args.follow = true;
+  if (action === "teach_begin" && b.dataset.pose) args.pose = b.dataset.pose;
   if (action === "teach_begin" && b.dataset.play) {
     clearConfirmations(scope);
-    playAfterHold(args, Number(b.dataset.play));
+    playAfterHold(args);
     return;
   }
   if (action === "move_home") { args.duration = Number($("home-duration").value); args.hands_clear = args.path_clear; }
@@ -710,25 +741,33 @@ document.addEventListener("input", event => {
   if (event.target.id === "turn-degrees") turnInput[targetControl()] = event.target.value;
   if (event.target.id === "press-seconds") pressInput[targetControl()] = event.target.value;
 });
-// Arm speed is one global setting (top bar): dragging previews it, letting go saves it (no motion).
-let speedEditing = false;
-const speedLabel = v => `${Number(v).toFixed(2).replace(/\.?0+$/, "")}×`;
+// Arm speed and press hardness are global settings (top bar): dragging previews, letting go saves (no motion).
+const topSliders = {
+  "arm-speed": {setting: "speed", fallback: 1, label: v => `${Number(v).toFixed(2).replace(/\.?0+$/, "")}×`, toSetting: Number},
+  "press-hardness": {setting: "press_hardness", fallback: 0.5, label: v => `${Math.round(v)}%`,
+    toSetting: v => Number(v) / 100, fromSetting: v => Math.round(v * 100)},
+};
+const sliderEditing = {};
 function syncSpeed(s) {
-  const slider = $("arm-speed"), speed = s.teach_settings?.speed ?? 1;
-  if (!slider || speedEditing) return;
-  slider.value = String(speed);
-  $("arm-speed-value").textContent = speedLabel(speed);
+  for (const [id, slider] of Object.entries(topSliders)) {
+    if (!$(id) || sliderEditing[id]) continue;
+    const value = s.teach_settings?.[slider.setting] ?? slider.fallback, shown = slider.fromSetting ? slider.fromSetting(value) : value;
+    $(id).value = String(shown);
+    $(id + "-value").textContent = slider.label(shown);
+  }
 }
 document.addEventListener("input", event => {
-  if (event.target.id !== "arm-speed") return;
-  speedEditing = true;
-  $("arm-speed-value").textContent = speedLabel(event.target.value);
+  const slider = topSliders[event.target.id];
+  if (!slider) return;
+  sliderEditing[event.target.id] = true;
+  $(event.target.id + "-value").textContent = slider.label(event.target.value);
 });
 document.addEventListener("change", async event => {
-  if (event.target.id !== "arm-speed") return;
+  const slider = topSliders[event.target.id];
+  if (!slider) return;
   event.target.blur();  // so Space presses the highlighted step again
-  await submit("teach_settings", {speed: Number(event.target.value)});
-  speedEditing = false;
+  await submit("teach_settings", {[slider.setting]: slider.toSetting(event.target.value)});
+  sliderEditing[event.target.id] = false;
 });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
@@ -749,7 +788,8 @@ document.addEventListener("keydown", event => { if (event.key === "Escape") { ca
 async function poll() {
   try {
     const session = await request("/api/session");
-    if (instance && instance !== session.state.instance_id) { cancelCountdown(); selectedNote = null; connectionView = false; calibrationView = false; calibrationChoice = null; }
+    // A restarted app may serve a newer page; reload so the page and controller always match.
+    if (instance && instance !== session.state.instance_id) { cancelCountdown(); location.reload(); return; }
     instance = session.state.instance_id; token = session.token; state = session.state; online = state.worker_alive !== false;
     try { await request("/api/heartbeat", {leader_visible:!document.hidden}); owns = true; operatorError = null; operatorConflictSince = null; }
     catch (err) {

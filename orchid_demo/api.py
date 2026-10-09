@@ -60,6 +60,7 @@ class PlaybackSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
     press_s: float | None = Field(default=None, ge=0, le=5)
+    press_hardness: float | None = Field(default=None, ge=0.1, le=1.0)
 
 
 class IncidentReport(BaseModel):
@@ -201,7 +202,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None):
 
     @app.post("/api/settings")
     def playback_settings(body: PlaybackSettings):
-        return run("teach_settings", {"speed": body.speed, "press_s": body.press_s}, False)
+        return run("teach_settings", {"speed": body.speed, "press_s": body.press_s, "press_hardness": body.press_hardness}, False)
 
     @app.post("/api/home")
     def go_home():

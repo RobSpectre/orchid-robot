@@ -63,7 +63,7 @@ def test_list_play_and_configure_through_the_api(console):
     client, engine, command, auth = console
     taught(engine, command)
     listing = client.get("/api/controls").json()
-    assert listing["ready_to_play"] is True and listing["settings"] == {"speed": 1.0, "press_s": 0.3}
+    assert listing["ready_to_play"] is True and listing["settings"] == {"speed": 1.0, "press_s": 0.3, "press_hardness": 0.5}
     c = next(x for x in listing["controls"] if x["id"] == "C")
     assert c["status"] == "registered" and c["kind"] == "key"
 
@@ -77,6 +77,9 @@ def test_list_play_and_configure_through_the_api(console):
     assert engine.notes["C"]["press_s"] == 1.2
     assert client.post("/api/settings", json={"speed": 2.5}, headers=auth).json()["status"] == "complete"
     assert client.get("/api/controls").json()["settings"]["speed"] == 2.5
+    assert client.post("/api/settings", json={"press_hardness": 0.3}, headers=auth).json()["status"] == "complete"
+    assert client.get("/api/controls").json()["settings"]["press_hardness"] == 0.3
+    assert client.post("/api/settings", json={"press_hardness": 0.05}, headers=auth).status_code == 422
 
     seq = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "D", "press_s": 0}], "speed": 3.0},
                       headers=auth).json()
@@ -92,6 +95,20 @@ def test_api_refusals(console):
     engine.lease_until = time.monotonic() - 1  # the console closed
     refused = client.post("/api/controls/C/play", json={}, headers=auth)
     assert refused.status_code == 409 and "operator console" in refused.json()["detail"]
+
+
+def test_api_says_how_to_get_the_arm_holding(console):
+    client, engine, command, auth = console
+    taught(engine, command)
+    command("release", supported=True)
+    refused = client.post("/api/controls/C/play", json={}, headers=auth)
+    assert refused.status_code == 409 and "not holding" in refused.json()["detail"] and "Play" in refused.json()["detail"]
+    assert client.post("/api/stop", json={}, headers=auth).status_code == 200  # Stop while not holding stops the arm
+    until = time.monotonic() + 3
+    while time.monotonic() < until and engine.phase != "fault":
+        time.sleep(0.01)
+    refused = client.post("/api/controls/C/play", json={}, headers=auth)
+    assert refused.status_code == 409 and "Hold & keep playing" in refused.json()["detail"]
 
 
 def test_cli_names_and_steps():

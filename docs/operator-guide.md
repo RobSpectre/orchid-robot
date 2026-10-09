@@ -92,7 +92,7 @@ Leader teaching records the motion you make with the leader and replays it, usin
 3. **Teach C** (or select another key or chord button first). The follower's goal is set to its measured pose, LeRobot's `SOFollower.configure` applies its motor settings, and torque holds it there. The first time, that pose becomes the arm's **home**, used by every key. Then the follower ramps to the leader's pose at up to 30°/s and mirrors it 1:1. Keep hands off the follower and hold the leader roughly where the follower is. If the follower was already powered, the page first asks you to support it: torque blinks off for a moment while the settings are written.
 4. **Hover, touch, press.** Guide the follower just above the key and press Space (hover); lower until the tip just touches without pressing, Space (touch); press only until it sounds, Space (press). A beep confirms each capture. Tapping ✓ Touch or ✓ Hover re-captures it and clears the points after it. Tapping ✓ Home moves the arm's one home: every key, including keys already taught, then starts and ends there, and no key's hover/touch/press is cleared. Each point stores the commanded goal, so the press replays the depth you taught even where the key stopped the arm.
 5. After the press is captured the follower returns on its own: press → touch → hover → home, then holds at home, and the key counts as taught. Put the leader back at rest before following again (following always ramps to wherever the leader is).
-6. **Play.** The follower ramps to home (up to 30°/s, faster at higher speeds), waits until it has settled there, then goes home → hover → touch → press, holds the press for the key's **Press length** (default 0.3 s, 0–5 s), and returns the same way, with smooth joint moves (45°/s peak between home and hover, 20°/s for the strokes, at 1×). **Arm speed** is one global slider in the top bar (0.25–3×, where 3× is the maximum). Letting go of it saves it, and it applies from the next play to every key, chord button, dial turn and the API; try a new key at 1× first. A press length typed next to Play is saved for that key when you play it. If the arm did not reach home (more than 8° off), it holds and offers **Play anyway**.
+6. **Play.** The follower ramps to home (up to 30°/s, faster at higher speeds), waits until it has settled there, then goes home → hover → touch → press, holds the press for the key's **Press length** (default 0.3 s, 0–5 s), and returns the same way, with smooth joint moves (45°/s peak between home and hover, 20°/s for the strokes, at 1×). **Arm speed** is one global slider in the top bar (0.25–3×, where 3× is the maximum). Letting go of it saves it, and it applies from the next play to every key, chord button, dial turn and the API; try a new key at 1× first. **Press hardness** (top bar, 10–100%, default 50%) slows only the final touch → press stroke of every key and chord button, as a share of the other strokes: lower is gentler, 100% is as fast as the strokes. It applies from the next play; it does not change the press depth, and the release is not slowed. A press length typed next to Play is saved for that key when you play it. If the arm did not reach home (more than 8° off), it holds and offers **Play anyway**.
 7. **Rest.** Click **☾ Rest** on the map, follow the leader to where the arm should wait, and press **Set rest here**. **Go to rest** moves the arm there (up to 30°/s) when you want it parked. Playback always ends at home, where the arm waits between key presses; a Play from rest first moves up to home.
 8. Select another key on the map, press **Follow the leader**, and capture its hover, touch and press. Release torque from **Release or disconnect** with the arm supported or resting.
 
@@ -100,13 +100,15 @@ Moves between points are straight lines in joint space, not obstacle-avoiding pa
 
 Following and playback clip each goal to 15° from the measured pose (LeRobot's `max_relative_target` rule): a lagging or blocked joint is limited, never faulted. There are no tracking, settle, stall, home or route checks. **Stop motion** (Esc) holds the follower at its measured pose and stays in the teaching session. Losing the operator page for five seconds stops with a hold. A recording stays valid until the follower calibration changes. This is joint position control, without collision or force sensing; keep the physical power stop within reach.
 
+**Playing without the leader.** Once a control is taught, only the follower is needed to play it. Connect with **Guide follower by hand** (or with the leader unplugged), select a taught control and press **Play**: the follower holds where it is, then plays through home. Teaching, re-teaching, following and setting home or rest still need the leader connected and calibrated.
+
 Hardware conformance can be checked without opening a port: run `PYTHONPATH=.:tests /path/to/hardware/python -m unittest tests/test_teach_hardware.py` and `PYTHONPATH=. /path/to/hardware/python tests/check_native_teleop.py` using the app's LeRobot environment.
 
 Simulation provides **Practice leader movement** with a joint selector and ± buttons while following.
 
 ## Play from scripts or Claude (API)
 
-While the console is open, connected and holding (Teach or Follow any control once), taught controls can be played and adjusted from `scripts/orchid.py` or the `orchid-keys` Claude skill. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply.
+While the console is open, connected and holding (Play, Teach or Follow any control once; playing needs only the follower), taught controls can be played and adjusted from `scripts/orchid.py` or the `orchid-keys` Claude skill. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply.
 
 ```bash
 python3 scripts/orchid.py status                 # controls, press lengths, speed, readiness
@@ -117,7 +119,7 @@ python3 scripts/orchid.py speed 2                # shared default speed
 python3 scripts/orchid.py home | stop
 ```
 
-HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `POST /api/controls/{id}/play`, `POST /api/controls/{id}`, `POST /api/sequence`, `POST /api/settings`, `POST /api/home`, `POST /api/stop`. A sequence is one motion that passes through home between controls.
+HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `POST /api/controls/{id}/play`, `POST /api/controls/{id}`, `POST /api/sequence`, `POST /api/settings` (`speed`, `press_s`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence is one motion that passes through home between controls.
 
 ## Register the eight chord buttons
 

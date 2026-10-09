@@ -38,7 +38,7 @@ STROKE_PAIRS = {"key": (("hover", "touch", ()), ("touch", "press", ())),
                 "dial": (("hover", "open", ("gripper",)), ("open", "lower", ("gripper",)), ("lower", "grip", ("gripper",)))}
 DIAL_SHARED = ("hover", "open", "lower", "grip")  # one knob: CW and CCW share every taught step
 DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}
-DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S}
+DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S, "press_hardness": teach_motion.PRESS_HARDNESS}
 API_ACTIONS = ("teach_play", "teach_sequence", "teach_settings", "teach_configure", "teach_hold", "teach_go_home", "teach_go_rest")  # default wrist turn per direction (deg); set per direction
 STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)",
               "open": " (jaws open, still above the knob)", "lower": " (lowered around the knob, not touching it)",
@@ -323,7 +323,7 @@ class Engine:
                 "leader_following": bool(self.teach and self.teach.mode in ("aligning", "following"))
                                     or (isinstance(self.controller, LeaderController) and self.controller.engaged),
                 "teach": None if not self.teach else {
-                    "mode": self.teach.mode, "recording": self.teach.frames is not None,
+                    "mode": self.teach.mode, "recording": self.teach.frames is not None, "leader": self.teach.read_leader is not None,
                     "recorded_seconds": self.teach.recorded_seconds, "progress": self.teach.progress,
                     "warning": self.teach.warning, "played": self.teach_played,
                     "clipped_steps": self.teach.clipped_steps, "speed": self.teach.speed,
@@ -368,6 +368,8 @@ class Engine:
                                       if self.is_dial and self.capture and self.current else None),
                 "trials": self.trials, "motion_stage": self.stage,
                 "teach_settings": deepcopy(self.teach_settings),
+                "poses_saved": {"home": bool(self.calibrated and self.shared_teach_home()),
+                                "rest": bool(self.calibrated and self.shared_teach_rest())},
                 "capture_samples": len(self.capture["path"]) if self.capture else 0,
                 "range_motor": RANGE_MOTORS[self.range_index] if self.phase == "calibration_range" else None,
                 "range_index": self.range_index, "ranges": deepcopy(self.ranges),
@@ -842,9 +844,10 @@ class Engine:
                 press_s = args.get("press_s", entry.get("press_s", self.teach_settings["press_s"]))
                 m.require(type(press_s) in (int, float) and 0 <= press_s <= teach_motion.MAX_PRESS_S,
                           f"Choose a press length from 0 to {teach_motion.MAX_PRESS_S:g} seconds.")
-                recording = teach_motion.waypoint_recording(points, control, float(press_s))
+                hardness = self.teach_settings["press_hardness"]
+                recording = teach_motion.waypoint_recording(points, control, float(press_s), hardness)
                 changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
-                description = f"home → hover → touch → press (held {press_s:g} s) and back"
+                description = f"home → hover → touch → press ({hardness:.0%} hardness, held {press_s:g} s) and back"
         except ValueError as exc:
             raise m.SafetyError(str(exc)) from exc
         if changed:
@@ -869,6 +872,13 @@ class Engine:
         with self.lock:
             m.require(self.owner is not None and self.lease_until > time.monotonic(),
                       "Open the operator console (http://127.0.0.1:8081) and connect; the API only acts while it is in control.")
+            # Moves need a holding follower, and only the console can start or restore that hold.
+            if action in ("teach_play", "teach_sequence", "teach_go_home", "teach_go_rest") and self.phase not in TEACH_SESSION_PHASES:
+                m.require(self.phase != "disconnected", "No arm is connected. Connect the follower in the operator console.")
+                m.require(self.phase != "fault", f"The arm is stopped ({self.error or 'no reason recorded'}). In the operator console, "
+                          "support the follower and press Hold & keep playing; the API cannot restart a stopped arm.")
+                raise m.SafetyError(f"The follower is not holding (phase: {self.phase}). In the operator console, select a taught "
+                                    "control and press Play, or ⌂ Home → Go to home, once; then the API can play.")
             owner, revision = self.owner, self.revision
         return self.submit(owner, uuid.uuid4().hex, action, revision, args)
 
@@ -1553,24 +1563,37 @@ class Engine:
                             "For a replacement arm or interrupted calibration, perform a full calibration and teach a new home.")
         elif action == "teach_begin":
             self.require_phase("connected", "ready", "saved", "failed", "fault")
-            m.require(self.teaching_mode == "leader" and self.leader is not None, "Connect the leader to teach by recording.")
-            m.require(self.calibrated and self.leader_calibrated, "Calibrate both arms before teaching.")
+            # Teaching follows the leader; playing a taught control drives only the follower.
+            leader = self.teaching_mode == "leader" and self.leader is not None and self.leader_calibrated
+            m.require(self.calibrated, "Calibrate the follower before playing or teaching.")
+            m.require(leader or args.get("follow") is not True,
+                      "Connect and calibrate the leader to teach by recording. Taught controls play with only the follower.")
             name = self.teach_control(args)
+            pose = args.get("pose")
+            m.require(pose in (None, "home", "rest"), "Choose home or rest.")
+            if not leader:  # refuse before powering if there is nothing complete to play or go to
+                self.teach_points_for = None
+                if pose:
+                    m.require((self.shared_teach_home if pose == "home" else self.shared_teach_rest)(),
+                              f"No {pose} is set yet. Connect the leader to set it.")
+                else:
+                    self.control_motion(self.selected, {})
             powered = any(self.arm.torque_status().values())
             # LeRobot's configure() briefly turns torque off while it writes the gains.
             m.require(not powered or args.get("supported") is True,
                       "The follower is already powered. Support it with a hand: torque blinks off for a moment while the motor settings are applied.")
-            self.leader_torque = self.leader.require_torque(False)
+            if leader:
+                self.leader_torque = self.leader.require_torque(False)
             self.reset_note()
             self.actuating = True
             self.arm.arm_for_teleop()
-            self.teach = teach_motion.Session(self.read_follower_joints, self.arm.teleop_goal, self.read_leader_joints,
-                                              clock=self.clock)
+            self.teach = teach_motion.Session(self.read_follower_joints, self.arm.teleop_goal,
+                                              self.read_leader_joints if leader else None, clock=self.clock)
             self.teach.send_follower(self.teach.goal)
             self.teach_points_for, self.teach_returning = None, False
             points = self.points_for(self.selected)
             home_note = ""
-            if "home" not in points:
+            if "home" not in points and leader:
                 points["home"] = self.teach.capture()  # home = where the arm is when you first press Teach
                 self.save_teach_home(points["home"])
                 home_note = " Home saved here."
@@ -1579,10 +1602,13 @@ class Engine:
                 self.apply_roll_lock()
                 self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s.{home_note} "
                                 "Hands off the follower; hold the leader near its pose.")
-            else:
+            elif leader:
                 self.transition("teach_hold", f"Follower holding here, torque ON.{home_note} Hands off the follower, then follow the leader to teach {name}.")
+            else:
+                self.transition("teach_hold", f"Follower holding here, torque ON. Hands off the follower; {name} is ready to play.")
         elif action == "teach_follow":
             self.require_phase("teach_hold")
+            m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to follow it.")
             if "control" in args:  # the key selected on the map becomes the one being taught
                 self.teach_control(args)
             self.teach.follow()
@@ -1599,6 +1625,7 @@ class Engine:
             self.transition("teach_hold", "Holding here." + (" The unfinished recording was discarded." if discarded else ""))
         elif action == "teach_set_home":
             self.require_phase("teach_hold", "teach_follow")
+            m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             try:
                 captured = self.teach.capture()
             except RuntimeError as exc:
@@ -1683,6 +1710,7 @@ class Engine:
                             "were updated to match, so nothing needs re-teaching. Nothing moved.")
         elif action == "teach_set_rest":
             self.require_phase("teach_hold", "teach_follow")
+            m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             try:
                 captured = self.teach.capture()
             except RuntimeError as exc:
@@ -1699,6 +1727,7 @@ class Engine:
             self.transition("teach_play", f"Moving to rest at up to {teach_motion.RAMP_SPEED:.0f}°/s. Stop motion holds the arm.")
         elif action == "teach_capture":
             self.require_phase("teach_hold", "teach_follow")
+            m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             name = self.teach_control(args)
             if self.teach.mode == "following":
                 self.apply_roll_lock()  # switching between a key and the dial while following
@@ -1817,7 +1846,12 @@ class Engine:
                 m.require(type(press_s) in (int, float) and 0 <= press_s <= teach_motion.MAX_PRESS_S,
                           f"Choose a press length from 0 to {teach_motion.MAX_PRESS_S:g} seconds.")
                 changes["press_s"] = float(press_s)
-            m.require(changes, "Give a speed and/or press_s.")
+            if "press_hardness" in args:
+                hardness = args["press_hardness"]
+                m.require(type(hardness) in (int, float) and teach_motion.MIN_PRESS_HARDNESS <= hardness <= 1,
+                          f"Choose a press hardness from {teach_motion.MIN_PRESS_HARDNESS:.0%} to 100%.")
+                changes["press_hardness"] = float(hardness)
+            m.require(changes, "Give a speed, press_s and/or press_hardness.")
             self.teach_settings = {**self.teach_settings, **changes}
             self.repo.put("teach_settings", self.teach_settings)
             self.event("teach_settings", "Playback settings: " + ", ".join(f"{k} {v:g}" for k, v in self.teach_settings.items()))

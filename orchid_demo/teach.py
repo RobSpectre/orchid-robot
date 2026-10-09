@@ -39,6 +39,8 @@ TRAVEL_SPEED = 45.0  # peak deg/s between home and hover
 STROKE_SPEED = 20.0  # peak deg/s between hover, touch and press
 MIN_SEGMENT_S = 0.4
 PRESS_DWELL_S = 0.3
+PRESS_HARDNESS = 0.5  # touch -> press runs at this fraction of the stroke speed (1.0 = as fast as the strokes)
+MIN_PRESS_HARDNESS = 0.1
 RETURN_SETTLE_S = 0.3
 MAX_PLAY_SPEED = 3.0  # playback speed multiplier (1.0 = the taught/planned timing)
 MAX_PRESS_S = 5.0  # longest hold at the bottom of a press
@@ -65,10 +67,11 @@ def rounded(pose: dict) -> dict:
     return {k: round(v, 3) for k, v in pose.items()}
 
 
-def _segment(start: dict, end: dict, peak_speed: float) -> tuple[float, list]:
-    """Minimum-jerk joint move. Its peak velocity is 1.875x the average, so size it by the peak."""
+def _segment(start: dict, end: dict, peak_speed: float, stretch: float = 1.0) -> tuple[float, list]:
+    """Minimum-jerk joint move. Its peak velocity is 1.875x the average, so size it by the peak.
+    stretch > 1 slows the whole move, including the shortest-move floor."""
     _, delta = max_gap(start, end)
-    duration = max(MIN_SEGMENT_S, 1.875 * delta / peak_speed)
+    duration = max(MIN_SEGMENT_S, 1.875 * delta / peak_speed) * stretch
     steps = max(1, math.ceil(duration / PERIOD))
     poses = []
     for i in range(1, steps + 1):
@@ -82,24 +85,28 @@ def _frames(points: dict, legs: list) -> list:
     first = legs[0][0]
     frames = [{"t": 0.0, "goal": rounded(points[first]["goal"]), "follower": points[first]["measured"]}]
     t = 0.0
-    for a, b, speed in legs:
+    for a, b, speed, *stretch in legs:
         if a == b:  # dwell
             t += speed
             frames.append({"t": round(t, 4), "goal": rounded(points[a]["goal"])})
             continue
-        duration, poses = _segment(points[a]["goal"], points[b]["goal"], speed)
+        duration, poses = _segment(points[a]["goal"], points[b]["goal"], speed, *stretch)
         frames += [{"t": round(t + dt, 4), "goal": rounded(pose)} for dt, pose in poses]
         t += duration
     return frames
 
 
-def waypoint_recording(points: dict, key: str = "", press_s: float = PRESS_DWELL_S) -> dict:
-    """Full playback: home -> hover -> touch -> press, dwell, then the same points in reverse."""
+def waypoint_recording(points: dict, key: str = "", press_s: float = PRESS_DWELL_S,
+                       hardness: float = PRESS_HARDNESS) -> dict:
+    """Full playback: home -> hover -> touch -> press, dwell, then the same points in reverse.
+    hardness (0.1-1) slows only the touch -> press stroke, relative to the other strokes."""
     missing = [name for name in POINTS if name not in points]
     if missing:
         raise ValueError("Capture " + ", ".join(missing) + " first.")
+    if not MIN_PRESS_HARDNESS <= hardness <= 1.0:
+        raise ValueError(f"Press hardness must be between {MIN_PRESS_HARDNESS:.0%} and 100%.")
     return {"key": key, "frames": _frames(points, [
-        ("home", "hover", TRAVEL_SPEED), ("hover", "touch", STROKE_SPEED), ("touch", "press", STROKE_SPEED),
+        ("home", "hover", TRAVEL_SPEED), ("hover", "touch", STROKE_SPEED), ("touch", "press", STROKE_SPEED, 1 / hardness),
         ("press", "press", press_s),
         ("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)])}
 

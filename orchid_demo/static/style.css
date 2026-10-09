@@ -300,8 +300,18 @@ button.nav-item:disabled { opacity:.65; }
   white-space:nowrap;
 }
 
+.top-sliders {
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.speed-control span {
+  min-width:92px;
+}
+
 .speed-control input {
-  width:170px;
+  width:140px;
   accent-color:var(--amber);
 }
 
@@ -1161,6 +1171,21 @@ th {
     flex-direction:row;
     align-items:center;
     gap:10px;
+  }
+  /* Two settings sliders and Stop do not fit beside the status: status on its own line. */
+  .topbar {
+    height:auto;
+    flex-wrap:wrap;
+    padding:10px 16px;
+  }
+  .topbar>div:first-child {
+    flex-direction:row;
+    align-items:center;
+    width:100%;
+  }
+  .topbar>.topbar-tools {
+    width:100%;
+    justify-content:space-between;
   }
   .speed-control span {
     display:none;

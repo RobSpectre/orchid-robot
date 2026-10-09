@@ -11,9 +11,10 @@
     python3 scripts/orchid.py set ccw --turn -25      # a dial direction's default turn
     python3 scripts/orchid.py speed 2                 # default speed for everything (0.1-3)
     python3 scripts/orchid.py press 0.4               # default press length for keys without their own
+    python3 scripts/orchid.py hardness 40             # press hardness: touch -> press speed, 10-100 % of the strokes
     python3 scripts/orchid.py home | stop
 
-The console (http://127.0.0.1:8081) must be open, connected and holding (Teach any control once);
+The console (http://127.0.0.1:8081) must be open, connected and holding (Play any taught control once);
 the API never moves the arm on its own. Standard library only; exits non-zero with the reason on refusal.
 """
 from __future__ import annotations
@@ -90,6 +91,7 @@ def main(argv=None) -> None:
     setter.add_argument("--turn", type=float)
     sub.add_parser("speed").add_argument("value", type=float)
     sub.add_parser("press").add_argument("value", type=float)
+    sub.add_parser("hardness").add_argument("percent", type=float, help="10-100; lower presses more gently")
     sub.add_parser("home")
     sub.add_parser("stop")
     args = parser.parse_args(argv)
@@ -98,13 +100,14 @@ def main(argv=None) -> None:
     if args.command == "status":
         listing = console.call("GET", "/api/controls")
         print(f"phase {listing['phase']} · ready to play: {listing['ready_to_play']} · "
-              f"speed {listing['settings']['speed']:g}× · default press {listing['settings']['press_s']:g} s")
+              f"speed {listing['settings']['speed']:g}× · default press {listing['settings']['press_s']:g} s"
+              + (f" · press hardness {listing['settings']['press_hardness']:.0%}" if "press_hardness" in listing["settings"] else ""))
         for c in listing["controls"]:
             extra = (f" press {c['press_s']:g} s" if c.get("press_s") is not None else "") + \
                     (f" turn {c['turn_degrees']:g}°" if c.get("turn_degrees") is not None else "")
             print(f"  {c['id']:<12} {c['name']:<22} {c.get('status', 'empty')}{extra}")
         if not listing["ready_to_play"]:
-            print("Not ready: open the console, connect, and Teach (or Follow) any control so the follower is holding.")
+            print("Not ready: in the console, select a taught control and press Play once so the follower is holding.")
         return
     if args.command == "play":
         body = {k: v for k, v in {"speed": args.speed, "press_s": args.press, "turn_degrees": args.turn}.items() if v is not None}
@@ -128,6 +131,8 @@ def main(argv=None) -> None:
         report(console.call("POST", "/api/settings", {"speed": args.value}))
     elif args.command == "press":
         report(console.call("POST", "/api/settings", {"press_s": args.value}))
+    elif args.command == "hardness":
+        report(console.call("POST", "/api/settings", {"press_hardness": args.percent / 100}))
     elif args.command == "home":
         report(console.call("POST", "/api/home", {}))
     elif args.command == "stop":

@@ -368,6 +368,56 @@ def test_home_button_sets_home_where_the_arm_is_and_goes_there(engine):
     assert engine.teach.goal == pytest.approx(new)
 
 
+def follower_only(e):
+    """Teach C with the leader, then reconnect guiding by hand: only the follower is connected."""
+    following(e)
+    teach_points(e, "C")
+    run(e, 10, until=lambda: e.phase == "teach_hold")
+    taught = deepcopy(e.notes["C"]["points"])
+    command(e, "disconnect", supported=True)
+    connect(e)
+    assert e.leader is None and e.teaching_mode == "manual" and e.calibrated
+    return taught
+
+
+def test_a_taught_control_plays_with_only_the_follower(engine):
+    taught = follower_only(engine)
+    assert engine.public["keys"]["C"]["recorded"]
+    command(engine, "teach_begin", control="C")
+    assert engine.phase == "teach_hold" and engine.arm.enabled and not engine.public["teach"]["leader"]
+    command(engine, "teach_play", control="C")
+    sent = spy(engine)
+    run(engine, 30, until=lambda: engine.phase == "teach_hold")
+    assert engine.teach_played == "C"
+    assert max(g["wrist_flex"] for g in sent) == pytest.approx(taught["press"]["goal"]["wrist_flex"])
+    assert sent[-1] == pytest.approx(engine.repo.get("teach_home")["point"]["goal"])
+
+
+def test_the_saved_home_is_reachable_with_only_the_follower(engine):
+    follower_only(engine)
+    assert engine.public["poses_saved"] == {"home": True, "rest": False}
+    assert "No rest" in reject(engine, "teach_begin", control="C", pose="rest")["message"]
+    assert not engine.arm.enabled
+    command(engine, "teach_begin", control="C", pose="home")
+    assert engine.phase == "teach_hold" and engine.repo.get("teach_home") is not None
+    command(engine, "teach_go_home")
+    run(engine, 10, until=lambda: engine.phase == "teach_hold")
+    assert engine.message == "At home, holding."
+    assert engine.teach.goal == pytest.approx(engine.repo.get("teach_home")["point"]["goal"])
+
+
+def test_teaching_still_needs_the_leader(engine):
+    follower_only(engine)
+    home = engine.repo.get("teach_home")
+    assert "leader" in reject(engine, "teach_begin", control="C", follow=True)["message"]
+    assert "not been taught" in reject(engine, "teach_begin", control="D")["message"]
+    assert engine.phase == "connected" and not engine.arm.enabled  # refused before powering
+    command(engine, "teach_begin", control="C")
+    for action, args in (("teach_follow", {}), ("teach_capture", {"point": "hover", "control": "C"}), ("teach_set_home", {})):
+        assert "leader" in reject(engine, action, **args)["message"]
+    assert engine.phase == "teach_hold" and engine.repo.get("teach_home") == home
+
+
 def test_go_home_needs_a_home(engine):
     ready(engine)
     command(engine, "teach_begin", control="C")
@@ -634,6 +684,44 @@ def test_speed_setting_shortens_playback_and_is_remembered(engine):
     run(engine, 60, until=lambda: engine.phase == "teach_hold")
     assert engine.clock() - started < normal / 2
     assert "speed" in reject(engine, "teach_play", control="C", speed=5)["message"]
+
+
+def test_press_hardness_slows_only_the_press_stroke():
+    def pose(lift, wrist):
+        return {"goal": {"shoulder_lift": lift, "wrist_flex": wrist}, "measured": {"shoulder_lift": lift, "wrist_flex": wrist}}
+    points = {"home": pose(0, 0), "hover": pose(30, 0), "touch": pose(30, 10), "press": pose(30, 14)}
+    press_stroke, _ = teach._segment(points["touch"]["goal"], points["press"]["goal"], teach.STROKE_SPEED)
+    hard, gentle = (teach.waypoint_recording(points, "C", hardness=h)["frames"] for h in (1.0, 0.5))
+    assert gentle[-1]["t"] - hard[-1]["t"] == pytest.approx(press_stroke)  # twice as long; nothing else changes
+    def pressed(frames):
+        return [f["t"] for f in frames if f["goal"]["wrist_flex"] >= 14 - 1e-9]
+
+    def first_press(frames):
+        return pressed(frames)[0]
+
+    def leaves_press(frames):
+        return pressed(frames)[-1]
+
+    assert first_press(gentle) - first_press(hard) == pytest.approx(press_stroke)
+    assert (gentle[-1]["t"] - leaves_press(gentle)) == pytest.approx(hard[-1]["t"] - leaves_press(hard))  # release unchanged
+    with pytest.raises(ValueError):
+        teach.waypoint_recording(points, "C", hardness=0.05)
+
+
+def test_press_hardness_is_a_remembered_global_setting(engine):
+    assert engine.public["teach_settings"]["press_hardness"] == teach.PRESS_HARDNESS
+    taught_keys(engine)
+    durations = {}
+    for hardness in (1.0, 0.25):
+        command(engine, "teach_settings", press_hardness=hardness)
+        command(engine, "teach_play", control="C")
+        assert f"{hardness:.0%} hardness" in engine.message
+        started = engine.clock()
+        run(engine, 60, until=lambda: engine.phase == "teach_hold")
+        durations[hardness] = engine.clock() - started
+    assert durations[0.25] > durations[1.0] + 3 * teach.MIN_SEGMENT_S - 0.1
+    assert engine.repo.get("teach_settings")["press_hardness"] == 0.25
+    assert "hardness" in reject(engine, "teach_settings", press_hardness=1.5)["message"]
 
 
 def test_speed_is_a_global_setting_available_in_any_phase(engine):
