@@ -52,12 +52,19 @@ Names: keys `C C# D D# E F F# G G# A A# B` (lowercase ok); chord buttons `dim mi
 - One command at a time; each `play`/`seq` waits until the arm is back home. Do not loop or retry a
   refused or failed play. Report the printed message instead.
 - If a command prints an error, a fault, or "start pose" / "something may be in the way", stop and tell
-  the user; they must look at the arm. `python3 scripts/orchid.py stop` holds the arm in place.
+  the user; they must look at the arm.
+- With hardware and Orchid Studio running, `play`/`seq` also print what Orchid actually sent
+  (`Orchid heard: C ✓ velocity 72, 0.11 s into the 0.80 s press, held 0.31 s`). `CHECK THE ARM` means a
+  wrong key, a missed or repeated note: stop and tell the user; do not replay to "fix" it. Chord buttons
+  send no MIDI on their own, so they are reported as unchecked. `Note check unavailable` only means
+  Studio is not reachable; the play itself still happened. `python3 scripts/orchid.py stop` holds the arm in place.
 - Speed above ~2× is fast. Suggest trying a new key at the default speed first.
 - Press length is how long the key is held down (it shapes the note). Press hardness is how fast the final
   touch → press stroke moves, as a share of the other strokes (default 50 %); lower is gentler. It applies
   to every key and chord button; the release is not slowed. Neither changes how deep the press goes. A dial turn angle is pure wrist rotation from the grip pose; flip the sign if it turns the wrong way.
 - Teaching and re-teaching happen in the console with the leader arm, not through this skill.
+- A key that keeps double-triggering or not sounding can be fixed with **04 Calibrate keys** in the console
+  (the user beside the arm). Suggest it; it is not available through the API. While it runs, plays are refused.
 
 ## HTTP API (what the script calls)
 
@@ -66,7 +73,7 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 | Method & path | Body | Result |
 |---|---|---|
 | `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,press_s,press_hardness}, controls:[{id,name,kind,group,status,press_s?,turn_degrees?}]}` |
-| `POST /api/controls/{id}/play` | `{speed?, press_s?, turn_degrees?, wait=true}` | `{status, phase, message, error}` after it finishes |
+| `POST /api/controls/{id}/play` | `{speed?, press_s?, turn_degrees?, wait=true}` | `{status, phase, message, error, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control, press_s?, turn_degrees?}], speed?, wait=true}` | same |
 | `POST /api/controls/{id}` | `{press_s}` or `{turn_degrees}` | saves the default |
 | `POST /api/settings` | `{speed?, press_s?, press_hardness? (0.1–1)}` | saves defaults |

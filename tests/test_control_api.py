@@ -111,6 +111,20 @@ def test_api_says_how_to_get_the_arm_holding(console):
     assert refused.status_code == 409 and "Hold & keep playing" in refused.json()["detail"]
 
 
+def test_play_reports_what_orchid_sent(console):
+    from orchid_demo.keycheck import KeyChecker, StudioKeys
+    client, engine, command, auth = console
+    taught(engine, command)
+    engine.key_checker = KeyChecker(lambda: [{"type": "press", "t": engine.teach.play_started + 0.3, "name": "C",
+                                              "velocity": 50, "octave": 3}], settle_s=0)
+    body = client.post("/api/controls/C/play", json={"speed": 3.0}, headers=auth).json()
+    assert body["key_check"]["status"] == "ok" and body["key_check"]["summary"].startswith("C ✓ velocity 50")
+    engine.key_checker = KeyChecker(StudioKeys(port=1), settle_s=0)  # Orchid Studio not running
+    body = client.post("/api/controls/C/play", json={"speed": 3.0}, headers=auth).json()
+    assert body["phase"] == "teach_hold" and body["key_check"]["status"] == "unavailable"
+    assert "key_check" not in client.post("/api/controls/C", json={"press_s": 0.4}, headers=auth).json()
+
+
 def test_cli_names_and_steps():
     import importlib.util
     spec = importlib.util.spec_from_file_location("orchid_cli", "scripts/orchid.py")
@@ -118,3 +132,26 @@ def test_cli_names_and_steps():
     spec.loader.exec_module(cli)
     assert [cli.control_id(x) for x in ("c", "c#", "C#", "cw", "ccw", "min", "M7", "m7")] == \
         ["C", "C#", "C#", "voicing.cw", "voicing.ccw", "chord.min", "chord.M7", "chord.m7"]
+
+
+def test_two_followers_share_one_console(tmp_path):
+    from orchid_demo.rig import ROLES, LeaderStore
+    a = Engine(tmp_path, sleep=lambda s: time.sleep(min(s, 0.005)), owns=ROLES["a"])
+    b = Engine(tmp_path / "arm-b", sleep=lambda s: time.sleep(min(s, 0.005)), owns=ROLES["b"], leader_store=LeaderStore(a.repo))
+    with TestClient(create_app(tmp_path, engines={"a": a, "b": b}), base_url="http://127.0.0.1") as client:
+        session = client.get("/api/session?arm=b").json()
+        assert session["state"]["arm"] == "b" and set(session["arms"]) == {"a", "b"}
+        assert session["arms"]["a"]["owns"] == list(ROLES["a"]) and session["arms"]["b"]["parked"] is True
+        assert client.get("/api/session?arm=c").status_code == 404
+        auth = {"x-orchid-token": session["token"], "x-orchid-operator": str(uuid4())}
+        assert client.post("/api/heartbeat", json={}, headers=auth).status_code == 200
+        assert a.owner == b.owner  # one console operates both followers
+        mixed = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "chord.maj"}]}, headers=auth)
+        assert mixed.status_code == 409 and "both arms" in mixed.json()["detail"]
+        refused = client.post("/api/controls/chord.maj/play", json={}, headers=auth)
+        assert refused.status_code == 409 and "No arm is connected" in refused.json()["detail"]  # routed to arm B
+        listing = client.get("/api/controls").json()
+        assert {c["id"]: c["arm"] for c in listing["controls"]}["voicing.cw"] == "b" and set(listing["ready_to_play"]) == {"a", "b"}
+        command_id = str(uuid4())
+        stop = client.post("/api/commands", json={"id": command_id, "action": "stop", "revision": 0, "args": {}, "arm": "b"}, headers=auth)
+        assert stop.status_code == 202 and all(command_id in member.receipts for member in (a, b))  # Stop reaches both

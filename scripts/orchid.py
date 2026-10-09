@@ -65,6 +65,10 @@ class Console:
 
 def report(result: dict) -> None:
     print(result.get("message") or result.get("status"))
+    check = result.get("key_check")
+    if check:  # what Orchid actually sent, from Orchid Studio's key monitor
+        label = {"ok": "Orchid heard", "problem": "CHECK THE ARM", "unavailable": "Note check unavailable"}.get(check["status"], "Notes")
+        print(f"{label}: {check['summary']}")
     if result.get("error"):
         raise SystemExit(f"Error: {result['error']}")
     if result.get("phase") == "fault":

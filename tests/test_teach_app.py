@@ -506,16 +506,12 @@ def test_follow_teaches_the_key_selected_on_the_map(engine):
 # --- wrist roll ------------------------------------------------------------------------------------
 
 
-def test_keys_hold_the_wrist_roll_still_while_following(engine):
+def test_a_turned_wrist_is_captured_in_the_taught_point(engine):
     following(engine)
-    roll = engine.arm.current["wrist_roll"]
-    move_leader(engine, "wrist_roll", 96)  # the operator's grip twists the leader's wrist
-    move_leader(engine, "shoulder_lift", 48)
-    assert engine.arm.current["wrist_roll"] == roll  # the follower's wrist did not turn
-    assert engine.arm.current["shoulder_lift"] != engine.leader.current["shoulder_lift"] - 48 - 9999  # still following
+    move_leader(engine, "wrist_roll", 96)  # turned on purpose: the follower turns with it
     capture(engine, "hover")
-    hover = engine.points_for("C")["hover"]["goal"]["wrist_roll"]
-    assert hover == pytest.approx(engine.points_for("C")["home"]["goal"]["wrist_roll"], abs=0.1)
+    points = engine.points_for("C")
+    assert points["hover"]["goal"]["wrist_roll"] > points["home"]["goal"]["wrist_roll"] + 5
 
 
 def test_recentering_the_wrist_roll_keeps_every_taught_motion_on_the_same_physical_poses(engine):
@@ -619,11 +615,27 @@ def test_turn_angle_is_set_per_direction_from_the_page(engine):
     assert "between 1 and 90" in reject(engine, "teach_play", control="voicing.cw", turn_degrees=0)["message"]
 
 
-def test_wrist_roll_is_held_while_teaching_the_dial_too(engine):
-    following(engine, "voicing.cw")
+def test_the_wrist_rotates_with_the_leader_for_keys_and_the_dial(engine):
+    for control in ("C", "voicing.cw"):
+        following(engine, control) if control == "C" else command(engine, "teach_follow", control=control)
+        run(engine, 3, until=lambda: engine.teach.mode == "following")
+        roll = engine.arm.current["wrist_roll"]
+        move_leader(engine, "wrist_roll", 96)
+        assert engine.arm.current["wrist_roll"] == pytest.approx(roll + 96, abs=2)
+        command(engine, "teach_hold")
+
+
+def test_the_wrist_never_chases_the_leaders_wrap_at_180_degrees(engine):
+    following(engine)
     roll = engine.arm.current["wrist_roll"]
-    move_leader(engine, "wrist_roll", 96)
-    assert engine.arm.current["wrist_roll"] == roll
+    engine.leader.current["wrist_roll"] += 2000  # about 176 deg in one tick: the leader's reading wrapped
+    run(engine, 1)
+    assert engine.teach.roll_guard and engine.public["teach"]["roll_guard"]
+    assert engine.arm.current["wrist_roll"] == pytest.approx(roll, abs=2)  # held, not spun the other way
+    move_leader(engine, "elbow_flex", 24)  # the other joints keep following
+    engine.leader.current["wrist_roll"] -= 1990  # the leader comes back near the follower's angle
+    run(engine, 1)
+    assert not engine.teach.roll_guard
 
 
 def test_dial_steps_from_the_earlier_design_must_be_retaught(engine):
@@ -771,3 +783,28 @@ def test_configure_sets_press_length_or_dial_angle(engine):
     command(engine, "teach_configure", control="C", press_s=0.8)
     assert engine.notes["C"]["press_s"] == 0.8
     assert "dial direction" in reject(engine, "teach_configure", control="C", turn_degrees=10)["message"]
+
+
+def test_each_play_is_checked_against_what_orchid_sent(engine):
+    from orchid_demo.keycheck import KeyChecker
+    heard = []
+    engine.key_checker = KeyChecker(lambda: heard, background=False)
+    taught_keys(engine, ("C", "E"))
+    command(engine, "teach_play", control="C")
+    started = engine.clock()
+    heard.append({"type": "press", "t": started + 2.0, "name": "C", "velocity": 64, "octave": 3})
+    run(engine, 60, until=lambda: engine.phase == "teach_hold")
+    run(engine, teach.PERIOD)  # the result is collected on the next control tick
+    assert engine.public["key_check"]["status"] == "ok" and engine.key_check["play"] == 1
+    assert engine.key_check["summary"].startswith("C ✓ velocity 64") and "into the" in engine.key_check["summary"]
+    assert any(e["kind"] == "key_check" for e in engine.repo.events())
+
+    command(engine, "teach_sequence", steps=[{"control": "C"}, {"control": "E"}])
+    run(engine, 60, until=lambda: engine.phase == "teach_hold")
+    run(engine, teach.PERIOD)
+    assert engine.key_check["status"] == "problem" and engine.key_check["play"] == 2
+    assert [s["status"] for s in engine.key_check["steps"]] == ["missed", "missed"]  # nothing sounded this time
+
+    command(engine, "teach_go_home")
+    run(engine, 30, until=lambda: engine.phase == "teach_hold")
+    assert engine.key_check["play"] == 2  # moving home is not a play to check

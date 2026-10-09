@@ -14,13 +14,14 @@ from . import dial
 from . import home
 from .controls import CATALOG, group_members
 from .devices import HardwareArm, HardwareLeader, SimulatedArm, validate_calibration
-from .discovery import discover_arms, follower_problem, leader_problem
+from .discovery import discover_arms, follower_problem, leader_problem, matches
 from .diagnostics import EventLogger
 from .incidents import ERROR_KINDS, IncidentStore
 from . import leader as leader_motion
 from .leader import LeaderController, TEACH_PHASES, FOLLOW_LEASE
 from .storage import Repository
 from . import teach as teach_motion
+from . import tune as tune_rules
 from .telemetry import motor_status, pose_angles
 
 RANGE_MOTORS = tuple(name for name in m.MOTORS if name != "wrist_roll")
@@ -103,7 +104,8 @@ class GuardedController(m.Controller):
 
 class Engine:
     def __init__(self, directory: Path, mode="simulation", *, clock=time.monotonic, sleep=time.sleep,
-                 hardware_factory=HardwareArm, leader_factory=HardwareLeader, port_scanner=discover_arms):
+                 hardware_factory=HardwareArm, leader_factory=HardwareLeader, port_scanner=discover_arms,
+                 key_checker=None, owns=None, leader_store=None):
         m.require(mode in ("simulation", "hardware"), "Unknown operating mode")
         self.mode, self.clock, self.sleep = mode, clock, sleep
         self.hardware_factory = hardware_factory
@@ -114,6 +116,9 @@ class Engine:
             self.discovery["ports"] = [{"path": "simulator", "description": "Practice arm · no hardware",
                                         "role": "simulator", "motor_ids": list(range(1, 7)), "voltage": 12.0,
                                         "connectable": True, "leader_connectable": False, "problem": None},
+                                       {"path": "simulator-2", "description": "Second practice arm · no hardware",
+                                        "role": "simulator", "motor_ids": list(range(1, 7)), "voltage": 12.0,
+                                        "connectable": True, "leader_connectable": False, "problem": None},
                                        {"path": "simulator-leader", "description": "Practice leader", "role": "leader",
                                         "motor_ids": list(range(1, 7)), "voltage": 5.2,
                                         "connectable": False, "leader_connectable": True, "problem": "Leader input"}]
@@ -121,7 +126,14 @@ class Engine:
         self.event_log = EventLogger(self.repo.directory)
         self.calibration = self.repo.get("calibration")
         self.home = self.repo.get("home")
-        self.leader_calibration = self.repo.get("leader_calibration")
+        # Two followers share one leader, so its calibration can live in the other arm's store (rig.LeaderStore).
+        self.leader_store = leader_store
+        self.leader_calibration = leader_store.get() if leader_store else self.repo.get("leader_calibration")
+        self.fixed_owns = tuple(owns) if owns else None  # None: the rig decides (rig.Rig.owned)
+        self.rig, self.arm_id, self.parked_now = None, "a", (True, "not connected")
+        self.leader_port = None  # the leader's serial port while it is open here (the rig never probes it)
+        # The connected follower's motors do not carry this arm's saved calibration: it may be the other arm.
+        self.calibration_foreign = False
         self.leader = None
         self.leader_calibrated = False
         self.leader_current = self.leader_torque = self.leader_feedback_at = None
@@ -148,6 +160,10 @@ class Engine:
         self.teach_settings = {**DEFAULT_TEACH_SETTINGS, **(self.repo.get("teach_settings") or {})}
         self.teach_sequence_label = None
         self.teach_going_rest = None  # "rest" during an operator Go to rest
+        # What Orchid sent while a control played (keycheck.KeyChecker, via Orchid Studio); None = not checked.
+        self.key_checker, self.key_check, self.plays, self.play_steps = key_checker, None, 0, None
+        self.tune = None  # a MIDI-guided tune-up of one key (tune.py); its candidate points are never saved until it passes
+        self.tune_queue, self.tune_results, self.tune_next_at = [], {}, 0.0  # keys still to tune; each key's last result
         self.follower_port = None
         self.current = self.torque = None
         self.feedback_at = None
@@ -205,7 +221,7 @@ class Engine:
                 "fixture": deepcopy(self.fixture), "home": deepcopy(self.home),
                 "diagnostics": deepcopy(self.diagnostics),
                 "recent_events": [{k: e[k] for k in ("created", "kind", "message") if k in e} for e in self.events[:40]],
-                "leader_port": getattr(self.leader, "port", None), "teaching_mode": self.teaching_mode,
+                "leader_port": self.leader_port if self.leader else None, "teaching_mode": self.teaching_mode,
                 "follower_voltage_at_connect": getattr(self.arm, "voltage", None),
                 "leader_voltage_at_connect": getattr(self.leader, "voltage", None),
                 "policy": {"motion": {k: v for k, v in vars(m).items() if k.isupper() and isinstance(v, (int, float, str))},
@@ -294,7 +310,36 @@ class Engine:
             return f"Torque OFF. Support the arm and start with the pad hovering above {self.control['label']}."
         return f"Torque OFF. Support the arm and start with the pad hovering above {self.selected}."
 
+    MOVING_PHASES = ("teach_play", "teach_follow", "teach_record", "home_moving", "home_positioning", "home_arrival",
+                     "home_approach", "home_return", "testing", "retreating", "note_hover", "note_pressed", "note_touch",
+                     "dial_approach", "dial_contact", "dial_turned", "dial_lifted",
+                     "calibration_midpoint", "calibration_range", "calibration_review")  # hand-moved: not parked either
+
+    def parked(self):
+        """(parked, why not): out of the other arm's way, i.e. still and within rig.PARKED_DEG of its home or its rest
+        (both are poses taught for parking the arm clear of the other one)."""
+        if self.arm is None:
+            return True, "not connected"
+        if self.phase in self.MOVING_PHASES or (self.teach and self.teach.mode != "holding"):
+            return False, "moving"
+        poses = {"home": self.shared_teach_home(), "rest": self.shared_teach_rest()}
+        try:
+            pose = (self.teach.measured if self.teach else
+                    self.arm.joint_action(self.current) if self.current and self.calibrated else None)
+        except Exception:  # a conversion failure only means the position is unknown
+            pose = None
+        if not poses["home"] or pose is None:
+            return False, "position unknown: no home set or not calibrated"
+        from .rig import PARKED_DEG
+        joints = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")
+        off = {name: max(abs(pose[j] - point["measured"][j]) for j in joints) for name, point in poses.items() if point}
+        name = min(off, key=off.get)
+        return (True, f"at {name}") if off[name] <= PARKED_DEG else (False, f"{off['home']:.0f}° from home")
+
     def publish(self):
+        if self.selected not in self.owns:  # e.g. arm B's first start: never default to the other arm's control
+            self.selected = self.owns[0]
+        parked = self.parked()
         with self.lock:
             reference_ready = self.calibrated or (self.calibrating and self.calibration_target == "follower" and self.offsets is not None
                                                    and self.phase != "calibration_midpoint")
@@ -325,7 +370,7 @@ class Engine:
                 "teach": None if not self.teach else {
                     "mode": self.teach.mode, "recording": self.teach.frames is not None, "leader": self.teach.read_leader is not None,
                     "recorded_seconds": self.teach.recorded_seconds, "progress": self.teach.progress,
-                    "warning": self.teach.warning, "played": self.teach_played,
+                    "warning": self.teach.warning, "played": self.teach_played, "roll_guard": self.teach.roll_guard,
                     "clipped_steps": self.teach.clipped_steps, "speed": self.teach.speed,
                     "points": [n for n in self.point_names(self.teach_points_for) if n in self.teach_points],
                     "sequence": self.teach_sequence_label,
@@ -368,6 +413,12 @@ class Engine:
                                       if self.is_dial and self.capture and self.current else None),
                 "trials": self.trials, "motion_stage": self.stage,
                 "teach_settings": deepcopy(self.teach_settings),
+                "key_check": deepcopy(self.key_check), "key_check_available": self.key_checker is not None,
+                "tune_limits": {"speed": tune_rules.FIND_SPEED, "hardness": tune_rules.FIND_HARDNESS, "margin": tune_rules.TOUCH_MARGIN,
+                                "depth": tune_rules.PRESS_DEPTH, "passes": tune_rules.VERIFY_PASSES, "limit_deg": tune_rules.LIMIT_DEG},
+                "tune_queue": list(self.tune_queue), "tune_results": deepcopy(self.tune_results),
+                "tune": None if not self.tune else {k: deepcopy(self.tune.get(k)) for k in (
+                    "control", "name", "status", "phase", "trial", "passes", "speed", "hardness", "margin", "depth", "log", "message")},
                 "poses_saved": {"home": bool(self.calibrated and self.shared_teach_home()),
                                 "rest": bool(self.calibrated and self.shared_teach_rest())},
                 "capture_samples": len(self.capture["path"]) if self.capture else 0,
@@ -375,7 +426,21 @@ class Engine:
                 "range_index": self.range_index, "ranges": deepcopy(self.ranges),
                 "calibration": deepcopy(self.calibration), "events": deepcopy(self.events),
                 "last_receipt": deepcopy(next(reversed(self.receipts.values()))) if self.receipts else None,
+                "arm": self.arm_id, "owns": list(self.owns), "parked": parked[0], "parked_reason": parked[1],
+                "calibration_foreign": self.calibration_foreign, "calibration_dependents": self.calibration_dependents(),
             }
+        # Outside our lock: the rig reads this plain value, never our lock, so two arms cannot deadlock.
+        self.parked_now = parked
+        if self.rig:
+            self.rig.update(self.arm_id, parked[0])
+
+    def arm_summary(self):
+        s = self.snapshot()
+        return {"arm": self.arm_id, "phase": s["phase"], "connected": s["connected"], "calibrated": s["calibrated"],
+                "message": s["message"], "parked": s["parked"], "parked_reason": s["parked_reason"],
+                "pose_angles": s.get("pose_angles"), "leader": s["leader"]["connected"], "owns": s["owns"],
+                "powered": any(v == 1 for v in (s.get("torque") or {}).values()),
+                "tuning": bool(s.get("tune_queue")) or (s.get("tune") or {}).get("status") == "running"}
 
     def snapshot(self):
         with self.lock:
@@ -629,6 +694,16 @@ class Engine:
             self.leader_calibrated = value
         else:
             self.calibrated = value
+            if value:
+                self.calibration_foreign = False
+
+    def calibration_dependents(self):
+        """Taught controls recorded under this arm's saved calibration (they need it to stay valid)."""
+        if not self.calibration:
+            return 0
+        signature = m.fingerprint(self.calibration)
+        return sum(1 for entry in (*self.notes.values(), *self.controls.values())
+                   if entry and entry.get("calibration_sha256") == signature)
 
     def begin_calibration(self):
         backup = self.calibration_arm.begin_calibration()
@@ -799,10 +874,6 @@ class Engine:
         self.teach_home_doc = self.pose_doc(captured)
         self.repo.put("teach_home", self.teach_home_doc)
 
-    def apply_roll_lock(self):
-        if self.teach:
-            self.teach.lock_wrist_roll(True)  # keys never turn the wrist; the dial's turn is a computed wrist rotation
-
     def save_dial_entries(self, points):
         """Both directions share the taught steps; each keeps its own turn angle."""
         for control, default in DIAL_DIRECTIONS.items():
@@ -862,6 +933,8 @@ class Engine:
 
     def start_playback(self, recording, speed, args):
         self.teach_played, self.teach_returning, self.teach_going_home, self.teach_going_rest = None, False, False, None
+        self.play_steps = recording.get("steps") or [{"key": self.selected, "start": 0.0, "end": recording["frames"][-1]["t"],
+                                                      "marks": recording.get("marks", {})}]
         # Faster playback also moves to the start faster, up to twice the usual ramp.
         self.teach.play(recording, speed, force=args.get("force") is True,
                         ramp_speed=teach_motion.RAMP_SPEED * min(2.0, max(1.0, speed)))
@@ -882,9 +955,31 @@ class Engine:
             owner, revision = self.owner, self.revision
         return self.submit(owner, uuid.uuid4().hex, action, revision, args)
 
+    @property
+    def owns(self):
+        """The controls this follower plays: all of them, unless a second follower takes the chords and dial."""
+        if self.fixed_owns:
+            return self.fixed_owns
+        return self.rig.owned(self.arm_id) if self.rig else tuple(CATALOG)
+
+    def port_entry(self, arm):
+        """A scanned arm, with which follower it is (from the calibration in its motors) when that is known."""
+        identity = None
+        for who, calibration in (self.rig.calibrations() if self.rig else {self.arm_id: self.calibration}).items():
+            if arm.get("role") == "follower" and matches(calibration, arm.get("limits")):
+                identity = who
+        problem = follower_problem(arm)
+        if not problem and identity not in (None, self.arm_id):
+            problem = (f"This is arm {identity.upper()}'s follower: its motors carry arm {identity.upper()}'s calibration. "
+                       f"Connect it as arm {identity.upper()}.")
+        return {**arm, "path": arm["port"], "description": arm["role"] or "Unidentified arm", "arm": identity,
+                "connectable": problem is None, "problem": problem,
+                "leader_connectable": leader_problem(arm) is None, "leader_problem": leader_problem(arm)}
+
     def teach_control(self, args):
         selected = args.get("control", self.selected)
         m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
+        m.require(selected in self.owns, f"{CATALOG[selected]['name']} is played by the other arm.")
         self.selected = selected
         return CATALOG[selected]["name"]
 
@@ -906,6 +1001,8 @@ class Engine:
                 "Select a step to retrain it, or Play."))
         elif event == "start_mismatch":
             self.transition("teach_hold", self.teach.warning)
+            if self.tune and self.tune["status"] == "running":
+                self.tune_end("failed", f"Tune-up stopped before pressing: {self.teach.warning} Nothing was saved.")
         elif event == "played" and self.teach_going_rest:
             self.teach_going_rest = None
             self.transition("teach_hold", "At rest, holding.")
@@ -917,17 +1014,240 @@ class Engine:
             self.transition("teach_hold", f"{name} taught: home → hover → touch → press, and back. The follower is holding at home. "
                             "Put the leader back at rest before following again. Play it to test.")
         elif event == "played" and self.teach_sequence_label:
+            self.request_key_check()
             label, self.teach_sequence_label = self.teach_sequence_label, None
             self.transition("teach_hold", f"Played {label}; holding at home.")
         elif event == "played":
+            self.request_key_check()
             self.teach_played = self.selected
             note = (f" {self.teach.clipped_steps} steps were limited to {teach_motion.FOLLOW_CAP:.0f}° from the measured "
                     "pose (the arm lagged or was blocked)." if self.teach.clipped_steps else "")
             # Between key presses the arm waits at home; rest is only visited on request (Go to rest).
             self.transition("teach_hold", f"Played {name}; holding at home. Space plays it again; pick another key to teach it.{note}")
 
+    def request_key_check(self):
+        """Compare what Orchid sent during this play with what was played, off the motor loop."""
+        if not self.key_checker or not self.play_steps:
+            return
+        self.plays += 1
+        self.key_check = {"play": self.plays, "status": "pending", "steps": [], "summary": "Checking the notes with Orchid Studio…"}
+        self.key_checker.request({"play": self.plays, "started": self.teach.play_started, "speed": self.teach.speed,
+                                  "steps": deepcopy(self.play_steps)})
+        self.play_steps = None
+
+    def collect_key_check(self):
+        result = self.key_checker.poll() if self.key_checker else None
+        if result and result["play"] == self.plays:  # an older play's late result is not this play's
+            self.key_check = result
+            self.event("key_check", result["summary"], {"status": result["status"], "steps": result["steps"]})
+            if self.tune and self.tune["status"] == "running" and self.tune["waiting"]:
+                self.tune_result(result)
+            self.publish()
+
+    # --- MIDI-guided tune-up (one key, operator beside the arm, console only) -----------------------------
+
+    @property
+    def tuning(self):
+        return bool(self.tune and self.tune["status"] == "running") or bool(self.tune_queue)
+
+    def tune_start(self, args):
+        self.require_phase("teach_hold")
+        m.require(args.get("beside_arm") is True, "Confirm you are beside the arm with Stop motion in reach.")
+        m.require(self.key_checker is not None,
+                  "The tune-up needs the note check: real hardware and Orchid Studio running with --sound-input Orchid.")
+        controls = args.get("controls", [args.get("control")])
+        m.require(isinstance(controls, list) and 1 <= len(controls) <= len(m.KEYS) and len(set(controls)) == len(controls),
+                  "Choose the keys to tune.")
+        for control in controls:  # all checked before anything moves
+            self.tune_check(control)
+        self.tune_queue = list(controls[1:])
+        self.tune_begin(controls[0])
+
+    def tune_check(self, control):
+        m.require(isinstance(control, str) and control in CATALOG, "Choose a key to tune.")
+        name = CATALOG[control]["name"]
+        m.require(CATALOG[control]["kind"] == "key", "Only keyboard keys can be tuned: chord buttons and the dial send no notes to check.")
+        entry = self.recording_entry(control)
+        m.require(entry["format"] == WAYPOINT_FORMAT, f"{name} was recorded freely, not taught by points. Re-teach it with the leader first.")
+        m.require(self.shared_teach_home(), "No home is set. Set home with the leader first.")
+        return entry
+
+    def tune_begin(self, control):
+        entry = self.tune_check(control)
+        name = self.teach_control({"control": control})
+        points = {k: v for k, v in deepcopy(entry["points"]).items() if k in teach_motion.POINTS}
+        # Finding starts from what was taught with the leader, so repeated calibrations cannot creep away from it.
+        taught = {**points, **deepcopy(entry.get("taught_points") or {})}
+        self.tune = {"control": self.selected, "name": name, "status": "running", "phase": "find", "trial": 0, "passes": 0,
+                     "finds": [], "verify_trials": 0, "margin": tune_rules.TOUCH_MARGIN, "depth": tune_rules.PRESS_DEPTH,
+                     "speed": tune_rules.FIND_SPEED, "hardness": tune_rules.FIND_HARDNESS, "log": [], "message": "Finding the trigger point",
+                     "waiting": False, "points": deepcopy(taught), "taught": taught,
+                     "press_s": entry.get("press_s", self.teach_settings["press_s"]), "next_at": self.clock()}
+        self.event("tune", f"Calibration of {name} started", {"control": self.selected})
+        after = f" ({len(self.tune_queue)} more after it)" if self.tune_queue else ""
+        self.transition("teach_hold", f"Calibrating {name}{after}: finding where it triggers with gentle presses. "
+                        "Stop motion ends it; nothing is saved unless it passes.")
+
+    def tune_trial(self):
+        tune = self.tune
+        if self.rig:
+            self.rig.claim(self.arm_id, "teach_play", {})
+        self.selected = tune["control"]
+        verify = tune["phase"] == "verify"
+        speed = self.teach_settings["speed"] if verify else tune_rules.FIND_SPEED
+        hardness = self.teach_settings["press_hardness"] if verify else tune_rules.FIND_HARDNESS
+        points = {**tune["points"], "home": self.shared_teach_home()}
+        recording = teach_motion.waypoint_recording(points, tune["control"], float(tune["press_s"]), hardness)
+        tune.update(trial=tune["trial"] + 1, waiting=True, speed=speed, hardness=hardness,
+                    play={"frames": recording["frames"], "bottom": recording["marks"]["press"]})
+        tune["message"] = (f"Checking at your playing speed ({speed:g}×, {hardness:.0%} hardness)" if verify else
+                           "Finding the trigger point (gentle press)")
+        self.teach_sequence_label = None
+        self.start_playback(recording, speed, {})
+        self.transition("teach_play", f"Calibrating {tune['name']}: {tune['message'].lower()}. Stop motion ends it.")
+
+    def tune_note(self, step):
+        """Where on this press's commanded path the note sounded (recording time)."""
+        return (step["t"] - self.teach.play_started) * self.teach.speed
+
+    def tune_set(self, tune, note_t):
+        """Touch margin deg before the trigger, press depth deg past it, on the found press's commanded path.
+        Returns why not, if that press would go more than LIMIT_DEG past the taught press."""
+        play, taught = tune["found_play"], tune["taught"]
+        trigger, touch, press = tune_rules.around(play["frames"], note_t, play["bottom"], tune["margin"], tune["depth"])
+        down = {j: taught["press"]["goal"][j] - taught["touch"]["goal"][j] for j in tune_rules.JOINTS}
+        past = tune_rules.beyond(press, taught["press"], down)
+        if past > tune_rules.LIMIT_DEG + 1e-9:
+            return f"its press would go {past:.1f}° past where it was taught (limit {tune_rules.LIMIT_DEG:g}°)"
+        tune["trigger"] = trigger
+        tune["points"] = {**tune["found_points"], "touch": tune_rules.point(tune["found_points"]["touch"], touch),
+                          "press": tune_rules.point(tune["found_points"]["press"], press)}
+        return None
+
+    def tune_result(self, result):
+        tune = self.tune
+        tune["waiting"] = False
+        step = result["steps"][0] if result["steps"] else {"status": result["status"], "text": result["summary"]}
+        status, text = step["status"], step.get("text") or step["status"]
+        stop = None
+        if tune["phase"] == "find":
+            if status in ("ok", "repeated"):  # the first note is the trigger, even if it sounded twice
+                tune["finds"].append(self.tune_note(step))
+                trigger = tune_rules.goal_at(tune["play"]["frames"], tune["finds"][-1])
+                tune.setdefault("find_goals", []).append(trigger)
+                agree = len(tune["finds"]) >= tune_rules.FINDS and \
+                    tune_rules.gap(tune["find_goals"][-1], tune["find_goals"][-2]) <= tune_rules.AGREE_DEG
+                if agree:
+                    tune.update(found_play=tune["play"], found_points=deepcopy(tune["points"]), phase="verify", passes=0)
+                    problem = self.tune_set(tune, sum(tune["finds"][-2:]) / 2)
+                    if problem:
+                        stop = f"{tune['name']}: {problem}; re-teach it with the leader"
+                    else:
+                        taught_press = tune["taught"]["press"]["goal"]
+                        text += (f"; trigger found. Touch set {tune['margin']:g}° before it, press {tune['depth']:g}° past it "
+                                 f"(was {tune_rules.gap(tune['trigger'], taught_press):.1f}° past)")
+                elif len(tune["finds"]) >= tune_rules.MAX_FINDS:
+                    stop = f"{tune['name']} triggers at a different point each time; re-teach it with the leader"
+            elif status == "missed":
+                points, change = tune_rules.deeper(tune["points"], tune["taught"]["press"])
+                if points is None:
+                    stop = f"{tune['name']}: {change}; re-teach it with the leader"
+                else:
+                    tune.update(points=points, finds=[], find_goals=[])
+                    text += f"; {change}"
+            else:
+                stop = f"{text}. Calibration cannot correct this; re-teach it with the leader"
+            if not stop and tune["trial"] >= tune_rules.MAX_FINDS + int(tune_rules.LIMIT_DEG / tune_rules.STEP_DEG) and tune["phase"] == "find":
+                stop = f"{tune['name']} did not give a steady trigger point; re-teach it with the leader"
+        else:
+            tune["verify_trials"] += 1
+            if status == "ok":
+                tune["passes"] += 1
+                if tune["passes"] >= tune_rules.VERIFY_PASSES:
+                    tune["log"].append({"trial": tune["trial"], "phase": "verify", "outcome": "pass", "text": text, "velocity": step.get("velocity")})
+                    return self.tune_finish()
+            else:
+                tune["passes"] = 0
+                note_t = sum(tune["finds"][-2:]) / 2
+                if status == "repeated" and tune["margin"] + tune_rules.MARGIN_STEP <= tune_rules.MAX_MARGIN + 1e-9:
+                    tune["margin"] += tune_rules.MARGIN_STEP
+                    problem = self.tune_set(tune, note_t)
+                    stop = problem and f"{tune['name']}: {problem}"
+                    text += f"; touch now {tune['margin']:g}° before the trigger"
+                elif status == "missed" and tune["depth"] + tune_rules.DEPTH_STEP <= tune_rules.MAX_DEPTH + 1e-9:
+                    tune["depth"] += tune_rules.DEPTH_STEP
+                    problem = self.tune_set(tune, note_t)
+                    stop = problem and f"{tune['name']}: {problem}"
+                    text += f"; press now {tune['depth']:g}° past the trigger"
+                else:
+                    stop = f"{text} at your playing speed; re-teach it with the leader"
+            if not stop and tune["verify_trials"] >= tune_rules.MAX_VERIFY:
+                stop = f"{tune['name']} did not press cleanly twice in a row at your playing speed"
+        outcome = "stop" if stop else "pass" if status == "ok" else "adjust"
+        tune["log"].append({"trial": tune["trial"], "phase": "find" if tune["phase"] == "find" or "trigger found" in text else "verify",
+                            "outcome": outcome, "text": stop or text, "velocity": step.get("velocity")})
+        self.event("tune", f"{tune['name']} try {tune['trial']}: {stop or text}", {"control": tune["control"], "outcome": outcome})
+        if stop:
+            return self.tune_end("failed", f"{stop}. Nothing was saved.")
+        tune["message"] = text
+        tune["next_at"] = self.clock() + tune_rules.PAUSE_S
+
+    def tune_finish(self):
+        tune = self.tune
+        entry = self.recording_entry(tune["control"])
+        trigger, taught_press = tune["trigger"], tune["taught"]["press"]["goal"]
+        self.save_control_entry(tune["control"], {
+            **entry, "points": {**entry["points"], "touch": tune["points"]["touch"], "press": tune["points"]["press"]},
+            "saved_at": m.stamp(), "tuned_at": m.stamp(),
+            "taught_points": entry.get("taught_points") or {k: entry["points"][k] for k in ("touch", "press")},
+            "calibration": {"trigger": {j: round(trigger[j], 3) for j in tune_rules.JOINTS}, "touch_margin": tune["margin"],
+                            "press_depth": tune["depth"], "verified_speed": tune["speed"], "verified_hardness": tune["hardness"],
+                            "log": tune["log"]}})
+        self.teach_points_for = None
+        self.tune_end("done", f"{tune['name']} calibrated: touch {tune['margin']:g}° before its trigger point, press "
+                      f"{tune['depth']:g}° past it (taught {tune_rules.gap(trigger, taught_press):.1f}° past). "
+                      f"Verified at {tune['speed']:g}×. The taught points are kept.")
+
+    def tune_end(self, status, message):
+        self.tune.update(status=status, message=message, waiting=False)
+        self.tune_results[self.tune["control"]] = {"status": status, "message": message, "trials": self.tune["trial"], "at": m.stamp()}
+        self.event("tune", message, {"control": self.tune["control"], "status": status})
+        if status == "stopped":
+            self.tune_queue = []  # Stop ends the whole list
+        elif self.tune_queue:
+            self.tune_next_at = self.clock() + tune_rules.PAUSE_S
+            message += f" Next: {CATALOG[self.tune_queue[0]]['name']}."
+        if self.phase == "teach_hold":
+            self.transition("teach_hold", message)
+
+    def tune_stop(self, message):
+        self.tune_queue = []
+        if self.tune and self.tune["status"] == "running":
+            self.tune_end("stopped", message)
+        elif self.phase == "teach_hold":
+            self.transition("teach_hold", "Tune-up stopped between keys; holding here.")
+
+    def tune_due(self):
+        if self.tune_queue and self.tune["status"] != "running" and self.phase == "teach_hold" and self.clock() >= self.tune_next_at:
+            control = self.tune_queue.pop(0)
+            try:
+                self.tune_begin(control)
+            except m.SafetyError as exc:  # e.g. re-taught or invalidated since the list was checked
+                self.tune_results[control] = {"status": "failed", "message": str(exc), "trials": 0, "at": m.stamp()}
+                self.tune_next_at = self.clock()
+            return
+        tune = self.tune
+        if tune and tune["status"] == "running" and not tune["waiting"] and self.phase == "teach_hold" \
+                and self.clock() >= tune["next_at"]:
+            try:
+                self.tune_trial()
+            except (m.SafetyError, ValueError) as exc:
+                self.tune_end("failed", f"Tune-up stopped: {exc}")
+
     def fault(self, exc):
         message = str(exc) or type(exc).__name__
+        if self.tuning:
+            self.tune_stop(f"Stopped by a fault: {message}. Nothing was saved.")
         context = self.error_context()
         if self.controller:
             self.controller.stop()
@@ -958,6 +1278,28 @@ class Engine:
         self.publish()
 
     def dispatch(self, action, args):
+        if self.tuning:
+            # Supported release and disconnect stay available; they end the tune-up like Stop motion.
+            m.require(action in ("tune_stop", "release", "disconnect", "forget_connection"), "A tune-up is running. Stop it first.")
+            if action != "tune_stop":
+                self.tune_stop("Stopped: torque released or disconnected. Nothing was saved.")
+        # Each arm is only taught and plays its own controls, whatever the command (teach, follow, capture, play,
+        # sequence, settings, key calibration, the hand-guided flow).
+        named = [args.get("control")] + [step.get("control") for step in args.get("steps") or () if isinstance(step, dict)] + \
+            list(args.get("controls") or ())
+        for control in named:
+            if isinstance(control, str) and control in CATALOG and control not in self.owns:
+                raise m.SafetyError(f"{CATALOG[control]['name']} is played by the other arm.")
+        if self.rig:
+            self.rig.claim(self.arm_id, action, args)
+        if action == "tune_start":
+            return self.tune_start(args)
+        if action == "tune_stop":
+            m.require(self.tuning, "No tune-up is running.")
+            if self.phase == "teach_play":
+                self.teach.hold()
+                self.transition("teach_hold", "Holding here.")
+            return self.tune_stop("Tune-up stopped; holding here. Nothing was saved for the key being tuned.")
         if self.teaching_mode == "leader" and (action.startswith("capture_") or action.startswith("dial_capture_")):
             m.require(not self.recording_error, self.recording_error)
         if self.teaching_mode == "leader" and action in ("capture_hover", "capture_pressed", "capture_touch", "retreat_from_press",
@@ -982,14 +1324,12 @@ class Engine:
             self.discovery = {"ports": [], "scanned_at": None, "scanning": True, "warnings": [], "error": None}
             self.publish()
             try:
-                result = self.port_scanner(guard=self.guard, **({"exclude_ports": (self.follower_port,)} if adding_leader else {}))
+                busy = ((self.follower_port,) if adding_leader else ()) + (self.rig.ports_in_use(self.arm_id) if self.rig else ())
+                result = self.port_scanner(guard=self.guard, **({"exclude_ports": busy} if busy else {}))
                 self.guard()
-                self.discovery["ports"] = [
-                    {**arm, "path": arm["port"], "description": arm["role"] or "Unidentified arm",
-                     "connectable": follower_problem(arm) is None, "problem": follower_problem(arm),
-                     "leader_connectable": leader_problem(arm) is None, "leader_problem": leader_problem(arm)}
-                    for arm in result["arms"]
-                ]
+                self.discovery["ports"] = [self.port_entry(arm) for arm in result["arms"]]
+                if self.rig:
+                    self.rig.note_scan(self.discovery["ports"], by=self.arm_id)
                 self.discovery["warnings"] = result["warnings"]
                 self.discovery["scanned_at"] = time.time()
                 self.error = None
@@ -1027,18 +1367,22 @@ class Engine:
             try:
                 self.open_arm(candidate, "follower", port if self.mode == "hardware" else "simulator")
                 self.arm = candidate
-                self.follower_port = port if self.mode == "hardware" else "simulator"
+                self.follower_port = port if self.mode == "hardware" else str(args.get("port") or "simulator")
                 if teaching_mode == "leader":
+                    if self.leader_store:  # the other follower may have calibrated the shared leader since
+                        self.leader_calibration = self.leader_store.get()
                     self.leader = (self.leader_factory(leader_port, self.leader_calibration) if self.mode == "hardware"
                                    else SimulatedArm(self.leader_calibration))
                     if self.mode == "simulation":
                         self.leader.voltage = 5.2
-                    self.open_arm(self.leader, "leader", leader_port if self.mode == "hardware" else "simulator-leader")
+                    self.leader_port = leader_port if self.mode == "hardware" else "simulator-leader"
+                    self.open_arm(self.leader, "leader", self.leader_port)
                     self.leader_calibrated = bool(self.leader_calibration) and getattr(self.leader, "calibration_matches", True)
                 self.teaching_mode = teaching_mode
                 self.calibration_target = "follower"
                 self.diagnostics = self.diagnostics_error = None
                 self.calibrated = bool(self.calibration) and getattr(candidate, "calibration_matches", True)
+                self.calibration_foreign = bool(self.calibration) and not self.calibrated
                 self.transition("connected", "Follower connected. Check motor state, then calibrate or register notes.")
                 self.sample()
             except Exception:
@@ -1052,18 +1396,40 @@ class Engine:
                 self.calibrated = False
                 self.phase = "disconnected"
                 raise
+        elif action == "leader_detach":
+            # Hands the one leader to the other follower: close it here, then Connect leader there. A follower holding
+            # in a teaching session keeps holding, just without the leader (it can still play and go home).
+            self.require_phase("connected", "ready", "teach_hold")
+            m.require(self.leader is not None, "No leader is connected to this follower.")
+            self.leader.require_torque(False)
+            if self.teach:
+                self.teach.read_leader = None
+            if self.rig:
+                self.rig.released_leader = self.leader_port
+            self.leader.close()
+            self.leader, self.leader_calibrated = None, False
+            self.leader_current = self.leader_torque = self.leader_feedback_at = None
+            self.teaching_mode = "manual"
+            self.transition(self.phase, "Leader disconnected from this follower. Connect it to the other follower to teach it.")
         elif action == "connect_leader":
-            self.require_phase("connected", "ready")
+            # Also while holding in a teaching session (the leader follows the arm you select): opening the leader
+            # only reads it, so the powered follower is left exactly as it is.
+            self.require_phase("connected", "ready", "teach_hold")
+            holding = self.phase == "teach_hold"
             m.require(self.arm is not None and self.leader is None, "A follower must be connected and the leader must be disconnected.")
             m.require(args.get("prepared") is True, "Confirm the leader is secure and clear of the instrument.")
             port = args.get("leader_port")
-            m.require(isinstance(port, str) and any(p["path"] == port and p.get("leader_connectable") for p in self.discovery["ports"]),
+            handed_over = bool(self.rig) and port is not None and port == self.rig.released_leader  # just released by the other arm
+            m.require(isinstance(port, str) and (handed_over or any(p["path"] == port and p.get("leader_connectable") for p in self.discovery["ports"])),
                       "Refresh leader connections and choose a detected low-voltage leader with motor IDs 1–6.")
             m.require(Path(port).resolve() != Path(self.follower_port).resolve(), "The leader must use a separate port from the connected follower.")
             self.guard()
-            self.arm.require_torque(False)
+            if not holding:
+                self.arm.require_torque(False)
             candidate = None
             try:
+                if self.leader_store:
+                    self.leader_calibration = self.leader_store.get()
                 candidate = self.leader_factory(port, self.leader_calibration) if self.mode == "hardware" else SimulatedArm(self.leader_calibration)
                 if self.mode == "simulation":
                     candidate.voltage = 5.2
@@ -1075,12 +1441,18 @@ class Engine:
                 if candidate is not None:
                     candidate.close()
                 raise m.SafetyError(f"Leader connection failed; follower calibration is unchanged: {exc}") from exc
-            self.leader = candidate
+            self.leader, self.leader_port = candidate, port
             self.leader_calibrated = bool(self.leader_calibration) and getattr(candidate, "calibration_matches", True)
             self.teaching_mode = "leader"
-            self.calibration_target = "leader"
-            self.transition("connected", "Leader connected. Follower calibration retained. Calibrate the leader before teaching.")
-            self.sample()
+            if holding:  # the session keeps holding; following can start once the leader is calibrated
+                self.teach.read_leader = self.read_leader_joints if self.leader_calibrated else None
+                self.transition("teach_hold", "Leader connected; still holding here. Follow the leader to teach." if self.leader_calibrated
+                                else "Leader connected; still holding here. Calibrate the leader before teaching.")
+            else:
+                self.calibration_target = "leader"
+                self.transition("connected", "Leader connected. Follower calibration retained. " + (
+                    "Its saved calibration is valid: teach with it." if self.leader_calibrated else "Calibrate the leader before teaching."))
+                self.sample()
         elif action == "refresh_diagnostics":
             self.require_phase("connected", "ready")
             self.guard()
@@ -1099,6 +1471,12 @@ class Engine:
             m.require(target in ("leader", "follower") and (target != "leader" or self.leader is not None), "Connect the requested arm first.")
             m.require(not self.calibrating or target == self.calibration_target, "Finish or release the current arm's calibration first.")
             self.calibration_target = target
+            if target == "follower" and action in ("calibrate", "calibration_reset") and self.calibration_foreign:
+                name = f"arm {self.arm_id.upper()}" if self.rig else "this arm"
+                m.require(args.get("replace_calibration") is True,
+                          f"This follower's motors do not carry {name}'s saved calibration, so it may be a different arm. "
+                          f"Connect it as the other arm instead, or confirm replacing {name}'s calibration: "
+                          f"{self.calibration_dependents()} taught controls recorded with it would need re-teaching.")
             reload_saved = action == "calibration_reload"
             if reload_saved:
                 # Validate before releasing torque or discarding an active sweep.
@@ -1173,7 +1551,10 @@ class Engine:
             self.guard()
             self.actuating = True
             self.calibration_arm.commit_calibration(new, guard=self.guard)
-            self.repo.put("leader_calibration" if self.calibration_target == "leader" else "calibration", new)
+            if self.calibration_target == "leader" and self.leader_store:
+                self.leader_store.put(new)
+            else:
+                self.repo.put("leader_calibration" if self.calibration_target == "leader" else "calibration", new)
             if self.calibration_target == "leader":
                 self.leader_calibration = new
             else:
@@ -1599,7 +1980,6 @@ class Engine:
                 home_note = " Home saved here."
             if args.get("follow") is True:
                 self.teach.follow()
-                self.apply_roll_lock()
                 self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s.{home_note} "
                                 "Hands off the follower; hold the leader near its pose.")
             elif leader:
@@ -1612,7 +1992,6 @@ class Engine:
             if "control" in args:  # the key selected on the map becomes the one being taught
                 self.teach_control(args)
             self.teach.follow()
-            self.apply_roll_lock()
             self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s. Hold the leader near the follower's pose.")
         elif action == "teach_hold":
             self.require_phase("teach_follow", "teach_record", "teach_play")
@@ -1645,6 +2024,8 @@ class Engine:
             # Both arms' wrist-roll zero moves half a turn so work happens mid-encoder, away from the -180/+180 wrap.
             # Every saved angle gets the same half turn, so taught motions keep pointing at the same physical poses.
             self.require_phase("connected", "ready")
+            m.require(not self.leader_store, "Re-centring is not available while two followers share the leader: "
+                      "it would turn the leader's wrist zero for both.")
             self.supported(args)
             m.require(self.teaching_mode == "leader" and self.leader is not None and self.calibrated and self.leader_calibrated,
                       "Connect and calibrate both arms first.")
@@ -1729,8 +2110,6 @@ class Engine:
             self.require_phase("teach_hold", "teach_follow")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to capture poses.")
             name = self.teach_control(args)
-            if self.teach.mode == "following":
-                self.apply_roll_lock()  # switching between a key and the dial while following
             points = self.points_for(self.selected)
             names = self.point_names(self.selected)
             final = names[-1]  # press for a key, turn for the dial
@@ -1949,6 +2328,8 @@ class Engine:
                     self.teach.hold()
                     self.teach_returning = self.teach_going_home = False
                     self.teach_going_rest = None
+                    if self.tuning:
+                        self.tune_stop("Stopped by Stop motion. Nothing was saved.")
                     self.transition("teach_hold", "Stopped; holding here. Start following or play again when ready.")
                 except Exception as exc:
                     self.fault(exc)
@@ -1960,6 +2341,8 @@ class Engine:
             command = None
         if command:
             self.process(command)
+        self.collect_key_check()
+        self.tune_due()
         if self.arm and self.phase not in ("fault", "disconnected"):
             try:
                 if self.simulated_leader_input:

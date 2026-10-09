@@ -44,6 +44,8 @@ MIN_PRESS_HARDNESS = 0.1
 RETURN_SETTLE_S = 0.3
 MAX_PLAY_SPEED = 3.0  # playback speed multiplier (1.0 = the taught/planned timing)
 MAX_PRESS_S = 5.0  # longest hold at the bottom of a press
+ROLL_JUMP_DEG = 90.0  # a leader wrist-roll change this large in one tick is the -180/+180 wrap, not a real turn
+ROLL_RESUME_DEG = 10.0  # after the wrap, follow the wrist roll again once the leader is back this close
 SETTLED_DEG = 1.0  # the settle before playback ends as soon as the arm is this close to the start
 STROKE_LIMIT = 30.0  # deg: touch is just below hover, press just past touch; farther means a point is wrong  # pause at the press before the automatic return after capturing it
 
@@ -81,18 +83,22 @@ def _segment(start: dict, end: dict, peak_speed: float, stretch: float = 1.0) ->
     return duration, poses
 
 
-def _frames(points: dict, legs: list) -> list:
+def _frames(points: dict, legs: list, marks: dict | None = None) -> list:
+    """marks, if given, receives when each point is first reached and when a dwell there ends ("<point>_held")."""
     first = legs[0][0]
     frames = [{"t": 0.0, "goal": rounded(points[first]["goal"]), "follower": points[first]["measured"]}]
     t = 0.0
+    marks = {} if marks is None else marks
     for a, b, speed, *stretch in legs:
         if a == b:  # dwell
             t += speed
             frames.append({"t": round(t, 4), "goal": rounded(points[a]["goal"])})
+            marks.setdefault(a + "_held", round(t, 4))
             continue
         duration, poses = _segment(points[a]["goal"], points[b]["goal"], speed, *stretch)
         frames += [{"t": round(t + dt, 4), "goal": rounded(pose)} for dt, pose in poses]
         t += duration
+        marks.setdefault(b, round(t, 4))
     return frames
 
 
@@ -105,10 +111,13 @@ def waypoint_recording(points: dict, key: str = "", press_s: float = PRESS_DWELL
         raise ValueError("Capture " + ", ".join(missing) + " first.")
     if not MIN_PRESS_HARDNESS <= hardness <= 1.0:
         raise ValueError(f"Press hardness must be between {MIN_PRESS_HARDNESS:.0%} and 100%.")
-    return {"key": key, "frames": _frames(points, [
+    marks = {}
+    frames = _frames(points, [
         ("home", "hover", TRAVEL_SPEED), ("hover", "touch", STROKE_SPEED), ("touch", "press", STROKE_SPEED, 1 / hardness),
         ("press", "press", press_s),
-        ("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)])}
+        ("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)], marks)
+    # When the stroke starts (touch), reaches the bottom (press) and lifts off: what a key check times against.
+    return {"key": key, "frames": frames, "marks": {"touch": marks["touch"], "press": marks["press"], "lift": marks["press_held"]}}
 
 
 def _turned(points: dict, degrees: float) -> dict:
@@ -149,13 +158,16 @@ def dial_return_recording(points: dict, key: str = "") -> dict:
 
 
 def sequence_recording(recordings: list, key: str = "sequence") -> dict:
-    """Recordings that each start and end at home, played back to back on one timeline."""
-    frames, offset = [], 0.0
+    """Recordings that each start and end at home, played back to back on one timeline.
+    steps says where each one starts and ends on that timeline, with its marks shifted to match."""
+    frames, offset, steps = [], 0.0, []
     for recording in recordings:
         part = recording["frames"]
         frames += [{**f, "t": round(offset + f["t"], 4)} for f in (part if not frames else part[1:])]
+        steps.append({"key": recording.get("key"), "start": offset, "end": frames[-1]["t"],
+                      "marks": {k: round(offset + v, 4) for k, v in recording.get("marks", {}).items()}})
         offset = frames[-1]["t"]
-    return {"key": key, "frames": frames}
+    return {"key": key, "frames": frames, "steps": steps}
 
 
 def return_recording(points: dict, key: str = "") -> dict:
@@ -178,7 +190,8 @@ class Session:
         self.goal = dict(self.measured)
         self.leader_pose = None
         self.gripper_hold = self.measured["gripper"] if lock_gripper else None
-        self.roll_hold = None  # wrist roll held still while following (keys never need it)
+        self.roll_hold = None  # wrist roll held still while following (lock_wrist_roll; not used by the console)
+        self.roll_guard = False  # the leader's wrist roll crossed the -180/+180 edge: hold ours until it comes back
         self.mode = "holding"
         self.frames = None
         self.record_started = None
@@ -253,6 +266,16 @@ class Session:
 
     # --- control loop -----------------------------------------------------------------------------
 
+    def wrap_guard(self, target: dict) -> dict:
+        """Wrist roll spans a full turn, so its reading wraps between +180 and -180 deg. Never chase that wrap: it
+        would spin the follower almost a whole turn the other way. Hold our roll until the leader comes back."""
+        gap = abs(target["wrist_roll"] - self.goal["wrist_roll"])
+        if self.roll_guard and gap <= ROLL_RESUME_DEG:
+            self.roll_guard = False
+        elif not self.roll_guard and gap > (180.0 if self.mode == "aligning" else ROLL_JUMP_DEG):
+            self.roll_guard = True
+        return {**target, "wrist_roll": self.goal["wrist_roll"]} if self.roll_guard else target
+
     def tick(self) -> str | None:
         """One read + one goal. Returns 'aligned', 'start_mismatch', 'playing' or 'played' on a change."""
         now = self.clock()
@@ -267,7 +290,7 @@ class Session:
                 self.leader_pose["wrist_roll"] = self.roll_hold
         event = None
         if self.mode in ("aligning", "following"):
-            target = self.leader_pose
+            target = self.wrap_guard(self.leader_pose)
             if self.mode == "aligning":
                 self.goal = step_toward(self.goal, target, self.ramp_speed * dt)
                 if max_gap(self.goal, target)[1] < 1e-9:

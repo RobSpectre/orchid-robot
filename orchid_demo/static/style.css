@@ -1596,3 +1596,156 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 
 .turn-field input { width:5em; margin:0 6px; }
 .turn-field small { display:block; opacity:.7; }
+
+.key-check {
+  margin:4px 0 16px;
+}
+
+.tune-log {
+  margin:8px 0 14px;
+  padding-left:20px;
+  font-size:12px;
+  color:var(--muted);
+}
+
+.tune-log li {
+  margin:3px 0;
+}
+
+.tune-log .pass b {
+  color:#7fcf8e;
+}
+
+.tune-log .adjust b {
+  color:var(--amber);
+}
+
+.tune-log .stop b {
+  color:var(--red);
+}
+
+.tune-progress {
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+  margin:14px 0 4px;
+  padding:12px 14px;
+  border:1px solid var(--amber);
+  border-radius:10px;
+  color:var(--ink);
+}
+
+.tune-progress span {
+  color:var(--muted);
+  font-size:12px;
+}
+
+.tune-grid {
+  display:grid;
+  grid-template-columns:repeat(6, minmax(0, 1fr));
+  gap:8px;
+  margin-top:18px;
+}
+
+.tune-key {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:2px;
+  padding:10px 4px;
+  min-width:0;
+}
+
+.tune-key small {
+  font-size:10px;
+  color:var(--muted);
+  white-space:nowrap;
+}
+
+.tune-key.current {
+  border-color:var(--amber);
+}
+
+.tune-key.done small {
+  color:#7fcf8e;
+}
+
+.tune-key.failed small {
+  color:var(--red);
+}
+
+@media(max-width:640px) {
+  .tune-grid {
+    grid-template-columns:repeat(4, minmax(0, 1fr));
+  }
+}
+
+.arm-switch {
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  margin:0 0 18px;
+}
+
+.arm-switch button {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:2px;
+  padding:9px 12px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:transparent;
+  color:var(--muted);
+  font-size:12px;
+  text-align:left;
+  width:100%;
+}
+
+.arm-switch button small {
+  font-size:10px;
+}
+
+.arm-switch button[aria-pressed="true"] {
+  border-color:var(--amber);
+  color:var(--ink);
+}
+
+.arm-switch button.away small {
+  color:var(--red);
+}
+
+.key.other-arm:disabled, .chord-button.other-arm:disabled, .direction-button.other-arm:disabled {
+  opacity:.3;
+}
+
+.connect-all {
+  margin-top:16px;
+  padding:12px 14px;
+  border:1px solid var(--line);
+  border-radius:10px;
+}
+
+.connect-all ul {
+  margin:8px 0 4px;
+  padding-left:18px;
+  font-size:13px;
+}
+
+.connect-all small {
+  color:var(--muted);
+}
+
+.leader-strip {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+  margin:0 0 16px;
+  padding:10px 12px;
+  border:1px solid var(--amber);
+  border-radius:10px;
+  font-size:13px;
+}

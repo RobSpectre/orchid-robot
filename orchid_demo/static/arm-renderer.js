@@ -3,6 +3,38 @@
   'use strict';
   const model=typeof module!=='undefined'?require('./arm-model.js'):root.OrchidArmModel;
   const data=typeof module!=='undefined'?require('./arm-visuals.js'):root.OrchidArmVisuals;
+  const plate=typeof module!=='undefined'?null:root.OrchidPlate;
+  // The registration plate and an Orchid block share the arm meshes' units (vertex_scale 1e-5 m).
+  const meshes={...data.meshes,...(plate?.meshes||{}),...(plate?mockOrchid(plate.layout.orchid):{})};
+  // Boxes and a cylinder in plate millimetres -> a mesh in the arm meshes' units (vertex_scale 1e-5 m).
+  function solid(boxes,cylinders=[]) {
+    const vertices=[],triangles=[];
+    const add=(points,faces)=>{const base=vertices.length/3;points.forEach(p=>vertices.push(...p.map(n=>Math.round(n*100))));faces.forEach(f=>triangles.push(...f.map(i=>i+base)));};
+    for(const [x0,x1,y0,y1,z0,z1] of boxes){
+      const x=[x0,x1],y=[y0,y1],z=[z0,z1];
+      add([0,1].flatMap(i=>[0,1].flatMap(j=>[0,1].map(k=>[x[i],y[j],z[k]]))),
+          [[0,1,3,2],[4,6,7,5],[0,4,5,1],[2,3,7,6],[0,2,6,4],[1,5,7,3]].flatMap(([a,b,c,d])=>[[a,b,c],[a,c,d]]));
+    }
+    for(const [cx,cy,r,z0,z1] of cylinders){
+      const n=32,ring=[...Array(n)].map((_,i)=>[cx+r*Math.cos(i*2*Math.PI/n),cy+r*Math.sin(i*2*Math.PI/n)]);
+      const points=[...ring.map(([x,y])=>[x,y,z0]),...ring.map(([x,y])=>[x,y,z1]),[cx,cy,z0],[cx,cy,z1]];
+      const faces=[];
+      for(let i=0;i<n;i++){const j=(i+1)%n;faces.push([i,j,n+j],[i,n+j,n+i],[2*n,j,i],[2*n+1,n+i,n+j]);}
+      add(points,faces);
+    }
+    const xs=vertices.filter((_,i)=>i%3===0),ys=vertices.filter((_,i)=>i%3===1),zs=vertices.filter((_,i)=>i%3===2);
+    return {vertices,triangles,bounds:[[Math.min(...xs)/1e5,Math.min(...ys)/1e5,Math.min(...zs)/1e5],[Math.max(...xs)/1e5,Math.max(...ys)/1e5,Math.max(...zs)/1e5]]};
+  }
+  // A mock Orchid: the measured body; keys placed where arm A's taught presses land; chord buttons and dial approximate.
+  function mockOrchid(o) {
+    const [cx,cy]=o.center,[sx,sy]=o.size,top=o.floor_z+o.height;
+    const front=cy-sy/2,white=16.5,left=-4;
+    const whites=[...Array(7)].map((_,i)=>[left+i*white+.6,left+(i+1)*white-.6,front+18,front+78,top,top+4]);
+    const blacks=[1,2,4,5,6].map(i=>[left+i*white-5,left+i*white+5,front+50,front+80,top+4,top+10]);
+    const buttons=[0,1].flatMap(row=>[0,1,2,3].map(col=>{const x=cx-sx/2+22+col*24,y=front+40+row*30;return [x,x+18,y,y+18,top,top+5];}));
+    return {orchid_body:solid([[cx-sx/2,cx+sx/2,front,cy+sy/2,o.floor_z,top]]),orchid_white_keys:solid(whites),orchid_black_keys:solid(blacks),
+            orchid_chord_buttons:solid(buttons),orchid_dial:solid([],[[cx-38,front+85,21,top,top+16]])};
+  }
   const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
   const sub=(a,b)=>a.map((v,i)=>v-b[i]);
   const unit=v=>{const n=Math.hypot(...v)||1;return v.map(x=>x/n);};
@@ -17,7 +49,7 @@
     });
   }
   function bounds(parts) {
-    return parts.flatMap(p=>corners(data.meshes[p.mesh].bounds).map(v=>model.point(p.frame,v)));
+    return parts.flatMap(p=>corners(meshes[p.mesh].bounds).map(v=>model.point(p.frame,v)));
   }
   function unpack(mesh) {
     const vertices=[];
@@ -42,7 +74,7 @@
       gl.attachShader(program,shader(gl.FRAGMENT_SHADER,`precision mediump float;varying vec3 n;uniform vec3 color;void main(){vec3 N=normalize(n);if(!gl_FrontFacing)N=-N;float light=.4+.5*max(dot(N,normalize(vec3(-.5,-.7,1.0))),0.0)+.18*max(dot(N,normalize(vec3(.6,.3,.5))),0.0);gl_FragColor=vec4(color*light,1.0);}`));
       gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));
       buffers={};
-      for(const [name,mesh] of Object.entries(data.meshes)) {
+      for(const [name,mesh] of Object.entries(meshes)) {
         const values=arrays[name]||(arrays[name]=unpack(mesh));
         const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,values,gl.STATIC_DRAW);
         buffers[name]={buffer,count:values.length/6};
@@ -71,6 +103,6 @@
     }
     return {draw};
   }
-  const api={instances,bounds,unpack,create};
+  const api={instances,bounds,unpack,create,hasPlate:!!plate};
   if(typeof module!=='undefined')module.exports=api;else root.OrchidArmRenderer=api;
 })(typeof window==='undefined'?globalThis:window);

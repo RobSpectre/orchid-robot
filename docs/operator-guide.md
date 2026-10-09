@@ -12,7 +12,7 @@ Safety confirmations are large touchscreen buttons. Tap **Arm this step** (or th
 
 Click **Refresh connections** to scan USB adapters using the same read-only detection as `find_ports.py`. Only ports with responding Feetech motors appear. Each arm shows its motor IDs and measured bus voltage. The voltage is a snapshot from the first responding motor, timestamped at refresh; leader/follower is inferred using the existing 8 V threshold. Choose the follower with motor IDs **1–6**. To use both arms, select **Use leader to teach** and choose the separate low-voltage arm in **Leader connection**. A leader cannot be selected as the follower; incomplete motor sets and arms with unreadable voltage cannot connect. `/dev/ttyACM` numbers can change after reconnecting. Refresh again after changing USB or power connections.
 
-**Refresh connections** runs while disconnected. **Find leader** is also available from the calibration screen while the follower is connected, idle and torque off; it excludes the follower's occupied serial port. Neither scan changes torque or motor settings. Busy/unreadable adapters are skipped with a message; close any other serial controller before retrying. A scan failure clears the old choices. Connection independently reads all six motors' supply and operating mode without configuring the robot or enabling torque. Low supply voltage, missing motors, and the wrong operating mode are rejected. Simulation only displays practice arms and never scans physical devices.
+**Find and connect all arms** searches USB and connects everything it finds in one press (the search runs on a follower that is not connected). **Find leader** is also available from the calibration screen while the follower is connected, idle and torque off; it excludes the follower's occupied serial port. Neither scan changes torque or motor settings. Busy/unreadable adapters are skipped with a message; close any other serial controller before retrying. A scan failure clears the old choices. Connection independently reads all six motors' supply and operating mode without configuring the robot or enabling torque. Low supply voltage, missing motors, and the wrong operating mode are rejected. Simulation only displays practice arms and never scans physical devices.
 
 Choose a placement name. “Keep saved placement” means the same physical setup, not just the same name. Leave it unconfirmed after moving anything, changing pad thickness or glove fit, adjusting the gripper, or repairing a joint. Selecting a different contact tool creates a new fixture even if “Keep saved placement” is confirmed. Previous records remain on disk but no longer count as registered for the new fixture.
 
@@ -96,7 +96,7 @@ Leader teaching records the motion you make with the leader and replays it, usin
 7. **Rest.** Click **☾ Rest** on the map, follow the leader to where the arm should wait, and press **Set rest here**. **Go to rest** moves the arm there (up to 30°/s) when you want it parked. Playback always ends at home, where the arm waits between key presses; a Play from rest first moves up to home.
 8. Select another key on the map, press **Follow the leader**, and capture its hover, touch and press. Release torque from **Release or disconnect** with the arm supported or resting.
 
-Moves between points are straight lines in joint space, not obstacle-avoiding paths. If the move from home to hover passes too close to Orchid, capture hover higher or choose a home closer to the keys. **Voicing dial.** Select **↻ CW** or **↺ CCW** and teach, with the leader, **hover** (above the knob), **open** (jaws open, still above it), **lower** (lowered around the knob, not touching) and **grip** (jaws closed on it). These four steps are shared by both directions. Capturing the grip lets go, raises to the open pose, then goes to hover and home on its own. The turn is not taught with the leader: each direction has an angle (default +20° CW, −20° CCW; flip the sign if it turns the wrong way, up to ±90°), and playback rotates only the wrist by it. Playback: home → hover → open → lower → grip → turn → let go in place → raise to the open pose → hover → home; it never turns back while gripping. The follower's wrist roll is held still while following, for keys and the dial alike.
+Moves between points are straight lines in joint space, not obstacle-avoiding paths. If the move from home to hover passes too close to Orchid, capture hover higher or choose a home closer to the keys. **Voicing dial.** Select **↻ CW** or **↺ CCW** and teach, with the leader, **hover** (above the knob), **open** (jaws open, still above it), **lower** (lowered around the knob, not touching) and **grip** (jaws closed on it). These four steps are shared by both directions. Capturing the grip lets go, raises to the open pose, then goes to hover and home on its own. The turn is not taught with the leader: each direction has an angle (default +20° CW, −20° CCW; flip the sign if it turns the wrong way, up to ±90°), and playback rotates only the wrist by it. Playback: home → hover → open → lower → grip → turn → let go in place → raise to the open pose → hover → home; it never turns back while gripping. While following, the follower's wrist rotates with the leader's on either arm, and a taught point keeps the rotation it had when captured. Wrist rotation's reading wraps at ±180°: if the leader's wrist crosses that edge, the follower holds its rotation instead of spinning the long way round (the console says so) and follows again once the leader is turned back near the follower's angle. A dial direction's turn is still the computed wrist rotation from the grip.
 
 Following and playback clip each goal to 15° from the measured pose (LeRobot's `max_relative_target` rule): a lagging or blocked joint is limited, never faulted. There are no tracking, settle, stall, home or route checks. **Stop motion** (Esc) holds the follower at its measured pose and stays in the teaching session. Losing the operator page for five seconds stops with a hold. A recording stays valid until the follower calibration changes. This is joint position control, without collision or force sensing; keep the physical power stop within reach.
 
@@ -105,6 +105,73 @@ Following and playback clip each goal to 15° from the measured pose (LeRobot's 
 Hardware conformance can be checked without opening a port: run `PYTHONPATH=.:tests /path/to/hardware/python -m unittest tests/test_teach_hardware.py` and `PYTHONPATH=. /path/to/hardware/python tests/check_native_teleop.py` using the app's LeRobot environment.
 
 Simulation provides **Practice leader movement** with a joint selector and ± buttons while following.
+
+## Checking notes with Orchid Studio
+
+With hardware, every Play and sequence is checked against what Orchid actually sent, read from
+[Orchid Studio](https://github.com/RobSpectre/orchid-studio)'s key monitor (start Studio with
+`--sound-input Orchid`; the console looks for it on port 8765, `--studio-port` changes that and `0` turns
+the check off). After a play the console shows **Orchid heard: C ✓ velocity 72, 0.11 s into the 0.80 s
+press, held 0.31 s**, or **Check the arm: C: wrong key, B sounded**, a missed note or a repeated one. The
+API and `scripts/orchid.py` report the same as `key_check`, and each result is saved in the session log.
+
+Keys are compared by note name, because the voicing dial can move the octave. Chord buttons send no MIDI
+on their own, so they are reported as unchecked unless a key sounds. Dial turns report the voicing-dial
+clicks they produced. The check never changes or repeats a motion; if Studio is not running, it is marked
+unavailable and the play is unaffected.
+
+### Calibrate keys with Orchid
+
+**04 Calibrate keys** in the sidebar gives every key the same approach and the same pressure, by listening to
+where each key actually triggers. If the arm is not holding, the page offers **Go to home**. Confirm you are
+beside the arm, then press a key in the grid to calibrate it, or **Calibrate all taught keys** to run them in
+turn; the grid shows each key's last result (✓ calibrated, ✗ re-teach).
+
+1. **Find.** Gentle presses at 0.5× speed and 25% press hardness. The moment Orchid reports the note, placed on
+   the arm's commanded path for that press, is the key's trigger point. Two presses must agree within 0.5°. No
+   note: the press goes 0.75° deeper, never more than 3° past what was taught.
+2. **Set.** Touch goes 1° before the trigger point along that path, press 0.75° past it. Keys taught too deep
+   (lots of travel after the note sounds) get a shallower press; keys whose touch sat at the trigger point get
+   room above it, which stops double triggers at speed.
+3. **Verify.** The key plays at your **Arm speed** and **Press hardness** until it presses cleanly twice in a
+   row. Pressed twice: touch moves 0.5° further before the trigger (up to 2.5°). No note: press 0.25° deeper (up
+   to 1.5°). A wrong or neighbouring key stops it: re-teach that key with the leader.
+
+Nothing is saved until verify passes; the leader-taught points are kept, and calibrating again always starts
+from them. Gripper opening and wrist roll are never changed. **Stop motion**, **Stop calibration**, release and
+disconnect end it, including the rest of the list. Calibration runs from the console only, not the API, and only
+for keyboard keys, since chord buttons and the dial send no notes. Recalibrate after moving the arm or Orchid,
+or after changing Arm speed or Press hardness a lot.
+
+## Two followers on the registration plate
+
+A second follower needs no setting. The connection page has one button, **Find and connect all arms**: it searches USB
+and connects every arm it finds. A follower recognised by the calibration in its motors goes to its own arm, a new one to
+the arm with no match, and the leader to arm A (or to the arm being connected). Connecting only reads the motors. When a scan finds two followers (or arm B has been used before), the sidebar
+shows **Arm A · keys** and **Arm B · chords & dial**; with one follower the console looks as it always has. Each follower
+is recognised by the calibration stored in its motors' position limits (read-only), so the connect page preselects the
+right port and refuses to connect arm A's hardware as arm B, which would overwrite its calibration. A scan never probes a
+port the other arm has open. Each arm is only ever taught and plays its own controls: arm A the twelve keys, arm B the
+chord buttons and voicing dial, whether or not the other arm is connected. Arm B keeps its own data in `DATA_DIR/arm-b` (calibration,
+home, taught controls); arm A's data is unchanged. The console shows the chosen arm's connection, calibration, training
+and key calibration, and greys out the other arm's controls. **Stop motion** and Esc stop both arms.
+
+One leader teaches both, and on the training page it follows the arm you select in the sidebar: the arm that had it stops
+following and holds where it is (torque stays on), and the selected arm connects it, even while that arm is holding. The
+strip **Use the leader with this arm** does the same if switching did not (for example while the other arm was playing). Or, on the arm that has it, **Calibrate motors →
+Leader → Hand the leader over**, then on the other arm **Find leader → Connect leader**. The leader's calibration is shared, so it does not need calibrating again.
+Re-centring wrist rotation is unavailable while the leader is shared.
+
+The arms' reach overlaps above Orchid, so an **interlock** keeps them apart: an arm may leave its home only while the
+other is parked (holding still within 5° of its own home or rest, or not connected), and only one arm may be away from home at a
+time. A move back home needs only the other arm to hold still. Teach each arm a home and a rest clear of the other arm's reach.
+Sequences across both arms (held chords) are not available yet; the API refuses them.
+
+The 3D view's **Plate** button shows the registration plate, Orchid in its pocket and both arms on their mounts with
+their live poses. Each base was placed by fitting the SO101 base's four bolt holes to the plate's four M5 sockets (within
+0.1 mm; see `orchid_demo/layout.py`); Orchid is drawn 43 mm tall. Poses are modelled from encoders and the CAD, so they
+can be about 2 cm off: use it to see where the arms are, not to judge clearance. Rebuild the plate visual with
+`python scripts/build_plate_visual.py PLATE.stl` if the plate changes.
 
 ## Play from scripts or Claude (API)
 
