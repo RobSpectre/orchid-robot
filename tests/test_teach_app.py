@@ -264,21 +264,30 @@ def test_points_are_captured_in_order_and_dial_turns_are_not_reversed(engine):
     assert "hover next" in reject(engine, "teach_capture", point="turn", control="voicing.cw")["message"]
 
 
-def test_retraining_a_step_keeps_the_other_steps(engine):
+def test_re_teaching_a_key_goes_through_every_step_again_and_keeps_the_old_motion_until_press(engine):
     following(engine)
     teach_points(engine, "C")
     run(engine, 10, until=lambda: engine.phase == "teach_hold")
-    before = engine.notes["C"]["points"]
+    before = deepcopy(engine.notes["C"]["points"])
     command(engine, "teach_follow")
+    assert "Re-teaching C from the start: hover, touch and press" in engine.message
     run(engine, 3, until=lambda: engine.teach.mode == "following")
+    assert engine.public["teach"]["points"] == ["home"] and "Guide it to hover" in engine.message
+    assert "hover next" in reject(engine, "teach_capture", point="touch")["message"]  # in order, as the first time
     move_leader(engine, "shoulder_lift", 60)
     move_leader(engine, "wrist_flex", 30)  # a slightly different hover above the key
     capture(engine, "hover")
-    after = engine.notes["C"]["points"]  # saved straight away
-    assert after["hover"] != before["hover"]
-    assert after["touch"] == before["touch"] and after["press"] == before["press"]
-    assert engine.public["teach"]["points"] == ["home", "hover", "touch", "press"]
-    assert engine.phase == "teach_follow" and "retrained" in engine.message  # no motion for hover/touch
+    assert engine.notes["C"]["points"] == before  # nothing saved until press: the old motion still plays
+    command(engine, "teach_hold")
+    command(engine, "teach_follow")  # following again carries on from touch, it does not start over
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    assert engine.public["teach"]["points"] == ["home", "hover"]
+    move_leader(engine, "wrist_flex", 36)
+    capture(engine, "touch")
+    move_leader(engine, "wrist_flex", 12)
+    capture(engine, "press")
+    after = engine.notes["C"]["points"]
+    assert all(after[n] != before[n] for n in ("hover", "touch", "press")) and engine.phase == "teach_play"
 
 
 def test_home_is_shared_by_the_next_key(engine):
@@ -342,7 +351,8 @@ def test_one_home_for_the_arm_moves_every_key(engine):
     command(engine, "teach_follow")
     move_leader(engine, "shoulder_pan", 60)  # somewhere else entirely
     capture(engine, "home", "C")
-    assert engine.public["teach"]["points"] == ["home", "hover", "touch", "press"]  # C keeps its points
+    assert engine.public["teach"]["points"] == ["home"]  # re-teaching C from the start; its saved motion is kept
+    assert engine.notes["C"]["points"]["press"] == taught["press"]
     new_home = engine.repo.get("teach_home")["point"]["goal"]
     assert new_home["shoulder_pan"] > taught["home"]["goal"]["shoulder_pan"] + 3
     command(engine, "teach_play", control="C")
@@ -366,6 +376,56 @@ def test_home_button_sets_home_where_the_arm_is_and_goes_there(engine):
     run(engine, 10, until=lambda: engine.phase == "teach_hold")
     assert engine.message == "At home, holding." and engine.teach_played is None
     assert engine.teach.goal == pytest.approx(new)
+
+
+def follower_only(e):
+    """Teach C with the leader, then reconnect guiding by hand: only the follower is connected."""
+    following(e)
+    teach_points(e, "C")
+    run(e, 10, until=lambda: e.phase == "teach_hold")
+    taught = deepcopy(e.notes["C"]["points"])
+    command(e, "disconnect", supported=True)
+    connect(e)
+    assert e.leader is None and e.teaching_mode == "manual" and e.calibrated
+    return taught
+
+
+def test_a_taught_control_plays_with_only_the_follower(engine):
+    taught = follower_only(engine)
+    assert engine.public["keys"]["C"]["recorded"]
+    command(engine, "teach_begin", control="C")
+    assert engine.phase == "teach_hold" and engine.arm.enabled and not engine.public["teach"]["leader"]
+    command(engine, "teach_play", control="C")
+    sent = spy(engine)
+    run(engine, 30, until=lambda: engine.phase == "teach_hold")
+    assert engine.teach_played == "C"
+    assert max(g["wrist_flex"] for g in sent) == pytest.approx(taught["press"]["goal"]["wrist_flex"])
+    assert sent[-1] == pytest.approx(engine.repo.get("teach_home")["point"]["goal"])
+
+
+def test_the_saved_home_is_reachable_with_only_the_follower(engine):
+    follower_only(engine)
+    assert engine.public["poses_saved"] == {"home": True, "rest": False}
+    assert "No rest" in reject(engine, "teach_begin", control="C", pose="rest")["message"]
+    assert not engine.arm.enabled
+    command(engine, "teach_begin", control="C", pose="home")
+    assert engine.phase == "teach_hold" and engine.repo.get("teach_home") is not None
+    command(engine, "teach_go_home")
+    run(engine, 10, until=lambda: engine.phase == "teach_hold")
+    assert engine.message == "At home, holding."
+    assert engine.teach.goal == pytest.approx(engine.repo.get("teach_home")["point"]["goal"])
+
+
+def test_teaching_still_needs_the_leader(engine):
+    follower_only(engine)
+    home = engine.repo.get("teach_home")
+    assert "leader" in reject(engine, "teach_begin", control="C", follow=True)["message"]
+    assert "not been taught" in reject(engine, "teach_begin", control="D")["message"]
+    assert engine.phase == "connected" and not engine.arm.enabled  # refused before powering
+    command(engine, "teach_begin", control="C")
+    for action, args in (("teach_follow", {}), ("teach_capture", {"point": "hover", "control": "C"}), ("teach_set_home", {})):
+        assert "leader" in reject(engine, action, **args)["message"]
+    assert engine.phase == "teach_hold" and engine.repo.get("teach_home") == home
 
 
 def test_go_home_needs_a_home(engine):
@@ -456,16 +516,12 @@ def test_follow_teaches_the_key_selected_on_the_map(engine):
 # --- wrist roll ------------------------------------------------------------------------------------
 
 
-def test_keys_hold_the_wrist_roll_still_while_following(engine):
+def test_a_turned_wrist_is_captured_in_the_taught_point(engine):
     following(engine)
-    roll = engine.arm.current["wrist_roll"]
-    move_leader(engine, "wrist_roll", 96)  # the operator's grip twists the leader's wrist
-    move_leader(engine, "shoulder_lift", 48)
-    assert engine.arm.current["wrist_roll"] == roll  # the follower's wrist did not turn
-    assert engine.arm.current["shoulder_lift"] != engine.leader.current["shoulder_lift"] - 48 - 9999  # still following
+    move_leader(engine, "wrist_roll", 96)  # turned on purpose: the follower turns with it
     capture(engine, "hover")
-    hover = engine.points_for("C")["hover"]["goal"]["wrist_roll"]
-    assert hover == pytest.approx(engine.points_for("C")["home"]["goal"]["wrist_roll"], abs=0.1)
+    points = engine.points_for("C")
+    assert points["hover"]["goal"]["wrist_roll"] > points["home"]["goal"]["wrist_roll"] + 5
 
 
 def test_recentering_the_wrist_roll_keeps_every_taught_motion_on_the_same_physical_poses(engine):
@@ -569,11 +625,42 @@ def test_turn_angle_is_set_per_direction_from_the_page(engine):
     assert "between 1 and 90" in reject(engine, "teach_play", control="voicing.cw", turn_degrees=0)["message"]
 
 
-def test_wrist_roll_is_held_while_teaching_the_dial_too(engine):
-    following(engine, "voicing.cw")
-    roll = engine.arm.current["wrist_roll"]
-    move_leader(engine, "wrist_roll", 96)
-    assert engine.arm.current["wrist_roll"] == roll
+def test_the_wrist_rotates_with_the_leader_for_keys_and_the_dial(engine):
+    for control in ("C", "voicing.cw"):
+        following(engine, control) if control == "C" else command(engine, "teach_follow", control=control)
+        run(engine, 3, until=lambda: engine.teach.mode == "following")
+        roll = engine.arm.current["wrist_roll"]
+        move_leader(engine, "wrist_roll", 96)
+        assert engine.arm.current["wrist_roll"] == pytest.approx(roll + 96, abs=2)
+        command(engine, "teach_hold")
+
+
+def test_the_wrist_follows_through_the_leaders_wrap_and_waits_at_its_own_end(engine):
+    """The leader's wrist turned past +180 deg reads -179: the follower's wrist goes to its end (+168 deg) and waits,
+    never spinning to -179, then follows again as soon as the leader comes back, whichever reading it shows."""
+    following(engine)
+    limit = round(teach.ROLL_LIMIT_DEG * 4095 / 360 + 2047.5)  # +168 deg in encoder steps (wrist roll spans 0..4095)
+
+    def leader_at(raw, seconds=2):
+        for step in range(int(seconds / teach.PERIOD)):  # turned smoothly, as by hand
+            current = engine.leader.current["wrist_roll"]
+            engine.leader.current["wrist_roll"] = current + max(-40, min(40, raw - current))
+            run(engine, teach.PERIOD)
+    leader_at(4060)  # +178.5 deg: past the follower's end
+    assert engine.teach.roll_guard and engine.arm.current["wrist_roll"] == pytest.approx(limit, abs=3)
+    engine.leader.current["wrist_roll"] = 4094  # through +180 ...
+    run(engine, teach.PERIOD)
+    engine.leader.current["wrist_roll"] = 30  # ... to -177 deg: the same turn, read across the edge
+    run(engine, 0.5)
+    assert engine.teach.roll_guard and engine.arm.current["wrist_roll"] == pytest.approx(limit, abs=3)  # not spun round
+    move_leader(engine, "elbow_flex", 24)  # the other joints keep following
+    engine.leader.current["wrist_roll"] = 4094  # back across the edge ...
+    run(engine, teach.PERIOD)
+    leader_at(3700)  # ... and inside its reach: +145 deg
+    assert not engine.teach.roll_guard and engine.arm.current["wrist_roll"] == pytest.approx(3700, abs=3)
+    engine.leader.current["wrist_roll"] = 1000  # a glitch: 92 deg in one tick is not a real turn
+    run(engine, teach.PERIOD)
+    assert engine.arm.current["wrist_roll"] == pytest.approx(3700, abs=3)
 
 
 def test_dial_steps_from_the_earlier_design_must_be_retaught(engine):
@@ -618,7 +705,7 @@ def test_press_length_holds_the_press_and_becomes_the_keys_default(engine):
         assert max(held) - min(held) == pytest.approx(press_s, abs=0.05)
     assert engine.notes["C"]["press_s"] == 2.0
     assert engine.public["keys"]["C"]["press_s"] == 2.0  # used next time without being given
-    assert "press length" in reject(engine, "teach_play", control="C", press_s=9)["message"]
+    assert "press length" in reject(engine, "teach_play", control="C", press_s=61)["message"]  # up to a minute
 
 
 def test_speed_setting_shortens_playback_and_is_remembered(engine):
@@ -634,6 +721,44 @@ def test_speed_setting_shortens_playback_and_is_remembered(engine):
     run(engine, 60, until=lambda: engine.phase == "teach_hold")
     assert engine.clock() - started < normal / 2
     assert "speed" in reject(engine, "teach_play", control="C", speed=5)["message"]
+
+
+def test_press_hardness_slows_only_the_press_stroke():
+    def pose(lift, wrist):
+        return {"goal": {"shoulder_lift": lift, "wrist_flex": wrist}, "measured": {"shoulder_lift": lift, "wrist_flex": wrist}}
+    points = {"home": pose(0, 0), "hover": pose(30, 0), "touch": pose(30, 10), "press": pose(30, 14)}
+    press_stroke, _ = teach._segment(points["touch"]["goal"], points["press"]["goal"], teach.STROKE_SPEED)
+    hard, gentle = (teach.waypoint_recording(points, "C", hardness=h)["frames"] for h in (1.0, 0.5))
+    assert gentle[-1]["t"] - hard[-1]["t"] == pytest.approx(press_stroke)  # twice as long; nothing else changes
+    def pressed(frames):
+        return [f["t"] for f in frames if f["goal"]["wrist_flex"] >= 14 - 1e-9]
+
+    def first_press(frames):
+        return pressed(frames)[0]
+
+    def leaves_press(frames):
+        return pressed(frames)[-1]
+
+    assert first_press(gentle) - first_press(hard) == pytest.approx(press_stroke)
+    assert (gentle[-1]["t"] - leaves_press(gentle)) == pytest.approx(hard[-1]["t"] - leaves_press(hard))  # release unchanged
+    with pytest.raises(ValueError):
+        teach.waypoint_recording(points, "C", hardness=0.05)
+
+
+def test_press_hardness_is_a_remembered_global_setting(engine):
+    assert engine.public["teach_settings"]["press_hardness"] == teach.PRESS_HARDNESS
+    taught_keys(engine)
+    durations = {}
+    for hardness in (1.0, 0.25):
+        command(engine, "teach_settings", press_hardness=hardness)
+        command(engine, "teach_play", control="C")
+        assert f"{hardness:.0%} hardness" in engine.message
+        started = engine.clock()
+        run(engine, 60, until=lambda: engine.phase == "teach_hold")
+        durations[hardness] = engine.clock() - started
+    assert durations[0.25] > durations[1.0] + 3 * teach.MIN_SEGMENT_S - 0.1
+    assert engine.repo.get("teach_settings")["press_hardness"] == 0.25
+    assert "hardness" in reject(engine, "teach_settings", press_hardness=1.5)["message"]
 
 
 def test_speed_is_a_global_setting_available_in_any_phase(engine):
@@ -683,3 +808,127 @@ def test_configure_sets_press_length_or_dial_angle(engine):
     command(engine, "teach_configure", control="C", press_s=0.8)
     assert engine.notes["C"]["press_s"] == 0.8
     assert "dial direction" in reject(engine, "teach_configure", control="C", turn_degrees=10)["message"]
+
+
+def test_each_play_is_checked_against_what_orchid_sent(engine):
+    from orchid_demo.keycheck import KeyChecker
+    heard = []
+    engine.key_checker = KeyChecker(lambda: heard, background=False)
+    taught_keys(engine, ("C", "E"))
+    command(engine, "teach_play", control="C")
+    started = engine.clock()
+    heard.append({"type": "press", "t": started + 2.0, "name": "C", "velocity": 64, "octave": 3})
+    run(engine, 60, until=lambda: engine.phase == "teach_hold")
+    run(engine, teach.PERIOD)  # the result is collected on the next control tick
+    assert engine.public["key_check"]["status"] == "ok" and engine.key_check["play"] == 1
+    assert engine.key_check["summary"].startswith("C ✓ velocity 64") and "into the" in engine.key_check["summary"]
+    assert any(e["kind"] == "key_check" for e in engine.repo.events())
+
+    command(engine, "teach_sequence", steps=[{"control": "C"}, {"control": "E"}])
+    run(engine, 60, until=lambda: engine.phase == "teach_hold")
+    run(engine, teach.PERIOD)
+    assert engine.key_check["status"] == "problem" and engine.key_check["play"] == 2
+    assert [s["status"] for s in engine.key_check["steps"]] == ["missed", "missed"]  # nothing sounded this time
+
+    command(engine, "teach_go_home")
+    run(engine, 30, until=lambda: engine.phase == "teach_hold")
+    assert engine.key_check["play"] == 2  # moving home is not a play to check
+
+
+def test_holding_writes_the_goal_once_not_every_tick():
+    pose = {"shoulder_pan": 1.0, "shoulder_lift": 2.0, "elbow_flex": 3.0, "wrist_flex": 4.0, "wrist_roll": 5.0, "gripper": 6.0}
+    sent = []
+    session = teach.Session(lambda: dict(pose), sent.append, None)
+    session.hold()
+    for _ in range(30):  # a second of holding still
+        session.tick()
+    assert len(sent) == 1  # rewriting an unchanged goal restarts the servos' motion and shakes a joint at its stop
+    session.goal = {**session.goal, "elbow_flex": 3.5}  # a new goal is written at once
+    session.tick()
+    assert len(sent) == 2
+
+
+def test_a_rest_at_a_joints_end_of_travel_is_saved_and_held_just_inside_it(engine):
+    following(engine)
+    engine.arm.current["elbow_flex"] = engine.calibration["elbow_flex"]["range_max"] - 2
+    command(engine, "teach_hold")  # held right there, folded against the elbow's stop
+    command(engine, "teach_set_rest")
+    assert "elbow flex is at the end of travel" in engine.message and "about 4° inside that stop" in engine.message
+    held = engine.arm.joint_target(engine.shared_teach_rest()["goal"])
+    assert held["elbow_flex"] == engine.calibration["elbow_flex"]["range_max"] - engine.LIMIT_MARGIN_TICKS
+
+
+def test_a_rest_saved_at_a_stop_is_held_just_inside_it(engine):
+    """A rest saved folded against the elbow's stop (before that was refused) is held 4° off the stop, not into it."""
+    following(engine)
+    command(engine, "teach_set_rest")
+    cal, doc = engine.calibration, engine.repo.get("teach_rest")
+    beyond = (cal["elbow_flex"]["range_max"] + 6 - (cal["elbow_flex"]["range_min"] + cal["elbow_flex"]["range_max"]) / 2) * 360 / 4095
+    doc["point"]["goal"] = {**doc["point"]["goal"], "elbow_flex": beyond, "gripper": 0.0}  # past the stop, jaws shut
+    engine.repo.put("teach_rest", doc)
+    engine.teach_rest_doc = doc
+    rest = engine.shared_teach_rest()["goal"]
+    held = engine.arm.joint_target(rest)
+    assert held["elbow_flex"] == cal["elbow_flex"]["range_max"] - engine.LIMIT_MARGIN_TICKS
+    assert held["gripper"] - cal["gripper"]["range_min"] >= engine.LIMIT_MARGIN_TICKS - 1
+    assert rest["wrist_roll"] == doc["point"]["goal"]["wrist_roll"] and engine.repo.get("teach_rest") == doc  # stored as taught
+    moved = engine.shared_teach_rest()["measured"]["elbow_flex"] - doc["point"]["measured"]["elbow_flex"]
+    assert moved == pytest.approx(rest["elbow_flex"] - beyond)  # parked is judged where the arm will be held
+
+
+def test_a_pose_the_wrist_could_not_turn_to_is_refused_and_an_old_one_is_held_where_it_reached(engine):
+    following(engine)
+    command(engine, "teach_hold")
+    engine.arm.jammed = True  # the wrist stops short, as it does near +-180 deg
+    engine.teach.goal = {**engine.teach.goal, "wrist_roll": engine.teach.measured["wrist_roll"] + 11.25}
+    refused = reject(engine, "teach_set_rest")["message"]
+    assert "cannot turn that far" in refused and "straining" in refused
+    engine.arm.jammed = False
+    engine.teach.hold()  # back where the wrist actually is
+    command(engine, "teach_set_rest")
+    doc = engine.repo.get("teach_rest")
+    doc["point"]["goal"] = {**doc["point"]["goal"], "wrist_roll": 180.0}  # saved before the guard: told 180, reached 168.75
+    doc["point"]["measured"] = {**doc["point"]["measured"], "wrist_roll": 168.75}
+    engine.repo.put("teach_rest", doc)
+    engine.teach_rest_doc = doc
+    assert engine.shared_teach_rest()["goal"]["wrist_roll"] == 168.75
+
+
+
+
+def test_cancelling_a_re_teach_keeps_the_saved_motion_and_the_dials_shared_steps(engine):
+    following(engine)
+    teach_points(engine, "C")
+    run(engine, 10, until=lambda: engine.phase == "teach_hold")
+    saved = deepcopy(engine.notes["C"])
+    command(engine, "teach_follow")
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    assert engine.public["teach"]["reteaching"] == "C"
+    move_leader(engine, "shoulder_lift", 60)
+    capture(engine, "hover")
+    command(engine, "teach_cancel_reteach")
+    assert "cancelled" in engine.message and engine.phase == "teach_follow"  # still following
+    run(engine, teach.PERIOD)  # the console's snapshot is published on the next tick
+    assert engine.notes["C"] == saved
+    assert engine.public["teach"]["points"] == ["home", "hover", "touch", "press"]
+    assert engine.public["teach"]["reteaching"] is None
+    assert "Nothing is being re-taught" in reject(engine, "teach_cancel_reteach")["message"]
+    command(engine, "teach_hold")
+    command(engine, "teach_follow")  # a fresh re-teach starts again from hover
+    run(engine, teach.PERIOD)
+    assert engine.public["teach"]["points"] == ["home"]
+    command(engine, "teach_cancel_reteach")
+    # The dial's shared steps are saved as each is captured; cancelling puts them back.
+    command(engine, "teach_hold")
+    command(engine, "teach_follow", control="voicing.cw")
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    teach_dial(engine)
+    run(engine, 15, until=lambda: engine.phase == "teach_hold")
+    shared = deepcopy(engine.repo.get("teach_dial"))
+    command(engine, "teach_follow", control="voicing.cw")
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    move_leader(engine, "shoulder_lift", 30)
+    capture(engine, "hover", "voicing.cw")
+    assert engine.repo.get("teach_dial") != shared
+    command(engine, "teach_cancel_reteach")
+    assert engine.repo.get("teach_dial") == shared

@@ -55,7 +55,18 @@ def probe(port: str, *, guard=lambda: None) -> dict | None:
         raw, result, error = packet.read1ByteTxRx(handler, ids[0], 62)  # Present_Voltage, 0.1 V
         voltage = raw / 10.0 if result == scs.COMM_SUCCESS and not error and 0 < raw <= 255 else None
         role = None if voltage is None else ("follower" if voltage >= FOLLOWER_MIN_VOLTAGE else "leader")
-        return {"port": port, "motor_ids": ids, "voltage": voltage, "role": role,
+        limits = {}
+        if ids == EXPECTED_MOTOR_IDS:
+            # Calibration writes each motor's range into its position limits, so they identify the physical arm.
+            for motor_id in ids:
+                guard()
+                low, result_low, error_low = packet.read2ByteTxRx(handler, motor_id, 9)  # Min_Position_Limit
+                high, result_high, error_high = packet.read2ByteTxRx(handler, motor_id, 11)  # Max_Position_Limit
+                if result_low != scs.COMM_SUCCESS or result_high != scs.COMM_SUCCESS or error_low or error_high:
+                    limits = {}
+                    break
+                limits[str(motor_id)] = [low, high]
+        return {"port": port, "motor_ids": ids, "voltage": voltage, "role": role, "limits": limits or None,
                 "voltage_motor_id": ids[0], "sampled_at": time.time()}
     finally:
         if handler.ser is not None:
@@ -81,6 +92,12 @@ def discover_arms(*, guard=lambda: None, exclude_ports=()):
         if info:
             arms.append(info)
     return {"arms": arms, "warnings": warnings}
+
+
+def matches(calibration, limits):
+    """Whether a scanned arm's position limits are those of this saved calibration (read-only identity)."""
+    return bool(calibration and limits) and all(
+        limits.get(str(c["id"])) == [c["range_min"], c["range_max"]] for c in calibration.values())
 
 
 def follower_problem(arm):

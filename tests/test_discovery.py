@@ -46,6 +46,9 @@ def sdk(monkeypatch):
         def read1ByteTxRx(self, handler, motor_id, register):
             state.calls.append(("read", motor_id, register))
             return state.raw, state.result, state.error
+        def read2ByteTxRx(self, handler, motor_id, register):  # position limits: identity only, never written
+            state.calls.append(("read2", motor_id, register))
+            return 1000 + motor_id * 10 + (register == 11) * 2000, 0, 0
 
     monkeypatch.setitem(sys.modules, "serial", SimpleNamespace(Serial=Serial))
     monkeypatch.setitem(sys.modules, "scservo_sdk", SimpleNamespace(PortHandler=PortHandler, PacketHandler=lambda _: Packet(), COMM_SUCCESS=0))
@@ -60,9 +63,18 @@ def test_probe_roles_and_read_only_traffic(sdk, raw, role):
     assert arm["voltage"] == raw / 10
     assert arm["motor_ids"] == list(range(1, 7))
     assert arm["voltage_motor_id"] == 1
-    assert sdk.calls[2:-1] == [("ping", i) for i in range(1, 21)]
-    assert sdk.calls[-1] == ("read", 1, 62)
-    assert sdk.closed
+    assert sdk.calls[2:22] == [("ping", i) for i in range(1, 21)]
+    assert sdk.calls[22] == ("read", 1, 62)
+    assert sdk.calls[23:] == [("read2", i, r) for i in range(1, 7) for r in (9, 11)]  # reads only
+    assert arm["limits"]["3"] == [1030, 3030] and sdk.closed
+
+
+def test_an_arm_is_recognised_by_the_limits_its_calibration_wrote():
+    calibration = {f"m{i}": {"id": i, "range_min": 1000 + i * 10, "range_max": 3000 + i * 10} for i in range(1, 7)}
+    limits = {str(i): [1000 + i * 10, 3000 + i * 10] for i in range(1, 7)}
+    assert d.matches(calibration, limits)
+    assert not d.matches(calibration, {**limits, "4": [1040, 3041]})
+    assert not d.matches(None, limits) and not d.matches(calibration, None)
 
 
 def test_non_robot_port_is_omitted(sdk):

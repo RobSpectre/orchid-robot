@@ -5,6 +5,23 @@
   const renderer=window.OrchidArmRenderer.create(),guide=window.OrchidArmGuide;
   const label=$('pose-status'),note=$('pose-note');
   let yaw=-.95,elevation=.48,zoom=1,latest=null,online=false,selected='shoulder_pan',lastAngles=null,drag=null,lastTarget='',framePending=false;
+  // 'plate': both followers on their measured mounts of the registration plate, around Orchid (plate-visual.js).
+  let scene='arm',arms=null;
+  const plate=window.OrchidPlate,M=window.OrchidArmModel;
+  const mountFrame=arm=>{const m=plate.layout.mounts[arm];return M.transform(m.xyz.map(n=>n/1000),[0,0,m.yaw_deg*Math.PI/180]);};
+  function plateScene(pose,active) {
+    const mine=latest?.arm||'a',other=mine==='a'?'b':'a';
+    const I=M.identity(),parts=[{mesh:'registration_plate',frame:I,color:[.36,.36,.35]},{mesh:'orchid_body',frame:I,color:[.42,.37,.48]},
+      {mesh:'orchid_white_keys',frame:I,color:[.9,.88,.84]},{mesh:'orchid_black_keys',frame:I,color:[.12,.12,.13]},
+      {mesh:'orchid_chord_buttons',frame:I,color:[.66,.58,.78]},{mesh:'orchid_dial',frame:I,color:[.2,.2,.22]}];
+    parts.push(...window.OrchidArmRenderer.instances(pose,'').map(p=>({...p,frame:M.multiply(mountFrame(mine),p.frame)})));
+    const twin=arms?.[other]?.available?arms[other]:null;
+    if(twin){
+      const ghost=M.forward(twin.connected&&twin.pose_angles?twin.pose_angles:{gripper:Math.PI/4});
+      parts.push(...window.OrchidArmRenderer.instances(ghost,'').map(p=>({...p,frame:M.multiply(mountFrame(other),p.frame),color:p.color.map(c=>c*.55+.12)})));
+    }
+    return {parts,labels:[[mine,true],...(twin?[[other,false]]:[])]};
+  }
   const add=(a,b)=>a.map((v,i)=>v+b[i]),sub=(a,b)=>a.map((v,i)=>v-b[i]),mul=(a,s)=>a.map(v=>v*s);
   const dot=(a,b)=>a.reduce((s,v,i)=>s+v*b[i],0),clamp=(n,low,high)=>Math.max(low,Math.min(high,n));
   const schedule=()=>{if(!framePending){framePending=true;requestAnimationFrame(()=>{framePending=false;draw();});}};
@@ -32,7 +49,9 @@
     $('pose-joint').textContent=target.mode==='sweep'?'Cyan = target servo + moving link':'Numbers match physical motor IDs';
     note.textContent=latest?.pose_reference_ready?'SO101 CAD driven by encoder angles. Use the physical arm to judge clearance; this view does not verify alignment or contact.':'SO101 reference pose. The physical pose is unverified until midpoint capture; identify joints by their number and location.';
     const pose=window.OrchidArmModel.forward(livePose||lastAngles||{gripper:Math.PI/4});
-    const parts=window.OrchidArmRenderer.instances(pose,active);
+    const onPlate=scene==='plate'&&plate&&window.OrchidArmRenderer.hasPlate;
+    const built=onPlate?plateScene(pose,active):null;
+    const parts=built?built.parts:window.OrchidArmRenderer.instances(pose,active);
     const right=[-Math.sin(yaw),Math.cos(yaw),0],up=[-Math.cos(yaw)*Math.sin(elevation),-Math.sin(yaw)*Math.sin(elevation),Math.cos(elevation)],depth=[Math.cos(yaw)*Math.cos(elevation),Math.sin(yaw)*Math.cos(elevation),Math.sin(elevation)];
     const points=window.OrchidArmRenderer.bounds(parts);
     const center=[0,1,2].map(i=>(Math.min(...points.map(p=>p[i]))+Math.max(...points.map(p=>p[i])))/2);
@@ -41,7 +60,7 @@
     const project=p=>{const v=sub(p,center);return[w*.5+dot(v,right)*scale,h*.52-dot(v,up)*scale,dot(v,depth)];};
     const line=(a,b,color,width=1)=>{a=project(a);b=project(b);context.beginPath();context.moveTo(a[0],a[1]);context.lineTo(b[0],b[1]);context.strokeStyle=color;context.lineWidth=width;context.stroke();};
     const background=context.createRadialGradient(w*.5,h*.45,5,w*.5,h*.45,w*.7);background.addColorStop(0,'#353c33');background.addColorStop(1,'#171d1a');context.fillStyle=background;context.fillRect(0,0,w,h);
-    for(let i=-5;i<=5;i++){line([i*.05,-.25,-.003],[i*.05,.25,-.003],'#83937923');line([-.25,i*.05,-.003],[.25,i*.05,-.003],'#83937923');}
+    if(!onPlate)for(let i=-5;i<=5;i++){line([i*.05,-.25,-.003],[i*.05,.25,-.003],'#83937923');line([-.25,i*.05,-.003],[.25,i*.05,-.003],'#83937923');}
     const sx=2*scale/w,sy=2*scale/h;
     const camera=[...right.map(n=>n*sx),-dot(center,right)*sx,...up.map(n=>n*sy),-dot(center,up)*sy-.04,...depth.map(n=>-2*n),2*dot(center,depth),0,0,0,1];
     const cad=renderer.draw(context,parts,camera,w,h,dpr);
@@ -52,6 +71,16 @@
       line(window.OrchidArmModel.point(pose.frames.gripper_link),pose.tip,'#d1b376',5);
       line(window.OrchidArmModel.point(pose.frames.moving_jaw_so101_v1_link),pose.jaw,'#d1b376',5);
       note.textContent='CAD rendering unavailable on this device; showing a joint schematic. Motor numbers and calibration instructions remain available.';
+    }
+    if(onPlate){
+      // Motor guidance belongs to the single-arm view; here, name the arms and Orchid.
+      context.font='bold 11px ui-sans-serif,system-ui';context.textAlign='center';
+      const tag=(text,at,color)=>{const p=project(at);context.fillStyle='#0c141ad0';context.fillRect(p[0]-context.measureText(text).width/2-6,p[1]-9,context.measureText(text).width+12,18);context.fillStyle=color;context.fillText(text,p[0],p[1]+4);};
+      for(const [arm,mine] of built.labels){const m=plate.layout.mounts[arm];tag(`${arm==='a'?'ARM A · KEYS':'ARM B · CHORDS & DIAL'}${mine?'':' (other)'}`,[m.xyz[0]/1000,m.xyz[1]/1000+.06,.01],mine?'#ffe3a3':'#c9c3b5');}
+      const o=plate.layout.orchid;tag('ORCHID (MOCK)',[o.center[0]/1000,(o.center[1]-o.size[1]/2-12)/1000,(o.floor_z+o.height)/1000],'#e7d6ff');
+      context.textAlign='left';context.fillStyle='#c8bea1';context.font='10px ui-sans-serif,system-ui';
+      context.fillText(`Plate · arms on measured M5 mounts · poses ±2 cm · mock Orchid: keys from Keys Arm's presses, buttons & dial approximate`,14,h-15,w-28);
+      return;
     }
     const activeJoint=pose.joints.find(j=>j.name===active);
     if(activeJoint){
@@ -89,8 +118,16 @@
     const origin=[-.13,-.1,0];[['X',[.035,0,0],'#d49371'],['Y',[0,.035,0],'#b2c591'],['Z',[0,0,.035],'#8db5c9']].forEach(([name,axis,color])=>{line(origin,add(origin,axis),color,1.5);const p=project(add(origin,mul(axis,1.2)));context.fillStyle=color;context.font='10px ui-monospace,monospace';context.fillText(name,p[0],p[1]);});
     context.textAlign='left';context.fillStyle='#c8bea1';context.font='10px ui-sans-serif,system-ui';context.fillText(cad?'SO101 · manufacturer CAD · 50 mm grid':'JOINT SCHEMATIC · CAD unavailable',14,h-15);
   }
-  function focusTarget(){const target=guide.target(latest,selected);[yaw,elevation]=target.camera||[-.95,.48];zoom=1;$('pose-zoom').value='1';schedule();}
-  window.OrchidArmView={update(s,connected,joint){
+  function focusTarget(){if(scene==='plate'){[yaw,elevation]=[-Math.PI/2,.6];}else{const target=guide.target(latest,selected);[yaw,elevation]=target.camera||[-.95,.48];}zoom=1;$('pose-zoom').value='1';schedule();}
+  // Plate: from the player's side of Orchid (-y), plate x to the right.
+  document.querySelectorAll('[data-scene]').forEach(b=>b.addEventListener('click',()=>setScene(b.dataset.scene)));
+  if(!plate)document.querySelectorAll('[data-scene]').forEach(b=>b.hidden=true);
+  let section=null;
+  function setScene(value){scene=value;document.querySelectorAll('[data-scene]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.scene===value)));
+    if(scene==='plate'){[yaw,elevation]=[-Math.PI/2,.6];}else{[yaw,elevation]=[-.95,.48];}zoom=1;$('pose-zoom').value='1';schedule();}
+  window.OrchidArmView={setArms(value){arms=value;schedule();},
+    setSection(value){if(value===section||!plate)return;section=value;setScene(['notes','tune'].includes(value)?'plate':'arm');},
+    update(s,connected,joint){
     if(latest?.instance_id!==s.instance_id||(!s.pose_reference_ready&&s.phase!=='fault'))lastAngles=null;
     latest=s;online=connected;selected=joint||selected;
     const target=guide.target(s,selected),key=`${s.instance_id}:${target.mode}:${target.active}`;

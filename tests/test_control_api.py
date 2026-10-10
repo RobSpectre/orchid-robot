@@ -1,5 +1,6 @@
 """HTTP control API (list, configure, play, sequence) against the running worker, in simulation."""
 from copy import deepcopy
+import threading
 import time
 from uuid import uuid4
 
@@ -31,7 +32,17 @@ def console(tmp_path):
             assert engine.receipts[identity]["status"] == "complete", engine.receipts[identity]
             client.post("/api/heartbeat", json={"leader_visible": True}, headers=headers)
 
+        beating = threading.Event()
+
+        def heartbeat():  # the console page keeps the lease while it is open, however long a play takes
+            while not beating.wait(0.2):
+                client.post("/api/heartbeat", json={"leader_visible": True}, headers=headers)
+        beat = threading.Thread(target=heartbeat, daemon=True)
+        beat.start()
+        client.close_console = lambda: (beating.set(), beat.join())
         yield client, engine, command, {"x-orchid-token": token}
+        beating.set()
+        beat.join()
 
 
 def taught(engine, command):
@@ -63,24 +74,34 @@ def test_list_play_and_configure_through_the_api(console):
     client, engine, command, auth = console
     taught(engine, command)
     listing = client.get("/api/controls").json()
-    assert listing["ready_to_play"] is True and listing["settings"] == {"speed": 1.0, "press_s": 0.3}
+    assert listing["ready_to_play"] is True and listing["settings"]["duration"] == "1/8"
+    assert listing["settings"]["speed"] == 1.0 and listing["settings"]["press_hardness"] == 0.5
     c = next(x for x in listing["controls"] if x["id"] == "C")
     assert c["status"] == "registered" and c["kind"] == "key"
 
-    played = client.post("/api/controls/C/play", json={"speed": 3.0, "press_s": 0.5}, headers=auth)
+    played = client.post("/api/controls/C/play", json={"speed": 3.0, "duration": "1/4"}, headers=auth)
     assert played.status_code == 200, played.text
     body = played.json()
     assert body["phase"] == "teach_hold" and body["message"].startswith("Played C")  # waited until done
-    assert engine.notes["C"]["press_s"] == 0.5
+    assert body["duration"] == {"beats": 1.0, "seconds": 0.5} and "At 120 BPM" in body["message"]  # simulation: 120 BPM
+    assert body["rhythm"]["steps"][0]["slipped_beats"] == 0 and "press_s" not in engine.notes["C"]  # not saved as a default
 
-    assert client.post("/api/controls/C", json={"press_s": 1.2}, headers=auth).status_code == 200
-    assert engine.notes["C"]["press_s"] == 1.2
+    assert client.post("/api/controls/C/play", json={"press_s": 0.5}, headers=auth).status_code == 422  # seconds are gone
+    assert client.post("/api/controls/C/play", json={"duration": "1/5"}, headers=auth).status_code == 422
+    assert client.post("/api/settings", json={"duration": "1/4."}, headers=auth).json()["status"] == "complete"
+    assert client.get("/api/controls").json()["settings"]["duration"] == "1/4."
+    assert client.post("/api/settings", json={"duration": "x"}, headers=auth).status_code == 422
     assert client.post("/api/settings", json={"speed": 2.5}, headers=auth).json()["status"] == "complete"
     assert client.get("/api/controls").json()["settings"]["speed"] == 2.5
+    assert client.post("/api/settings", json={"press_hardness": 0.3}, headers=auth).json()["status"] == "complete"
+    assert client.get("/api/controls").json()["settings"]["press_hardness"] == 0.3
+    assert client.post("/api/settings", json={"press_hardness": 0.05}, headers=auth).status_code == 422
 
-    seq = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "D", "press_s": 0}], "speed": 3.0},
-                      headers=auth).json()
+    seq = client.post("/api/sequence", json={"steps": [{"control": "C", "duration": "1/2"}, {"control": "rest", "duration": "1/4"},
+                                                       {"control": "D", "duration": "1"}], "speed": 3.0}, headers=auth).json()
     assert seq["message"].startswith("Played C → D")
+    first, second = seq["rhythm"]["steps"]
+    assert second["strike_at"] - first["strike_at"] == pytest.approx((3 + second["slipped_beats"]) * 0.5, abs=1e-3)  # C 2 + rest 1
 
 
 def test_api_refusals(console):
@@ -89,9 +110,38 @@ def test_api_refusals(console):
     assert client.post("/api/controls/E/play", json={}, headers=auth).status_code == 409  # not taught
     assert client.post("/api/controls/C/play", json={"speed": 9}, headers=auth).status_code == 422  # out of range
     assert client.post("/api/controls/C/play", json={}).status_code == 403  # no token
+    client.close_console()
     engine.lease_until = time.monotonic() - 1  # the console closed
     refused = client.post("/api/controls/C/play", json={}, headers=auth)
     assert refused.status_code == 409 and "operator console" in refused.json()["detail"]
+
+
+def test_api_says_how_to_get_the_arm_holding(console):
+    client, engine, command, auth = console
+    taught(engine, command)
+    command("release", supported=True)
+    refused = client.post("/api/controls/C/play", json={}, headers=auth)
+    assert refused.status_code == 409 and "not holding" in refused.json()["detail"] and "Play" in refused.json()["detail"]
+    assert client.post("/api/stop", json={}, headers=auth).status_code == 200  # Stop while not holding stops the arm
+    until = time.monotonic() + 3
+    while time.monotonic() < until and engine.phase != "fault":
+        time.sleep(0.01)
+    refused = client.post("/api/controls/C/play", json={}, headers=auth)
+    assert refused.status_code == 409 and "Hold & keep playing" in refused.json()["detail"]
+
+
+def test_play_reports_what_orchid_sent(console):
+    from orchid_demo.keycheck import KeyChecker, StudioKeys
+    client, engine, command, auth = console
+    taught(engine, command)
+    engine.key_checker = KeyChecker(lambda: [{"type": "press", "t": engine.teach.play_started + 0.3, "name": "C",
+                                              "velocity": 50, "octave": 3}], settle_s=0)
+    body = client.post("/api/controls/C/play", json={"speed": 3.0}, headers=auth).json()
+    assert body["key_check"]["status"] == "ok" and body["key_check"]["summary"].startswith("C ✓ velocity 50")
+    engine.key_checker = KeyChecker(StudioKeys(port=1), settle_s=0)  # Orchid Studio not running
+    body = client.post("/api/controls/C/play", json={"speed": 3.0}, headers=auth).json()
+    assert body["phase"] == "teach_hold" and body["key_check"]["status"] == "unavailable"
+    assert "key_check" not in client.post("/api/controls/C", json={"press_s": 0.4}, headers=auth).json()
 
 
 def test_cli_names_and_steps():
@@ -101,3 +151,26 @@ def test_cli_names_and_steps():
     spec.loader.exec_module(cli)
     assert [cli.control_id(x) for x in ("c", "c#", "C#", "cw", "ccw", "min", "M7", "m7")] == \
         ["C", "C#", "C#", "voicing.cw", "voicing.ccw", "chord.min", "chord.M7", "chord.m7"]
+
+
+def test_two_followers_share_one_console(tmp_path):
+    from orchid_demo.rig import ROLES, LeaderStore
+    a = Engine(tmp_path, sleep=lambda s: time.sleep(min(s, 0.005)), owns=ROLES["a"])
+    b = Engine(tmp_path / "arm-b", sleep=lambda s: time.sleep(min(s, 0.005)), owns=ROLES["b"], leader_store=LeaderStore(a.repo))
+    with TestClient(create_app(tmp_path, engines={"a": a, "b": b}), base_url="http://127.0.0.1") as client:
+        session = client.get("/api/session?arm=b").json()
+        assert session["state"]["arm"] == "b" and set(session["arms"]) == {"a", "b"}
+        assert session["arms"]["a"]["owns"] == list(ROLES["a"]) and session["arms"]["b"]["parked"] is True
+        assert client.get("/api/session?arm=c").status_code == 404
+        auth = {"x-orchid-token": session["token"], "x-orchid-operator": str(uuid4())}
+        assert client.post("/api/heartbeat", json={}, headers=auth).status_code == 200
+        assert a.owner == b.owner  # one console operates both followers
+        mixed = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "chord.maj"}]}, headers=auth)
+        assert mixed.status_code == 409 and "No arm is connected" in mixed.json()["detail"]  # played step by step, Keys Arm first
+        refused = client.post("/api/controls/chord.maj/play", json={}, headers=auth)
+        assert refused.status_code == 409 and "No arm is connected" in refused.json()["detail"]  # routed to Chord Arm
+        listing = client.get("/api/controls").json()
+        assert {c["id"]: c["arm"] for c in listing["controls"]}["voicing.cw"] == "b" and set(listing["ready_to_play"]) == {"a", "b"}
+        command_id = str(uuid4())
+        stop = client.post("/api/commands", json={"id": command_id, "action": "stop", "revision": 0, "args": {}, "arm": "b"}, headers=auth)
+        assert stop.status_code == 202 and all(command_id in member.receipts for member in (a, b))  # Stop reaches both
