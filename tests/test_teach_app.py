@@ -264,21 +264,30 @@ def test_points_are_captured_in_order_and_dial_turns_are_not_reversed(engine):
     assert "hover next" in reject(engine, "teach_capture", point="turn", control="voicing.cw")["message"]
 
 
-def test_retraining_a_step_keeps_the_other_steps(engine):
+def test_re_teaching_a_key_goes_through_every_step_again_and_keeps_the_old_motion_until_press(engine):
     following(engine)
     teach_points(engine, "C")
     run(engine, 10, until=lambda: engine.phase == "teach_hold")
-    before = engine.notes["C"]["points"]
+    before = deepcopy(engine.notes["C"]["points"])
     command(engine, "teach_follow")
+    assert "Re-teaching C from the start: hover, touch and press" in engine.message
     run(engine, 3, until=lambda: engine.teach.mode == "following")
+    assert engine.public["teach"]["points"] == ["home"] and "Guide it to hover" in engine.message
+    assert "hover next" in reject(engine, "teach_capture", point="touch")["message"]  # in order, as the first time
     move_leader(engine, "shoulder_lift", 60)
     move_leader(engine, "wrist_flex", 30)  # a slightly different hover above the key
     capture(engine, "hover")
-    after = engine.notes["C"]["points"]  # saved straight away
-    assert after["hover"] != before["hover"]
-    assert after["touch"] == before["touch"] and after["press"] == before["press"]
-    assert engine.public["teach"]["points"] == ["home", "hover", "touch", "press"]
-    assert engine.phase == "teach_follow" and "retrained" in engine.message  # no motion for hover/touch
+    assert engine.notes["C"]["points"] == before  # nothing saved until press: the old motion still plays
+    command(engine, "teach_hold")
+    command(engine, "teach_follow")  # following again carries on from touch, it does not start over
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    assert engine.public["teach"]["points"] == ["home", "hover"]
+    move_leader(engine, "wrist_flex", 36)
+    capture(engine, "touch")
+    move_leader(engine, "wrist_flex", 12)
+    capture(engine, "press")
+    after = engine.notes["C"]["points"]
+    assert all(after[n] != before[n] for n in ("hover", "touch", "press")) and engine.phase == "teach_play"
 
 
 def test_home_is_shared_by_the_next_key(engine):
@@ -342,7 +351,8 @@ def test_one_home_for_the_arm_moves_every_key(engine):
     command(engine, "teach_follow")
     move_leader(engine, "shoulder_pan", 60)  # somewhere else entirely
     capture(engine, "home", "C")
-    assert engine.public["teach"]["points"] == ["home", "hover", "touch", "press"]  # C keeps its points
+    assert engine.public["teach"]["points"] == ["home"]  # re-teaching C from the start; its saved motion is kept
+    assert engine.notes["C"]["points"]["press"] == taught["press"]
     new_home = engine.repo.get("teach_home")["point"]["goal"]
     assert new_home["shoulder_pan"] > taught["home"]["goal"]["shoulder_pan"] + 3
     command(engine, "teach_play", control="C")
@@ -625,17 +635,32 @@ def test_the_wrist_rotates_with_the_leader_for_keys_and_the_dial(engine):
         command(engine, "teach_hold")
 
 
-def test_the_wrist_never_chases_the_leaders_wrap_at_180_degrees(engine):
+def test_the_wrist_follows_through_the_leaders_wrap_and_waits_at_its_own_end(engine):
+    """The leader's wrist turned past +180 deg reads -179: the follower's wrist goes to its end (+168 deg) and waits,
+    never spinning to -179, then follows again as soon as the leader comes back, whichever reading it shows."""
     following(engine)
-    roll = engine.arm.current["wrist_roll"]
-    engine.leader.current["wrist_roll"] += 2000  # about 176 deg in one tick: the leader's reading wrapped
-    run(engine, 1)
-    assert engine.teach.roll_guard and engine.public["teach"]["roll_guard"]
-    assert engine.arm.current["wrist_roll"] == pytest.approx(roll, abs=2)  # held, not spun the other way
+    limit = round(teach.ROLL_LIMIT_DEG * 4095 / 360 + 2047.5)  # +168 deg in encoder steps (wrist roll spans 0..4095)
+
+    def leader_at(raw, seconds=2):
+        for step in range(int(seconds / teach.PERIOD)):  # turned smoothly, as by hand
+            current = engine.leader.current["wrist_roll"]
+            engine.leader.current["wrist_roll"] = current + max(-40, min(40, raw - current))
+            run(engine, teach.PERIOD)
+    leader_at(4060)  # +178.5 deg: past the follower's end
+    assert engine.teach.roll_guard and engine.arm.current["wrist_roll"] == pytest.approx(limit, abs=3)
+    engine.leader.current["wrist_roll"] = 4094  # through +180 ...
+    run(engine, teach.PERIOD)
+    engine.leader.current["wrist_roll"] = 30  # ... to -177 deg: the same turn, read across the edge
+    run(engine, 0.5)
+    assert engine.teach.roll_guard and engine.arm.current["wrist_roll"] == pytest.approx(limit, abs=3)  # not spun round
     move_leader(engine, "elbow_flex", 24)  # the other joints keep following
-    engine.leader.current["wrist_roll"] -= 1990  # the leader comes back near the follower's angle
-    run(engine, 1)
-    assert not engine.teach.roll_guard
+    engine.leader.current["wrist_roll"] = 4094  # back across the edge ...
+    run(engine, teach.PERIOD)
+    leader_at(3700)  # ... and inside its reach: +145 deg
+    assert not engine.teach.roll_guard and engine.arm.current["wrist_roll"] == pytest.approx(3700, abs=3)
+    engine.leader.current["wrist_roll"] = 1000  # a glitch: 92 deg in one tick is not a real turn
+    run(engine, teach.PERIOD)
+    assert engine.arm.current["wrist_roll"] == pytest.approx(3700, abs=3)
 
 
 def test_dial_steps_from_the_earlier_design_must_be_retaught(engine):
@@ -867,3 +892,43 @@ def test_a_pose_the_wrist_could_not_turn_to_is_refused_and_an_old_one_is_held_wh
     engine.repo.put("teach_rest", doc)
     engine.teach_rest_doc = doc
     assert engine.shared_teach_rest()["goal"]["wrist_roll"] == 168.75
+
+
+
+
+def test_cancelling_a_re_teach_keeps_the_saved_motion_and_the_dials_shared_steps(engine):
+    following(engine)
+    teach_points(engine, "C")
+    run(engine, 10, until=lambda: engine.phase == "teach_hold")
+    saved = deepcopy(engine.notes["C"])
+    command(engine, "teach_follow")
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    assert engine.public["teach"]["reteaching"] == "C"
+    move_leader(engine, "shoulder_lift", 60)
+    capture(engine, "hover")
+    command(engine, "teach_cancel_reteach")
+    assert "cancelled" in engine.message and engine.phase == "teach_follow"  # still following
+    run(engine, teach.PERIOD)  # the console's snapshot is published on the next tick
+    assert engine.notes["C"] == saved
+    assert engine.public["teach"]["points"] == ["home", "hover", "touch", "press"]
+    assert engine.public["teach"]["reteaching"] is None
+    assert "Nothing is being re-taught" in reject(engine, "teach_cancel_reteach")["message"]
+    command(engine, "teach_hold")
+    command(engine, "teach_follow")  # a fresh re-teach starts again from hover
+    run(engine, teach.PERIOD)
+    assert engine.public["teach"]["points"] == ["home"]
+    command(engine, "teach_cancel_reteach")
+    # The dial's shared steps are saved as each is captured; cancelling puts them back.
+    command(engine, "teach_hold")
+    command(engine, "teach_follow", control="voicing.cw")
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    teach_dial(engine)
+    run(engine, 15, until=lambda: engine.phase == "teach_hold")
+    shared = deepcopy(engine.repo.get("teach_dial"))
+    command(engine, "teach_follow", control="voicing.cw")
+    run(engine, 3, until=lambda: engine.teach.mode == "following")
+    move_leader(engine, "shoulder_lift", 30)
+    capture(engine, "hover", "voicing.cw")
+    assert engine.repo.get("teach_dial") != shared
+    command(engine, "teach_cancel_reteach")
+    assert engine.repo.get("teach_dial") == shared

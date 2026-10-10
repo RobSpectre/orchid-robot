@@ -1,4 +1,6 @@
 """Two followers on one plate: who plays what, the leader handed between them, and the interlock that keeps them apart."""
+from copy import deepcopy
+
 import pytest
 
 from orchid_demo import teach
@@ -105,11 +107,29 @@ def test_going_home_needs_only_the_other_arm_to_hold_still(rig):
     assert "Chord Arm is away from its home (moving)" in reject(a, "teach_go_home")["message"]
 
 
-def test_recentring_the_shared_leader_is_refused(rig):
+def test_recentring_one_follower_leaves_the_shared_leader_and_follows_it_half_a_turn_round(rig):
+    """The Keys Arm's wrist works at the end of its rotation: re-centre it alone. The leader's calibration (shared with
+    the Chord Arm) is unchanged; the Keys Arm adds half a turn to the leader's wrist reading, so it follows the same
+    physical turn, now mid-range, and its taught key keeps the same physical pose."""
     r, a, b = rig
-    connect(b)
-    calibrate(b)
-    assert "share the leader" in reject(b, "recenter_wrist_roll", supported=True)["message"]
+    following(a)
+    teach_points(a, "C")
+    run(a, 10, until=lambda: a.phase == "teach_hold")
+    before = {"leader": deepcopy(a.leader_calibration), "roll": a.calibration["wrist_roll"]["homing_offset"],
+              "C": deepcopy(a.notes["C"]["points"])}
+    command(a, "release", supported=True)
+    command(a, "recenter_wrist_roll", supported=True)
+    assert "this follower (the shared leader is unchanged)" in a.message
+    assert a.leader_calibration == before["leader"] and a.repo.get("leader_calibration") == before["leader"]
+    assert a.calibration["wrist_roll"]["homing_offset"] != before["roll"]
+    assert a.leader_roll_offset == pytest.approx(180.0, abs=0.1) or a.leader_roll_offset == pytest.approx(-180.0, abs=0.1)
+    new = a.notes["C"]["points"]
+    for name in ("hover", "touch", "press"):
+        turned = (new[name]["goal"]["wrist_roll"] - before["C"][name]["goal"]["wrist_roll"]) % 360
+        assert turned == pytest.approx(180.0, abs=0.1)
+    leader_roll = a.leader.teleop_read()[1]["wrist_roll"]
+    assert ((a.read_leader_joints()["wrist_roll"] - leader_roll) % 360) == pytest.approx(180.0, abs=0.1)
+    assert b.leader_roll_offset == 0.0  # the Chord Arm follows the leader as before
 
 
 @pytest.fixture

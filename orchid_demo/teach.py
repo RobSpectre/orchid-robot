@@ -49,8 +49,8 @@ MAX_PLAY_SPEED = 3.0  # playback speed multiplier (1.0 = the taught/planned timi
 HOLD_SETTLE_S = 0.15
 HOLD_PUSH_DEG = 0.5
 MAX_PRESS_S = 60.0  # the longest press length in seconds (console); note values (music.py) have no limit
-ROLL_JUMP_DEG = 90.0  # a leader wrist-roll change this large in one tick is the -180/+180 wrap, not a real turn
-ROLL_RESUME_DEG = 10.0  # after the wrap, follow the wrist roll again once the leader is back this close
+ROLL_JUMP_DEG = 90.0  # a leader wrist-roll change this large in one tick, other than its -180/+180 wrap, is a glitch
+ROLL_LIMIT_DEG = 168.0  # the follower's wrist rotation reaches about +-169 deg (its encoder's ends); never ask past this
 SETTLED_DEG = 1.0  # the settle before playback ends as soon as the arm is this close to the start
 STROKE_LIMIT = 30.0  # deg: touch is just below hover, press just past touch; farther means a point is wrong  # pause at the press before the automatic return after capturing it
 
@@ -247,7 +247,8 @@ class Session:
         self.leader_pose = None
         self.gripper_hold = self.measured["gripper"] if lock_gripper else None
         self.roll_hold = None  # wrist roll held still while following (lock_wrist_roll; not used by the console)
-        self.roll_guard = False  # the leader's wrist roll crossed the -180/+180 edge: hold ours until it comes back
+        self.roll_guard = False  # the leader's wrist is turned past where the follower's can go: ours waits at its end
+        self.roll_prev, self.roll_turns = None, 0  # the leader's last wrist reading, and whole turns across its +-180 edge
         self.mode = "holding"
         self.frames = None
         self.record_started = None
@@ -289,6 +290,7 @@ class Session:
             raise RuntimeError("Connect the leader to follow it.")
         self.mode, self.frames, self.recording, self.warning = "aligning", None, None, None
         self.soft = self.soft_due = None
+        self.roll_prev = None  # pick up the leader's wrist afresh, the way nearest the follower's
 
     def lock_wrist_roll(self, locked: bool):
         """Hold the wrist roll where it is now, or release it; releasing ramps it to the leader instead of jumping."""
@@ -337,14 +339,24 @@ class Session:
     # --- control loop -----------------------------------------------------------------------------
 
     def wrap_guard(self, target: dict) -> dict:
-        """Wrist roll spans a full turn, so its reading wraps between +180 and -180 deg. Never chase that wrap: it
-        would spin the follower almost a whole turn the other way. Hold our roll until the leader comes back."""
-        gap = abs(target["wrist_roll"] - self.goal["wrist_roll"])
-        if self.roll_guard and gap <= ROLL_RESUME_DEG:
-            self.roll_guard = False
-        elif not self.roll_guard and gap > (180.0 if self.mode == "aligning" else ROLL_JUMP_DEG):
-            self.roll_guard = True
-        return {**target, "wrist_roll": self.goal["wrist_roll"]} if self.roll_guard else target
+        """Follow the leader's wrist rotation as one continuous angle. Its reading wraps between +180 and -180 deg, but
+        the follower's wrist cannot turn through that edge, so a wrap counts as a turn past it, not a jump to the other
+        side. The follower's wrist goes as far as it can (ROLL_LIMIT_DEG) and waits there while the leader is turned
+        further (roll_guard), and follows again as soon as the leader comes back within reach, whichever way."""
+        roll = target["wrist_roll"]
+        if self.roll_prev is None:  # starting to follow: the turn nearest the follower's wrist
+            self.roll_turns = min((-1, 0, 1), key=lambda n: abs(roll + 360 * n - self.goal["wrist_roll"]))
+        else:
+            step = min((roll - self.roll_prev + 360 * n for n in (-1, 0, 1)), key=abs)
+            if abs(step) > ROLL_JUMP_DEG:  # not a real turn in one tick: ignore this reading
+                roll = self.roll_prev
+            elif abs(roll - self.roll_prev) > 180:  # across the +-180 edge
+                self.roll_turns += 1 if self.roll_prev > roll else -1
+        self.roll_prev = roll
+        continuous = roll + 360 * self.roll_turns
+        reachable = max(-ROLL_LIMIT_DEG, min(ROLL_LIMIT_DEG, continuous))
+        self.roll_guard = reachable != continuous
+        return {**target, "wrist_roll": reachable}
 
     def tick(self) -> str | None:
         """One read + one goal. Returns 'aligned', 'start_mismatch', 'playing' or 'played' on a change."""

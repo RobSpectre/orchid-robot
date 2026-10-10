@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from copy import deepcopy
+import math
 from pathlib import Path
 import queue
 import threading
 import time
 import uuid
 
+from . import keyboard as keyboard_model
+from .keyboard import SLOTS as KEY_SLOTS
+from . import kinematics
 from . import motion as m
 from . import music
 from . import dial
@@ -156,10 +160,14 @@ class Engine:
         self.teach = None  # teach_motion.Session: leader record -> replay, same loop as teach_key.py
         self.teach_played = None
         self.teach_points, self.teach_points_for = {}, None  # waypoints being taught, and for which control
+        self.reteaching = None  # a taught control being re-taught from the start (begin_pass), and what Cancel restores
         self.teach_returning = False  # the automatic press -> home return after capturing a press
         self.teach_going_home = False  # an operator "Go to home" move
         self.teach_home_doc = self.repo.get("teach_home")  # cached: published every control tick
         self.teach_rest_doc = self.repo.get("teach_rest")  # a parking pose (Go to rest)
+        # This follower's wrist zero re-centred alone (two followers share the leader): the leader's wrist reading plus
+        # this many degrees is this follower's. Valid only under the calibration it was made with.
+        self.leader_roll_doc = self.repo.get("leader_roll_offset")
         self.teach_dial_doc = self.repo.get("teach_dial")  # hover/open/lower/grip shared by both dial directions
         self.teach_settings = {**DEFAULT_TEACH_SETTINGS, **(self.repo.get("teach_settings") or {})}
         self.teach_sequence_label = None
@@ -170,7 +178,7 @@ class Engine:
         self.chord_held, self.chord_pressing, self.chord_releasing = None, False, False
         self.play_t, self.stops = None, 0
         self.rhythm = None  # the last timed play's schedule: when each strike was due and any whole-beat slips
-        self.tune = None  # a MIDI-guided tune-up of one key (tune.py); its candidate points are never saved until it passes
+        self.tune = None  # correcting one key by what Orchid hears (tune.py); its candidate points are never saved until it passes
         self.tune_queue, self.tune_results, self.tune_next_at = [], {}, 0.0  # keys still to tune; each key's last result
         self.follower_port = None
         self.current = self.torque = None
@@ -380,6 +388,7 @@ class Engine:
                     "recorded_seconds": self.teach.recorded_seconds, "progress": self.teach.progress,
                     "warning": self.teach.warning, "played": self.teach_played, "roll_guard": self.teach.roll_guard,
                     "chord_held": self.chord_held, "rhythm": deepcopy(self.rhythm),
+                    "reteaching": (self.reteaching or {}).get("control") if self.teach_points_for == (self.reteaching or {}).get("control") else None,
                     "clipped_steps": self.teach.clipped_steps, "speed": self.teach.speed,
                     "points": [n for n in self.point_names(self.teach_points_for) if n in self.teach_points],
                     "sequence": self.teach_sequence_label,
@@ -424,10 +433,12 @@ class Engine:
                 "teach_settings": deepcopy(self.teach_settings),
                 "key_check": deepcopy(self.key_check), "key_check_available": self.key_checker is not None,
                 "tune_limits": {"speed": tune_rules.FIND_SPEED, "hardness": tune_rules.FIND_HARDNESS, "margin": tune_rules.TOUCH_MARGIN,
-                                "depth": tune_rules.PRESS_DEPTH, "passes": tune_rules.VERIFY_PASSES, "limit_deg": tune_rules.LIMIT_DEG},
-                "tune_queue": list(self.tune_queue), "tune_results": deepcopy(self.tune_results),
+                                "presses": tune_rules.TEST_PRESSES, "rounds": tune_rules.MAX_ROUNDS,
+                                "depth": tune_rules.PRESS_DEPTH, "limit_deg": tune_rules.LIMIT_DEG},
+                "tune_queue": list(self.tune_queue), "tune_results": deepcopy(self.tune_results), "key_layout": self.key_layout(),
                 "tune": None if not self.tune else {k: deepcopy(self.tune.get(k)) for k in (
-                    "control", "name", "status", "phase", "trial", "passes", "speed", "hardness", "margin", "depth", "log", "message")},
+                    "control", "name", "status", "phase", "trial", "rounds", "tests", "speed", "hardness", "margin", "depth", "log", "message",
+                    "test_only")},
                 "poses_saved": {"home": bool(self.calibrated and self.shared_teach_home()),
                                 "rest": bool(self.calibrated and self.shared_teach_rest())},
                 "capture_samples": len(self.capture["path"]) if self.capture else 0,
@@ -808,7 +819,18 @@ class Engine:
     def read_leader_joints(self):
         raw, joints = self.leader.teleop_read()
         self.leader_current = raw
-        return dict(joints)
+        joints = dict(joints)
+        offset = self.leader_roll_offset
+        if offset and "wrist_roll" in joints:  # this follower's wrist zero is half a turn from the leader's
+            joints["wrist_roll"] = (joints["wrist_roll"] + offset + 180.0) % 360.0 - 180.0
+        return joints
+
+    @property
+    def leader_roll_offset(self):
+        doc = self.leader_roll_doc
+        if doc and self.calibration and doc.get("calibration_sha256") == m.fingerprint(self.calibration):
+            return float(doc["degrees"])
+        return 0.0
 
     @staticmethod
     def waypoint_problem(entry):
@@ -851,8 +873,8 @@ class Engine:
         goal, got = captured["goal"]["wrist_roll"], captured["measured"]["wrist_roll"]
         m.require(abs(goal - got) <= self.ROLL_REACH_DEG,
                   f"The follower's wrist rotation stopped at {got:.0f}° but the leader is turned to {goal:.0f}°: it cannot "
-                  "turn that far, and its motor would keep straining at this pose. Turn the leader's wrist back toward the "
-                  "middle until the follower's catches up, then capture again.")
+                  "turn that far, and its motor would keep straining at this pose. Something may be in its way, or the wrist "
+                  "is at its end: turn the leader's wrist back toward 0° until the follower's catches up, then capture again.")
         return captured
 
     @classmethod
@@ -926,6 +948,35 @@ class Engine:
                 self.teach_points.pop("home", None)
             self.teach_points_for = control
         return self.teach_points
+
+    def begin_pass(self):
+        """Following a control that is already taught re-teaches it from the start: hover, touch and press (hover, open,
+        lower and grip for the dial) are captured again in order, as the first time. The working steps start from home
+        only; the saved motion is kept, and still plays, until the last step is captured and saves the new one."""
+        control = self.selected
+        names = self.point_names(control)
+        points = self.points_for(control)
+        if not all(n in points for n in names):
+            return ""  # being taught, or part way through re-teaching: carry on from the next step
+        self.teach_points = {"home": points["home"]} if "home" in points else {}
+        self.teach_points_for = control
+        # What Cancel re-teach puts back: the dial's shared steps are saved as each is captured; a key's are not.
+        self.reteaching = {"control": control, "dial": deepcopy(self.teach_dial_doc)}
+        steps = [n for n in names if n != "home"]
+        return (f" Re-teaching {CATALOG[control]['name']} from the start: {', '.join(steps[:-1])} and {steps[-1]}, in order. "
+                f"Its saved motion is kept until {steps[-1]} is captured.")
+
+    def cancel_pass(self):
+        """Cancel re-teach: forget the steps captured so far; the saved motion is exactly as it was."""
+        reteach = self.reteaching
+        m.require(reteach and reteach["control"] == self.selected and self.teach_points_for == self.selected,
+                  "Nothing is being re-taught.")
+        if CATALOG[reteach["control"]]["kind"] == "dial":
+            self.teach_dial_doc = reteach["dial"]
+            self.repo.put("teach_dial", reteach["dial"])
+        self.reteaching, self.teach_points_for = None, None
+        self.points_for(reteach["control"])  # the saved steps, back in the working set the console shows
+        return CATALOG[reteach["control"]]["name"]
 
     LIMIT_MARGIN_TICKS = 45  # about 4 deg: a parking pose held closer than this to a stop makes the servo push and buzz
 
@@ -1128,13 +1179,13 @@ class Engine:
             upcoming = next((n for n in self.point_names(self.selected) if n not in self.points_for(self.selected)), None)
             self.transition("teach_follow", "FOLLOWING the leader 1:1. " + (
                 f"Guide it to {upcoming}{STEP_HINTS.get(upcoming, '')} and capture it (Space)." if upcoming else
-                "Select a step to retrain it, or Play."))
+                "Every step is captured. Play it, or follow again to re-teach it from the start."))
         elif event == "start_mismatch":
             if self.chord_pressing:  # never got going: nothing is held down
                 self.chord_held, self.chord_pressing = None, False
             self.transition("teach_hold", self.teach.warning)
             if self.tune and self.tune["status"] == "running":
-                self.tune_end("failed", f"Tune-up stopped before pressing: {self.teach.warning} Nothing was saved.")
+                self.tune_end("failed", f"Correcting stopped before pressing: {self.teach.warning} Nothing was saved.")
         elif event == "played" and self.chord_pressing:
             self.chord_pressing = False
             self.transition("teach_hold", f"Holding {CATALOG[self.chord_held]['name']} down for the chord.")
@@ -1185,29 +1236,104 @@ class Engine:
                 self.tune_result(result)
             self.publish()
 
-    # --- MIDI-guided tune-up (one key, operator beside the arm, console only) -----------------------------
+    # --- Correct keys by what Orchid hears (one key at a time, operator beside the arm, console only) -----------------------------
 
     @property
     def tuning(self):
         return bool(self.tune and self.tune["status"] == "running") or bool(self.tune_queue)
 
+    # --- Key geometry for correcting keys (keyboard.py, kinematics.py) ---------------------------------------------
+
+    def key_points(self):
+        """{key: points} for every key taught by points under this calibration."""
+        statuses = self.key_statuses()
+        return {k: e["points"] for k, e in self.notes.items()
+                if e and e.get("format") == WAYPOINT_FORMAT and statuses[k]["recorded"] and "press" in e.get("points", {})}
+
+    def keyboard(self):
+        return keyboard_model.Keyboard(keyboard_model.press_tips(self.key_points(), self.calibration, self.arm_id))
+
+    def key_layout(self):
+        """Keys whose taught press sits off the keyboard's pattern (cached until a key or the calibration changes)."""
+        if not self.calibrated or not any(k in m.KEYS for k in self.owns):
+            return None
+        stamp = (m.fingerprint(self.calibration), tuple(sorted((k, (e or {}).get("saved_at")) for k, e in self.notes.items())))
+        if getattr(self, "_layout", (None,))[0] != stamp:
+            try:
+                report = self.keyboard().report()
+            except (ValueError, KeyError, ZeroDivisionError) as exc:
+                report = {"fitted": False, "keys": {}, "error": str(exc)}
+            self._layout = (stamp, report)
+        return self._layout[1]
+
+    def finger(self, goal):
+        return kinematics.fingertip(goal, self.calibration, self.arm_id)[0]
+
+    def moved(self, points, name, target):
+        """points[name] with its fingertip moved to target (plate mm), the finger keeping its pitch."""
+        goal = points[name]["goal"]
+        new = kinematics.reach(goal, self.calibration, self.arm_id, target)
+        change = max(abs(new[j] - goal[j]) for j in tune_rules.JOINTS)
+        if change > tune_rules.MAX_JOINT_DEG + 1e-9:
+            raise ValueError(f"moving its {name} there would turn a joint {change:.0f}° (limit {tune_rules.MAX_JOINT_DEG:g}°)")
+        moved = math.dist(self.finger(goal), target)
+        links = max(math.dist(a, b) for a, b in zip(kinematics.joints(goal, self.calibration, self.arm_id),
+                                                     kinematics.joints(new, self.calibration, self.arm_id)))
+        if links > tune_rules.LINK_FACTOR * moved + tune_rules.LINK_SLACK_MM:
+            raise ValueError(f"moving its {name} {moved:.1f} mm would swing the arm {links:.0f} mm")
+        return tune_rules.point(points[name], new)
+
+    def shifted(self, points, delta):
+        """hover, touch and press all moved by delta (plate mm): the whole stroke slid sideways."""
+        return {**points, **{name: self.moved(points, name, tuple(a + d for a, d in zip(self.finger(points[name]["goal"]), delta)))
+                             for name in ("hover", "touch", "press")}}
+
+    def straightened(self, points, board):
+        """The stroke rebuilt to come straight down onto its press, if touch or hover drift sideways along the row."""
+        press = self.finger(points["press"]["goal"])
+        along = board.along3()
+        drift = {name: sum((press[i] - self.finger(points[name]["goal"])[i]) * along[i] for i in range(2))
+                 for name in ("touch", "hover")}
+        if max(abs(v) for v in drift.values()) <= tune_rules.STRAIGHT_MM:
+            return points, None
+        new = dict(points)
+        for name, off in drift.items():
+            tip = self.finger(points[name]["goal"])
+            new[name] = self.moved(points, name, tuple(tip[i] + off * along[i] for i in range(3)))
+        return new, ("approach straightened: it came down " + ", ".join(f"{name} {abs(v):.1f} mm" for name, v in drift.items())
+                     + " to the side of its press")
+
+    @staticmethod
+    def side_shift(tune):
+        """How far calibration has slid the stroke sideways from where it was taught (mm): its nudges and centring."""
+        return math.hypot(*tune.get("slide", (0.0, 0.0)))
+
+    @staticmethod
+    def slid(tune, delta):
+        x, y = tune.get("slide", (0.0, 0.0))
+        tune["slide"] = (x + delta[0], y + delta[1])
+
     def tune_start(self, args):
         self.require_phase("teach_hold")
         m.require(args.get("beside_arm") is True, "Confirm you are beside the arm with Stop motion in reach.")
         m.require(self.key_checker is not None,
-                  "The tune-up needs the note check: real hardware and Orchid Studio running with --sound-input Orchid.")
+                  "Correcting keys needs the note check: real hardware and Orchid Studio running with --sound-input Orchid.")
         controls = args.get("controls", [args.get("control")])
         m.require(isinstance(controls, list) and 1 <= len(controls) <= len(m.KEYS) and len(set(controls)) == len(controls),
-                  "Choose the keys to tune.")
+                  "Choose the keys to correct.")
         for control in controls:  # all checked before anything moves
             self.tune_check(control)
+        self.tune_test_only = args.get("test_only") is True  # only test each key; change and save nothing
+        flagged = ((self.key_layout() or {}).get("keys") or {})
+        if not self.tune_test_only:
+            controls = sorted(controls, key=lambda k: k not in flagged)  # keys taught off the pattern go first
         self.tune_queue = list(controls[1:])
         self.tune_begin(controls[0])
 
     def tune_check(self, control):
-        m.require(isinstance(control, str) and control in CATALOG, "Choose a key to tune.")
+        m.require(isinstance(control, str) and control in CATALOG, "Choose a key to correct.")
         name = CATALOG[control]["name"]
-        m.require(CATALOG[control]["kind"] == "key", "Only keyboard keys can be tuned: chord buttons and the dial send no notes to check.")
+        m.require(CATALOG[control]["kind"] == "key", "Only keyboard keys can be corrected: chord buttons and the dial send no notes to check.")
         entry = self.recording_entry(control)
         m.require(entry["format"] == WAYPOINT_FORMAT, f"{name} was recorded freely, not taught by points. Re-teach it with the leader first.")
         m.require(self.shared_teach_home(), "No home is set. Set home with the leader first.")
@@ -1217,35 +1343,52 @@ class Engine:
         entry = self.tune_check(control)
         name = self.teach_control({"control": control})
         points = {k: v for k, v in deepcopy(entry["points"]).items() if k in teach_motion.POINTS}
-        # Finding starts from what was taught with the leader, so repeated calibrations cannot creep away from it.
+        # Correcting starts from what was taught with the leader, so repeated corrections cannot creep away from it.
         taught = {**points, **deepcopy(entry.get("taught_points") or {})}
-        self.tune = {"control": self.selected, "name": name, "status": "running", "phase": "find", "trial": 0, "passes": 0,
-                     "finds": [], "verify_trials": 0, "margin": tune_rules.TOUCH_MARGIN, "depth": tune_rules.PRESS_DEPTH,
-                     "speed": tune_rules.FIND_SPEED, "hardness": tune_rules.FIND_HARDNESS, "log": [], "message": "Finding the trigger point",
-                     "waiting": False, "points": deepcopy(taught), "taught": taught,
-                     "press_s": entry.get("press_s", self.teach_settings["press_s"]), "next_at": self.clock()}
-        self.event("tune", f"Calibration of {name} started", {"control": self.selected})
+        self.tune = {"control": self.selected, "name": name, "status": "running", "phase": "test", "trial": 0, "rounds": 0,
+                     "finds": [], "margin": tune_rules.TOUCH_MARGIN, "depth": tune_rules.PRESS_DEPTH, "trigger": None,
+                     "speed": self.teach_settings["speed"], "hardness": self.teach_settings["press_hardness"], "log": [],
+                     "tests": [], "message": "Testing it", "waiting": False, "points": deepcopy(taught), "taught": taught,
+                     "straightened": False, "press_s": entry.get("press_s", self.teach_settings["press_s"]), "next_at": self.clock(),
+                     "test_only": getattr(self, "tune_test_only", False)}
+        self.tune_board = self.keyboard()
+        if self.tune["test_only"]:
+            after = f" ({len(self.tune_queue)} more after it)" if self.tune_queue else ""
+            self.transition("teach_hold", f"Testing {name}{after}: pressing it {tune_rules.TEST_PRESSES} times at your playing speed "
+                            "to hear which key sounds. Nothing is changed.")
+            return
+        try:  # straighten a stroke that comes down to the side of its press (no motion: a change to the points)
+            points, note = self.straightened(self.tune["points"], self.tune_board)
+        except ValueError as exc:
+            points, note = self.tune["points"], f"approach left as taught ({exc})"
+        if note:
+            self.tune.update(points=points, straightened=points is not self.tune["points"])
+            self.tune["log"].append({"trial": 0, "phase": "straighten", "outcome": "adjust", "text": note, "velocity": None})
+        self.event("tune", f"Correcting {name} started", {"control": self.selected})
         after = f" ({len(self.tune_queue)} more after it)" if self.tune_queue else ""
-        self.transition("teach_hold", f"Calibrating {name}{after}: finding where it triggers with gentle presses. "
-                        "Stop motion ends it; nothing is saved unless it passes.")
+        self.transition("teach_hold", f"Correcting {name}{after}: pressing it {tune_rules.TEST_PRESSES} times to hear which key "
+                        "sounds. Stop motion ends it; nothing is saved unless it passes.")
 
     def tune_trial(self):
         tune = self.tune
         if self.rig:
             self.rig.claim(self.arm_id, "teach_play", {})
         self.selected = tune["control"]
-        verify = tune["phase"] == "verify"
-        speed = self.teach_settings["speed"] if verify else tune_rules.FIND_SPEED
-        hardness = self.teach_settings["press_hardness"] if verify else tune_rules.FIND_HARDNESS
+        testing = tune["phase"] == "test"
+        speed = self.teach_settings["speed"] if testing else tune_rules.FIND_SPEED
+        hardness = self.teach_settings["press_hardness"] if testing else tune_rules.FIND_HARDNESS
         points = {**tune["points"], "home": self.shared_teach_home()}
-        recording = teach_motion.waypoint_recording(points, tune["control"], float(tune["press_s"]), hardness)
+        press = teach_motion.waypoint_recording(points, tune["control"], float(tune["press_s"]), hardness)
+        # A test is the key played TEST_PRESSES times in a row, each from home, as in playing; one note check hears all.
+        recording = teach_motion.sequence_recording([press] * tune_rules.TEST_PRESSES, tune["control"]) if testing else press
         tune.update(trial=tune["trial"] + 1, waiting=True, speed=speed, hardness=hardness,
-                    play={"frames": recording["frames"], "bottom": recording["marks"]["press"]})
-        tune["message"] = (f"Checking at your playing speed ({speed:g}×, {hardness:.0%} hardness)" if verify else
-                           "Finding the trigger point (gentle press)")
+                    play={"frames": press["frames"], "bottom": press["marks"]["press"]})
+        tune["message"] = (f"Pressing it {tune_rules.TEST_PRESSES} times at your playing speed ({speed:g}×, {hardness:.0%} hardness)"
+                           if testing else "Finding the trigger point (gentle press)")
         self.teach_sequence_label = None
         self.start_playback(recording, speed, {})
-        self.transition("teach_play", f"Calibrating {tune['name']}: {tune['message'].lower()}. Stop motion ends it.")
+        verb = "Testing" if tune["test_only"] else "Correcting"
+        self.transition("teach_play", f"{verb} {tune['name']}: {tune['message'].lower()}. Stop motion ends it.")
 
     def tune_note(self, step):
         """Where on this press's commanded path the note sounded (recording time)."""
@@ -1268,90 +1411,182 @@ class Engine:
     def tune_result(self, result):
         tune = self.tune
         tune["waiting"] = False
-        step = result["steps"][0] if result["steps"] else {"status": result["status"], "text": result["summary"]}
-        status, text = step["status"], step.get("text") or step["status"]
-        stop = None
-        if tune["phase"] == "find":
-            if status in ("ok", "repeated"):  # the first note is the trigger, even if it sounded twice
-                tune["finds"].append(self.tune_note(step))
-                trigger = tune_rules.goal_at(tune["play"]["frames"], tune["finds"][-1])
-                tune.setdefault("find_goals", []).append(trigger)
-                agree = len(tune["finds"]) >= tune_rules.FINDS and \
-                    tune_rules.gap(tune["find_goals"][-1], tune["find_goals"][-2]) <= tune_rules.AGREE_DEG
-                if agree:
-                    tune.update(found_play=tune["play"], found_points=deepcopy(tune["points"]), phase="verify", passes=0)
-                    problem = self.tune_set(tune, sum(tune["finds"][-2:]) / 2)
-                    if problem:
-                        stop = f"{tune['name']}: {problem}; re-teach it with the leader"
-                    else:
-                        taught_press = tune["taught"]["press"]["goal"]
-                        text += (f"; trigger found. Touch set {tune['margin']:g}° before it, press {tune['depth']:g}° past it "
-                                 f"(was {tune_rules.gap(tune['trigger'], taught_press):.1f}° past)")
-                elif len(tune["finds"]) >= tune_rules.MAX_FINDS:
-                    stop = f"{tune['name']} triggers at a different point each time; re-teach it with the leader"
-            elif status == "missed":
-                points, change = tune_rules.deeper(tune["points"], tune["taught"]["press"])
-                if points is None:
-                    stop = f"{tune['name']}: {change}; re-teach it with the leader"
-                else:
-                    tune.update(points=points, finds=[], find_goals=[])
-                    text += f"; {change}"
-            else:
-                stop = f"{text}. Calibration cannot correct this; re-teach it with the leader"
-            if not stop and tune["trial"] >= tune_rules.MAX_FINDS + int(tune_rules.LIMIT_DEG / tune_rules.STEP_DEG) and tune["phase"] == "find":
-                stop = f"{tune['name']} did not give a steady trigger point; re-teach it with the leader"
+        was = tune["phase"]
+        if was == "test" and tune["test_only"]:  # a test of the key as taught: report it, change nothing
+            target = CATALOG[tune["control"]]["label"]
+            if result["status"] == "unavailable" or len(result["steps"]) != tune_rules.TEST_PRESSES:
+                return self.tune_end("failed", f"{tune['name']}: the note check did not hear the test ({result['summary']}).")
+            tally = tune_rules.tally(result["steps"], target)
+            tune["tests"].append({"round": 1, **tally})
+            clean = tally["clean"] == tune_rules.TEST_PRESSES
+            text = tune_rules.describe(tally, target)
+            tune["log"].append({"trial": tune["trial"], "phase": "test", "outcome": "pass" if clean else "adjust", "text": text,
+                                "velocity": None})
+            return self.tune_end("done" if clean else "failed", text + ("" if clean else ": correct it"))
+        if was == "test":
+            stop, text, outcome = self.tune_tested(tune, result)
+            if outcome == "pass":
+                tune["log"].append({"trial": tune["trial"], "phase": "test", "outcome": "pass", "text": text, "velocity": None})
+                return self.tune_finish()
+            velocity = None
         else:
-            tune["verify_trials"] += 1
-            if status == "ok":
-                tune["passes"] += 1
-                if tune["passes"] >= tune_rules.VERIFY_PASSES:
-                    tune["log"].append({"trial": tune["trial"], "phase": "verify", "outcome": "pass", "text": text, "velocity": step.get("velocity")})
-                    return self.tune_finish()
-            else:
-                tune["passes"] = 0
-                note_t = sum(tune["finds"][-2:]) / 2
-                if status == "repeated" and tune["margin"] + tune_rules.MARGIN_STEP <= tune_rules.MAX_MARGIN + 1e-9:
-                    tune["margin"] += tune_rules.MARGIN_STEP
-                    problem = self.tune_set(tune, note_t)
-                    stop = problem and f"{tune['name']}: {problem}"
-                    text += f"; touch now {tune['margin']:g}° before the trigger"
-                elif status == "missed" and tune["depth"] + tune_rules.DEPTH_STEP <= tune_rules.MAX_DEPTH + 1e-9:
-                    tune["depth"] += tune_rules.DEPTH_STEP
-                    problem = self.tune_set(tune, note_t)
-                    stop = problem and f"{tune['name']}: {problem}"
-                    text += f"; press now {tune['depth']:g}° past the trigger"
-                else:
-                    stop = f"{text} at your playing speed; re-teach it with the leader"
-            if not stop and tune["verify_trials"] >= tune_rules.MAX_VERIFY:
-                stop = f"{tune['name']} did not press cleanly twice in a row at your playing speed"
-        outcome = "stop" if stop else "pass" if status == "ok" else "adjust"
-        tune["log"].append({"trial": tune["trial"], "phase": "find" if tune["phase"] == "find" or "trigger found" in text else "verify",
-                            "outcome": outcome, "text": stop or text, "velocity": step.get("velocity")})
+            step = result["steps"][0] if result["steps"] else {"status": result["status"], "text": result["summary"]}
+            stop, text = self.tune_found(tune, step)
+            outcome = "stop" if stop else "pass" if step["status"] == "ok" else "adjust"
+            velocity = step.get("velocity")
+        tune["log"].append({"trial": tune["trial"], "phase": was, "outcome": outcome, "text": stop or text, "velocity": velocity})
         self.event("tune", f"{tune['name']} try {tune['trial']}: {stop or text}", {"control": tune["control"], "outcome": outcome})
         if stop:
             return self.tune_end("failed", f"{stop}. Nothing was saved.")
         tune["message"] = text
         tune["next_at"] = self.clock() + tune_rules.PAUSE_S
 
+    def tune_tested(self, tune, result):
+        """What TEST_PRESSES presses heard, and the correction it calls for. Returns (stop, text, outcome)."""
+        target = CATALOG[tune["control"]]["label"]
+        steps = result["steps"]
+        if result["status"] == "unavailable" or len(steps) != tune_rules.TEST_PRESSES:
+            return f"the note check did not hear the test ({result['summary']})", result["summary"], "stop"
+        tally = tune_rules.tally(steps, target)
+        tune["rounds"] += 1
+        tune["tests"].append({"round": tune["rounds"], **tally})
+        heard = tune_rules.describe(tally, target)
+        if tally["clean"] == tune_rules.TEST_PRESSES:
+            return None, f"{heard}: all {tune_rules.TEST_PRESSES} clean", "pass"
+        if tune["rounds"] >= tune_rules.MAX_ROUNDS:
+            return f"{tune['name']} still did not press cleanly {tune_rules.TEST_PRESSES} times out of {tune_rules.TEST_PRESSES} " \
+                   f"after {tune['rounds']} tests ({heard}); re-teach it with the leader", heard, "stop"
+        if tally["neighbours"]:  # the right key some of the time at most: move toward it
+            stop, note = self.tune_reposition(tune, tally["neighbours"])
+            return stop, f"{heard}; {note}" if note else heard, "stop" if stop else "adjust"
+        # The right key every time, but not cleanly: depth. Find the trigger first, then nudge around it.
+        if tune["trigger"] is None:
+            tune.update(phase="find", finds=[], find_goals=[], find_from=tune["trial"])
+            return None, f"{heard}; finding where it triggers to set its depth", "adjust"
+        notes, problem = [], None
+        if tally["missed"] and tune["depth"] + tune_rules.DEPTH_STEP <= tune_rules.MAX_DEPTH + 1e-9:
+            tune["depth"] += tune_rules.DEPTH_STEP
+            notes.append(f"press now {tune['depth']:g}° past the trigger")
+        if tally["repeated"] and tune["margin"] + tune_rules.MARGIN_STEP <= tune_rules.MAX_MARGIN + 1e-9:
+            tune["margin"] += tune_rules.MARGIN_STEP
+            notes.append(f"touch now {tune['margin']:g}° before the trigger")
+        if not notes:
+            return f"{tune['name']} still {heard} at the deepest press and most room allowed; re-teach it with the leader", heard, "stop"
+        problem = self.tune_set(tune, tune["trigger_t"])
+        return (f"{tune['name']}: {problem}" if problem else None), f"{heard}; {', '.join(notes)}", "stop" if problem else "adjust"
+
+    def tune_reposition(self, tune, neighbours):
+        """Slide the whole stroke toward the right key, by how often each neighbour sounded: the share of presses it
+        took (a press sounding both counts half) times the distance between their middles, at most a key's width.
+        Returns (stop, note)."""
+        target = CATALOG[tune["control"]]["label"]
+        board, delta, parts = self.tune_board, [0.0, 0.0, 0.0], []
+        for neighbour, share in neighbours.items():
+            correction = board.correction(target, neighbour)
+            if correction is None:
+                return f"{neighbour} sounded: the finger is more than a key off; re-teach {tune['name']} with the leader", None
+            way, between = correction
+            # Half the way to the neighbour's middle for every press it took, but never less than the keyboard pattern
+            # says this key already sits toward it (only on the first move: after that the press has moved).
+            distance = between / 2 * share
+            along_the_row = not (KEY_SLOTS[target][1] == 0 and KEY_SLOTS[neighbour][1] == 1)
+            if along_the_row and not tune.get("slide"):
+                distance = max(distance, board.toward(target, neighbour))
+            delta = [d + w * distance for d, w in zip(delta, way)]
+            parts.append(neighbour)
+        # At most half a key's width a round: a neighbour sounding every time may be only just over its edge. The next
+        # test shows how far there is still to go.
+        size = math.hypot(*delta)
+        step = board.pitch * tune_rules.MAX_STEP_KEYS
+        if size > step:
+            delta = [d * step / size for d in delta]
+        parts = [f"{min(size, step):.1f} mm away from {' and '.join(parts)}"]
+        try:
+            points = self.shifted(tune["points"], tuple(delta))
+        except ValueError as exc:
+            return f"{tune['name']}: {exc}; re-teach it with the leader", None
+        before = tune.get("slide", (0.0, 0.0))
+        self.slid(tune, delta)
+        limit = min(tune_rules.MAX_SHIFT_MM, board.pitch)
+        if self.side_shift(tune) > limit + 1e-9:
+            tune["slide"] = before
+            return (f"{tune['name']} would have to move over {limit:.0f} mm from where it was taught; re-teach it with the "
+                    "leader"), None
+        # A new place: any trigger found before belongs to the old one.
+        tune.update(points=points, trigger=None, finds=[], find_goals=[])
+        return None, "moved " + " and ".join(parts) + ", testing again"
+
+    def tune_found(self, tune, step):
+        """Finding the trigger with gentle presses (for depth, once the right key sounds). Returns (stop, text)."""
+        status, text = step["status"], step.get("text") or step["status"]
+        if status in ("wrong", "double"):  # a deeper press reached a neighbour: move away from it and test again
+            target = CATALOG[tune["control"]]["label"]
+            others = [n for n in step.get("heard") or step.get("notes") or [] if n != target]
+            stop, note = self.tune_reposition(tune, {n: tune_rules.FIND_NEIGHBOUR_SHARE for n in others}) if others else \
+                (f"{text}. Correcting cannot fix this; re-teach it with the leader", None)
+            if stop:
+                return stop, text
+            tune.update(phase="test")
+            return None, f"{text}; {note}"
+        if status == "missed":
+            points, change = tune_rules.deeper(tune["points"], tune["taught"]["press"])
+            if points is None:
+                return f"{tune['name']}: {change}; re-teach it with the leader", text
+            tune.update(points=points, finds=[], find_goals=[])
+            return None, f"{text}; {change}"
+        if status not in ("ok", "repeated"):
+            return f"{text}. Correcting cannot fix this; re-teach it with the leader", text
+        tune["finds"].append(self.tune_note(step))  # the first note is the trigger, even if it sounded twice
+        tune["find_goals"].append(tune_rules.goal_at(tune["play"]["frames"], tune["finds"][-1]))
+        if len(tune["finds"]) >= tune_rules.FINDS and \
+                tune_rules.gap(tune["find_goals"][-1], tune["find_goals"][-2]) <= tune_rules.AGREE_DEG:
+            tune.update(found_play=tune["play"], found_points=deepcopy(tune["points"]), trigger_t=sum(tune["finds"][-2:]) / 2)
+            problem = self.tune_set(tune, tune["trigger_t"])
+            if problem:
+                return f"{tune['name']}: {problem}; re-teach it with the leader", text
+            tune["phase"] = "test"
+            return None, (f"{text}; trigger found. Touch set {tune['margin']:g}° before it, press {tune['depth']:g}° past it; "
+                          "testing again")
+        if len(tune["finds"]) >= tune_rules.MAX_FINDS or \
+                tune["trial"] >= tune.get("find_from", 0) + tune_rules.MAX_FINDS + int(tune_rules.LIMIT_DEG / tune_rules.STEP_DEG):
+            return f"{tune['name']} triggers at a different point each time; re-teach it with the leader", text
+        return None, text
+
     def tune_finish(self):
         tune = self.tune
         entry = self.recording_entry(tune["control"])
-        trigger, taught_press = tune["trigger"], tune["taught"]["press"]["goal"]
+        shift = self.side_shift(tune)
+        taught = dict(entry.get("taught_points") or {})
+        for name in ("hover", "touch", "press"):  # what the leader taught, kept so corrections never creep from it
+            taught.setdefault(name, entry["points"][name])
+        trigger = tune["trigger"]
         self.save_control_entry(tune["control"], {
-            **entry, "points": {**entry["points"], "touch": tune["points"]["touch"], "press": tune["points"]["press"]},
-            "saved_at": m.stamp(), "tuned_at": m.stamp(),
-            "taught_points": entry.get("taught_points") or {k: entry["points"][k] for k in ("touch", "press")},
-            "calibration": {"trigger": {j: round(trigger[j], 3) for j in tune_rules.JOINTS}, "touch_margin": tune["margin"],
-                            "press_depth": tune["depth"], "verified_speed": tune["speed"], "verified_hardness": tune["hardness"],
-                            "log": tune["log"]}})
+            **entry, "points": {**entry["points"], **{k: tune["points"][k] for k in ("hover", "touch", "press")}},
+            "saved_at": m.stamp(), "tuned_at": m.stamp(), "taught_points": taught,
+            "calibration": {"trigger": trigger and {j: round(trigger[j], 3) for j in tune_rules.JOINTS},
+                            "touch_margin": tune["margin"], "press_depth": tune["depth"], "verified_speed": tune["speed"],
+                            "verified_hardness": tune["hardness"], "straightened": tune["straightened"],
+                            "side_shift_mm": round(shift, 1), "tests": tune["tests"], "log": tune["log"]}})
         self.teach_points_for = None
-        self.tune_end("done", f"{tune['name']} calibrated: touch {tune['margin']:g}° before its trigger point, press "
-                      f"{tune['depth']:g}° past it (taught {tune_rules.gap(trigger, taught_press):.1f}° past). "
-                      f"Verified at {tune['speed']:g}×. The taught points are kept.")
+        changes = []
+        if tune["straightened"]:
+            changes.append("its approach straightened")
+        if shift >= 0.5:
+            changes.append(f"moved {shift:.1f} mm sideways onto the key")
+        if trigger:
+            changes.append(f"touch {tune['margin']:g}° before its trigger point and press {tune['depth']:g}° past it")
+        rounds = tune["rounds"]
+        self.tune_end("done", f"{tune['name']} corrected: {tune_rules.TEST_PRESSES} clean presses out of {tune_rules.TEST_PRESSES} at "
+                      f"{tune['speed']:g}×" + (f" after {rounds} tests" if rounds > 1 else "") +
+                      (f"; {', '.join(changes)}" if changes else "; it was already right, nothing changed") +
+                      ". The taught points are kept.")
 
     def tune_end(self, status, message):
         self.tune.update(status=status, message=message, waiting=False)
-        self.tune_results[self.tune["control"]] = {"status": status, "message": message, "trials": self.tune["trial"], "at": m.stamp()}
+        tested = self.tune["tests"][-1] if self.tune.get("tests") else None
+        self.tune_results[self.tune["control"]] = {"status": status, "message": message, "trials": self.tune["trial"], "at": m.stamp(),
+                                                   "kind": "test" if self.tune.get("test_only") else "correct",
+                                                   "clean": tested and tested["clean"], "presses": tested and tested["presses"]}
         self.event("tune", message, {"control": self.tune["control"], "status": status})
         if status == "stopped":
             self.tune_queue = []  # Stop ends the whole list
@@ -1366,7 +1601,7 @@ class Engine:
         if self.tune and self.tune["status"] == "running":
             self.tune_end("stopped", message)
         elif self.phase == "teach_hold":
-            self.transition("teach_hold", "Tune-up stopped between keys; holding here.")
+            self.transition("teach_hold", "Correcting stopped between keys; holding here.")
 
     def tune_due(self):
         if self.tune_queue and self.tune["status"] != "running" and self.phase == "teach_hold" and self.clock() >= self.tune_next_at:
@@ -1383,7 +1618,7 @@ class Engine:
             try:
                 self.tune_trial()
             except (m.SafetyError, ValueError) as exc:
-                self.tune_end("failed", f"Tune-up stopped: {exc}")
+                self.tune_end("failed", f"Correcting stopped: {exc}")
 
     def fault(self, exc):
         message = str(exc) or type(exc).__name__
@@ -1420,12 +1655,12 @@ class Engine:
 
     def dispatch(self, action, args):
         if self.tuning:
-            # Supported release and disconnect stay available; they end the tune-up like Stop motion.
-            m.require(action in ("tune_stop", "release", "disconnect", "forget_connection"), "A tune-up is running. Stop it first.")
+            # Supported release and disconnect stay available; they end correcting like Stop motion.
+            m.require(action in ("tune_stop", "release", "disconnect", "forget_connection"), "Keys are being corrected. Stop correcting first.")
             if action != "tune_stop":
                 self.tune_stop("Stopped: torque released or disconnected. Nothing was saved.")
         # Each arm is only taught and plays its own controls, whatever the command (teach, follow, capture, play,
-        # sequence, settings, key calibration, the hand-guided flow).
+        # sequence, settings, correcting keys, the hand-guided flow).
         named = [args.get("control")] + [step.get("control") for step in args.get("steps") or () if isinstance(step, dict)] + \
             list(args.get("controls") or ())
         for control in named:
@@ -1436,11 +1671,11 @@ class Engine:
         if action == "tune_start":
             return self.tune_start(args)
         if action == "tune_stop":
-            m.require(self.tuning, "No tune-up is running.")
+            m.require(self.tuning, "No key is being corrected.")
             if self.phase == "teach_play":
                 self.teach.hold()
                 self.transition("teach_hold", "Holding here.")
-            return self.tune_stop("Tune-up stopped; holding here. Nothing was saved for the key being tuned.")
+            return self.tune_stop("Correcting stopped; holding here. Nothing was saved for the key being corrected.")
         if self.teaching_mode == "leader" and (action.startswith("capture_") or action.startswith("dial_capture_")):
             m.require(not self.recording_error, self.recording_error)
         if self.teaching_mode == "leader" and action in ("capture_hover", "capture_pressed", "capture_touch", "retreat_from_press",
@@ -2122,7 +2357,7 @@ class Engine:
             if args.get("follow") is True:
                 self.teach.follow()
                 self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s.{home_note} "
-                                "Hands off the follower; hold the leader near its pose.")
+                                "Hands off the follower; hold the leader near its pose." + self.begin_pass())
             elif leader:
                 self.transition("teach_hold", f"Follower holding here, torque ON.{home_note} Hands off the follower, then follow the leader to teach {name}.")
             else:
@@ -2133,7 +2368,8 @@ class Engine:
             if "control" in args:  # the key selected on the map becomes the one being taught
                 self.teach_control(args)
             self.teach.follow()
-            self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s. Hold the leader near the follower's pose.")
+            self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s. Hold the leader near "
+                            "the follower's pose." + self.begin_pass())
         elif action == "teach_hold":
             self.require_phase("teach_follow", "teach_record", "teach_play")
             if "control" in args:
@@ -2163,20 +2399,27 @@ class Engine:
             # Both arms' wrist-roll zero moves half a turn so work happens mid-encoder, away from the -180/+180 wrap.
             # Every saved angle gets the same half turn, so taught motions keep pointing at the same physical poses.
             self.require_phase("connected", "ready")
-            m.require(not self.leader_store, "Re-centring is not available while two followers share the leader: "
-                      "it would turn the leader's wrist zero for both.")
+            # With two followers the leader is shared: only this follower's zero moves, and the leader's wrist reading
+            # is offset by the same half turn when this follower follows it (leader_roll_offset).
+            shared = self.rig is not None or self.leader_store is not None
             self.supported(args)
-            m.require(self.teaching_mode == "leader" and self.leader is not None and self.calibrated and self.leader_calibrated,
-                      "Connect and calibrate both arms first.")
+            if shared:
+                m.require(self.calibrated, "Calibrate this follower first.")
+            else:
+                m.require(self.teaching_mode == "leader" and self.leader is not None and self.calibrated and self.leader_calibrated,
+                          "Connect and calibrate both arms first.")
+                self.leader.require_torque(False)
             self.arm.require_torque(False)
-            self.leader.require_torque(False)
+            old_offset_degrees = self.leader_roll_offset
             old_signature = m.fingerprint(self.calibration)
             shifts, backup = {}, {"at": m.stamp(), "calibration": deepcopy(self.calibration),
                                   "leader_calibration": deepcopy(self.leader_calibration)}
             self.repo.put("wrist_roll_recenter_backup", backup)
             self.reset_note()
             self.actuating = True
-            for role, device, name in (("follower", self.arm, "calibration"), ("leader", self.leader, "leader_calibration")):
+            devices = (("follower", self.arm, "calibration"),) if shared else \
+                (("follower", self.arm, "calibration"), ("leader", self.leader, "leader_calibration"))
+            for role, device, name in devices:
                 calibration = deepcopy(getattr(self, name))
                 old_offset, shift = calibration["wrist_roll"]["homing_offset"], 2048
                 new_offset = (old_offset - shift + 2048) % 4096 - 2048  # Present = Actual - Offset
@@ -2193,9 +2436,13 @@ class Engine:
                 setattr(self, name, calibration)
                 shifts[role] = shift
             signature, leader_signature = m.fingerprint(self.calibration), m.fingerprint(self.leader_calibration)
+            if shared:
+                degrees = (old_offset_degrees + shifts["follower"] * 360 / 4095 + 180.0) % 360.0 - 180.0
+                self.leader_roll_doc = {"degrees": round(degrees, 3), "calibration_sha256": signature, "saved_at": m.stamp()}
+                self.repo.put("leader_roll_offset", self.leader_roll_doc)
 
             def moved(pose, role="follower"):
-                return {**pose, "wrist_roll": shift_roll(pose["wrist_roll"], shifts[role])} if "wrist_roll" in pose else pose
+                return {**pose, "wrist_roll": shift_roll(pose["wrist_roll"], shifts.get(role, 0))} if "wrist_roll" in pose else pose
 
             def moved_point(point):
                 return {"goal": moved(point["goal"]), "measured": moved(point["measured"])}
@@ -2205,8 +2452,9 @@ class Engine:
                 if not entry or entry.get("format") not in RECORDING_FORMATS or entry.get("calibration_sha256") != old_signature:
                     continue  # never revive a motion that was already stale
                 entry = deepcopy(entry)
-                if "points" in entry:
-                    entry["points"] = {n: moved_point(pt) for n, pt in entry["points"].items()}
+                for field in ("points", "taught_points"):  # taught_points: what the leader taught, kept by Correct keys
+                    if field in entry:
+                        entry[field] = {n: moved_point(pt) for n, pt in entry[field].items()}
                 if "frames" in entry:
                     entry["frames"] = [{**f, "goal": moved(f["goal"]), "follower": moved(f["follower"]),
                                         **({"leader": moved(f["leader"], "leader")} if "leader" in f else {})}
@@ -2224,9 +2472,10 @@ class Engine:
                     self.repo.put(doc_name, doc)
                     setattr(self, attr, doc)
             self.selected, self.teach_points_for = selected, None
-            self.event("wrist_roll_recentered", f"Wrist rotation re-centred on both arms ({shifts}); {updated} taught motions updated.",
+            which = "this follower (the shared leader is unchanged)" if shared else "both arms"
+            self.event("wrist_roll_recentered", f"Wrist rotation re-centred on {which} ({shifts}); {updated} taught motions updated.",
                        {"shifts": shifts, "updated": updated})
-            self.transition("ready", f"Wrist rotation re-centred on both arms. {updated} taught motions, home, rest and the dial "
+            self.transition("ready", f"Wrist rotation re-centred on {which}. {updated} taught motions, home, rest and the dial "
                             "were updated to match, so nothing needs re-teaching. Nothing moved.")
         elif action == "teach_set_rest":
             self.require_phase("teach_hold", "teach_follow")
@@ -2277,6 +2526,7 @@ class Engine:
             if point == "home" and expected != "home":
                 self.transition(self.phase, "Home moved here. Every key now starts and ends at this home.")
             elif point == final or (complete and point != "home"):
+                self.reteaching = None  # the new motion is saved: nothing left to cancel
                 if self.is_dial:
                     self.save_dial_entries(points)
                 else:
@@ -2297,11 +2547,16 @@ class Engine:
                         + " Keep hands off the follower; you can leave the leader where it is.")
                 else:
                     shared_note = " (shared by both dial directions)" if self.is_dial else ""
-                    self.transition(self.phase, f"{point.title()} retrained for {name}{shared_note} and saved. Its other steps are unchanged.")
+                    self.transition(self.phase, f"{point.title()} re-captured for {name}{shared_note} and saved.")
             else:
                 upcoming = next((n for n in names if n not in points), None)
                 self.transition(self.phase, f"{point.title()} {'re-captured' if retrained else 'captured'} for {name}. "
                                 + (f"Next: guide to {upcoming}{STEP_HINTS.get(upcoming, '')}. Then capture it." if upcoming else ""))
+        elif action == "teach_cancel_reteach":
+            self.require_phase("teach_hold", "teach_follow")
+            name = self.cancel_pass()
+            self.transition(self.phase, f"Re-teaching {name} cancelled. Its saved motion is unchanged; follow the leader to "
+                            "re-teach it again.")
         elif action == "teach_record":
             self.require_phase("teach_follow")
             name = self.teach_control(args)

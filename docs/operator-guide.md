@@ -90,13 +90,18 @@ Leader teaching records the motion you make with the leader and replays it, usin
 1. **Connect arms.** Leader teaching is the default. The page scans for the arms by itself and selects the 12 V follower and the 5 V leader; connecting only reads the motors. Do not run another controller (such as `teach_key.py`) alongside this app; each takes an exclusive lock on the ports, so the second one refuses.
 2. Calibrations that match the motors are reused. Otherwise calibrate the arm the page names under **Calibrate motors**.
 3. **Teach C** (or select another key or chord button first). The follower's goal is set to its measured pose, LeRobot's `SOFollower.configure` applies its motor settings, and torque holds it there. The first time, that pose becomes the arm's **home**, used by every key. Then the follower ramps to the leader's pose at up to 30°/s and mirrors it 1:1. Keep hands off the follower and hold the leader roughly where the follower is. If the follower was already powered, the page first asks you to support it: torque blinks off for a moment while the settings are written.
-4. **Hover, touch, press.** Guide the follower just above the key and press Space (hover); lower until the tip just touches without pressing, Space (touch); press only until it sounds, Space (press). A beep confirms each capture. Tapping ✓ Touch or ✓ Hover re-captures it and clears the points after it. Tapping ✓ Home moves the arm's one home: every key, including keys already taught, then starts and ends there, and no key's hover/touch/press is cleared. Each point stores the commanded goal, so the press replays the depth you taught even where the key stopped the arm.
+4. **Hover, touch, press.** Guide the follower just above the key and press Space (hover); lower until the tip just touches without pressing, Space (touch); press only until it sounds, Space (press). A beep confirms each capture. Tapping ✓ Touch or ✓ Hover re-captures it before you go on. Tapping ✓ Home moves the arm's one home: every key, including keys already taught, then starts and ends there, and no key's hover/touch/press is cleared. Each point stores the commanded goal, so the press replays the depth you taught even where the key stopped the arm.
 5. After the press is captured the follower returns on its own: press → touch → hover → home, then holds at home, and the key counts as taught. Put the leader back at rest before following again (following always ramps to wherever the leader is).
 6. **Play.** The follower ramps to home (up to 30°/s, faster at higher speeds), waits until it has settled there, then goes home → hover → touch → press, holds the press for the key's **Press length** (default 0.3 s, 0–5 s), and returns the same way, with smooth joint moves (45°/s peak between home and hover, 20°/s for the strokes, at 1×). **Arm speed** is one global slider in the top bar (0.25–3×, where 3× is the maximum). Letting go of it saves it, and it applies from the next play to every key, chord button, dial turn and the API; try a new key at 1× first. **Press hardness** (top bar, 10–100%, default 50%) slows only the final touch → press stroke of every key and chord button, as a share of the other strokes: lower is gentler, 100% is as fast as the strokes. It applies from the next play; it does not change the press depth, and the release is not slowed. A press length typed next to Play is saved for that key when you play it. If the arm did not reach home (more than 8° off), it holds and offers **Play anyway**.
-7. **Rest.** Click **☾ Rest** on the map, follow the leader to where the arm should wait, and press **Set rest here**. **Go to rest** moves the arm there (up to 30°/s) when you want it parked. Playback always ends at home, where the arm waits between key presses; a Play from rest first moves up to home. Home and rest are held for minutes. A joint held against its end of travel keeps its motor pushing, and the arm shivers. So the arm holds home and rest about 4° (45 encoder steps) inside each joint's travel, wrist rotation excepted. You can set them folded against a stop. Keep the leader's wrist rotation clear of ±180°. The follower's wrist stops at about ±169°, and a pose past that keeps its motor straining. Capturing any pose (home, rest or a taught step) is refused when the follower's wrist is more than 4° short of the leader's. A pose saved like that earlier is played and held at the rotation the wrist reached.
-8. Select another key on the map, press **Follow the leader**, and capture its hover, touch and press. Release torque from **Release or disconnect** with the arm supported or resting.
+7. **Rest.** Click **☾ Rest** on the map, follow the leader to where the arm should wait, and press **Set rest here**. **Go to rest** moves the arm there (up to 30°/s) when you want it parked. Playback always ends at home, where the arm waits between key presses; a Play from rest first moves up to home. Home and rest are held for minutes. A joint held against its end of travel keeps its motor pushing, and the arm shivers. So the arm holds home and rest about 4° (45 encoder steps) inside each joint's travel, wrist rotation excepted. You can set them folded against a stop. The follower's wrist rotation reaches about ±168°. Its wrist follows the leader's as one continuous turn, even when the leader's reading wraps from +180° to −180°. When the leader is turned further than the follower's wrist can go, the follower's wrist waits at its end, and the training page says so. It follows again as soon as you turn the leader back within reach. A pose captured there is saved where the follower's wrist actually is. Capturing any pose (home, rest or a taught step) is refused when the follower's wrist is more than 4° short of the leader's. A pose saved like that earlier is played and held at the rotation the wrist reached.
+8. Select another key on the map, press **Follow the leader**, and capture its hover, touch and press.
+   **Re-teaching** a key, chord button or the dial goes through every step again, in order, as the first time. Following a
+   taught control starts from hover (hover, open, lower and grip for the dial). Its saved motion is kept, and still
+   plays, until the last step is captured. **✕ Cancel re-teach** drops the steps captured so far and keeps the saved
+   motion exactly as it was, including the dial's shared steps; the arm keeps following or holding. Following again part
+   way carries on from the next step. Release torque from **Release or disconnect** with the arm supported or resting.
 
-Moves between points are straight lines in joint space, not obstacle-avoiding paths. If the move from home to hover passes too close to Orchid, capture hover higher or choose a home closer to the keys. **Voicing dial.** Select **↻ CW** or **↺ CCW** and teach, with the leader, **hover** (above the knob), **open** (jaws open, still above it), **lower** (lowered around the knob, not touching) and **grip** (jaws closed on it). These four steps are shared by both directions. Capturing the grip lets go, raises to the open pose, then goes to hover and home on its own. The turn is not taught with the leader: each direction has an angle (default +20° CW, −20° CCW; flip the sign if it turns the wrong way, up to ±90°), and playback rotates only the wrist by it. Playback: home → hover → open → lower → grip → turn → let go in place → raise to the open pose → hover → home; it never turns back while gripping. While following, the follower's wrist rotates with the leader's on either arm, and a taught point keeps the rotation it had when captured. Wrist rotation's reading wraps at ±180°: if the leader's wrist crosses that edge, the follower holds its rotation instead of spinning the long way round (the console says so) and follows again once the leader is turned back near the follower's angle. A dial direction's turn is still the computed wrist rotation from the grip.
+Moves between points are straight lines in joint space, not obstacle-avoiding paths. If the move from home to hover passes too close to Orchid, capture hover higher or choose a home closer to the keys. **Voicing dial.** Select **↻ CW** or **↺ CCW** and teach, with the leader, **hover** (above the knob), **open** (jaws open, still above it), **lower** (lowered around the knob, not touching) and **grip** (jaws closed on it). These four steps are shared by both directions. Capturing the grip lets go, raises to the open pose, then goes to hover and home on its own. The turn is not taught with the leader: each direction has an angle (default +20° CW, −20° CCW; flip the sign if it turns the wrong way, up to ±90°), and playback rotates only the wrist by it. Playback: home → hover → open → lower → grip → turn → let go in place → raise to the open pose → hover → home; it never turns back while gripping. While following, the follower's wrist rotates with the leader's on either arm, and a taught point keeps the rotation it had when captured. Wrist rotation's reading wraps at ±180°. The follower's wrist follows the leader's as one continuous turn, waits at its own end (about ±168°) when the leader is turned further (the console says so), and follows again once the leader is turned back within reach. A dial direction's turn is still the computed wrist rotation from the grip.
 
 Following and playback clip each goal to 15° from the measured pose (LeRobot's `max_relative_target` rule): a lagging or blocked joint is limited, never faulted. There are no tracking, settle, stall, home or route checks. **Stop motion** (Esc) holds the follower at its measured pose and stays in the teaching session. Losing the operator page for five seconds stops with a hold. A recording stays valid until the follower calibration changes. This is joint position control, without collision or force sensing; keep the physical power stop within reach.
 
@@ -120,28 +125,66 @@ on their own, so they are reported as unchecked unless a key sounds. Dial turns 
 clicks they produced. The check never changes or repeats a motion; if Studio is not running, it is marked
 unavailable and the play is unaffected.
 
-### Calibrate keys with Orchid
+### Correct keys with Orchid
 
-**04 Calibrate keys** in the sidebar gives every key the same approach and the same pressure, by listening to
-where each key actually triggers. If the arm is not holding, the page offers **Go to home**. Confirm you are
-beside the arm, then press a key in the grid to calibrate it, or **Calibrate all taught keys** to run them in
-turn; the grid shows each key's last result (✓ calibrated, ✗ re-teach).
+**04 Correct keys** in the sidebar plays each key the way it is played and listens through Orchid Studio. It records
+which key actually sounded, then moves the taught motion until it presses the right key, cleanly, every time. If the
+arm is not holding, the page offers **Go to home**. Confirm you are beside the arm, then press a key in the grid to
+correct it, or **Correct all taught keys** to run them in turn. The grid shows each key's last result (✓ corrected,
+✗ re-teach).
 
-1. **Find.** Gentle presses at 0.5× speed and 25% press hardness. The moment Orchid reports the note, placed on
-   the arm's commanded path for that press, is the key's trigger point. Two presses must agree within 0.5°. No
-   note: the press goes 0.75° deeper, never more than 3° past what was taught.
-2. **Set.** Touch goes 1° before the trigger point along that path, press 0.75° past it. Keys taught too deep
-   (lots of travel after the note sounds) get a shallower press; keys whose touch sat at the trigger point get
-   room above it, which stops double triggers at speed.
-3. **Verify.** The key plays at your **Arm speed** and **Press hardness** until it presses cleanly twice in a
-   row. Pressed twice: touch moves 0.5° further before the trigger (up to 2.5°). No note: press 0.25° deeper (up
-   to 1.5°). A wrong or neighbouring key stops it: re-teach that key with the leader.
+**Test all taught keys** checks them without changing anything. Each key is played 5 times at your playing speed and
+press hardness, and the grid shows how many presses were clean (✓ 5/5 clean, ✗ 3/5 clean). Hover over a key for what
+was heard, for example "E: 3/5 clean, F 2×". Nothing is moved or saved. Afterwards **Correct the keys that failed** corrects just those: it
+lists the keys whose last test or correction did not pass. Run the test again whenever you like, for example after re-teaching a key or changing Arm
+speed.
 
-Nothing is saved until verify passes; the leader-taught points are kept, and calibrating again always starts
-from them. Gripper opening and wrist roll are never changed. **Stop motion**, **Stop calibration**, release and
-disconnect end it, including the rest of the list. Calibration runs from the console only, not the API, and only
-for keyboard keys, since chord buttons and the dial send no notes. Recalibrate after moving the arm or Orchid,
-or after changing Arm speed or Press hardness a lot.
+**Keys taught off the pattern.** The page fits all your taught presses to the keyboard's pattern: a white key every
+slot, black keys half a slot along and further back. It lists any key whose press sits off that pattern, for example
+"D# is 6 mm toward E". Each key is compared with the pattern of the other keys. The arm model's absolute position can
+be 2 cm off, but every key is off the same way, so the comparison still works. When no key has failed, **Correct the keys off the
+pattern** runs just those, leaving out keys that have since passed. **Correct all** starts with them.
+
+For each key:
+
+0. **Straighten.** No press. A stroke that comes down to the side of its press (touch or hover more than 1.5 mm along
+   the row from the press) is rebuilt to come straight down onto it, keeping the finger's angle.
+1. **Test.** The key is played 5 times in a row from home, at your **Arm speed** and **Press hardness**, as in
+   playing. Each press is recorded: the right key, a neighbour, two keys at once, the key twice, or nothing.
+2. **Move.** When a neighbour sounded, the hover, touch and press slide together, away from it:
+   - **A black key that sounded a white neighbour** (D# hitting E) moves along the row toward the black key. A white
+     key's back part runs right alongside the black keys, so the finger was beside the black key, not in front of it.
+   - **A white key that sounded a black key** (C hitting C#) moves forward, onto the white key's wide front, clear of the
+     black keys.
+   - **Two white keys** move along the row, away from the neighbour.
+
+   Each press the neighbour took moves the stroke a share of half the way between the two keys, and two keys at once
+   count half. The first move is at least as far as the keyboard pattern says the key sits toward that neighbour. One
+   round moves at most half a key's width, and the next test shows how much further to go. Up to 6 tests.
+3. **Depth.** When it is the right key every time but some presses missed or sounded twice, gentle presses (0.5×
+   speed, 25% press hardness) find where the key triggers. Touch then goes 1° before that point and press 0.75° past
+   it. In later tests a miss presses 0.25° deeper (up to 1.5°), and a double trigger gives 0.5° more room above the
+   trigger (up to 2.5°). A neighbour sounding on one of the deeper, gentle presses moves the stroke away from it
+   and tests again. Otherwise it then tests again.
+
+A key is corrected when a test gives 5 clean presses out of 5, within 6 tests. Correcting stops for a re-teach with
+the leader if:
+- a key more than one slot away sounds;
+- the stroke would move more than a key's width from where it was taught;
+- it would press more than 3° deeper than taught;
+- the arm could only reach the new place by swinging. That is any part of it moving more than three times as far
+  as the finger, or a joint turning over 30°.
+
+The sideways moves are worked out with the arm model. That is accurate for moves of a few millimetres, because only
+the model's zero points are estimated, not its geometry. The finger keeps its angle. Nothing is saved until a test
+passes. The leader-taught hover, touch and press are kept, and correcting again always starts from them, so
+corrections cannot creep. Gripper opening and wrist roll are never changed. **Stop motion**, **Stop correcting**,
+release and disconnect end it, including the rest of the list. Correcting runs from the console only, not the API,
+and only for keyboard keys, since chord buttons and the dial send no notes. Correct the keys again after moving the
+arm or Orchid, or after changing Arm speed or Press hardness a lot.
+
+The key check after every play also reports two keys struck together ("C and C# sounded together"): the finger landed
+between them.
 
 ## Two followers on the registration plate
 
@@ -154,13 +197,13 @@ right port and refuses to connect the Keys Arm's hardware as the Chord Arm, whic
 port the other arm has open. Each arm is only ever taught and plays its own controls: the Keys Arm the twelve keys, the Chord Arm the
 chord buttons and voicing dial, whether or not the other arm is connected. The Chord Arm keeps its own data in `DATA_DIR/arm-b` (calibration,
 home, taught controls); The Keys Arm's data is unchanged. The console shows the chosen arm's connection, calibration, training
-and key calibration, and greys out the other arm's controls. **Stop motion** and Esc stop both arms.
+and key correction, and greys out the other arm's controls. **Stop motion** and Esc stop both arms.
 
 One leader teaches both, and on the training page it follows the arm you select in the sidebar: the arm that had it stops
 following and holds where it is (torque stays on), and the selected arm connects it, even while that arm is holding. The
 strip **Use the leader with this arm** does the same if switching did not (for example while the other arm was playing). Or, on the arm that has it, **Calibrate motors →
 Leader → Hand the leader over**, then on the other arm **Find leader → Connect leader**. The leader's calibration is shared, so it does not need calibrating again.
-Re-centring wrist rotation is unavailable while the leader is shared.
+**Re-centre wrist rotation** (Calibrate motors, torque released) works on one follower at a time with a shared leader. It moves that follower's wrist-roll zero by half a turn and leaves the leader alone: that follower then adds half a turn to the leader's wrist reading, so it follows the same physical turn. Use it when an arm's taught controls sit at the end of its wrist rotation (about ±168°) and the wrist cannot turn further while teaching. Its saved home, rest and taught controls are updated to match, so nothing needs re-teaching, and the other arm is unchanged.
 
 The arms' reach overlaps above Orchid, so an **interlock** keeps them apart: an arm may leave its home only while the
 other is parked (holding still within 5° of its own home or rest, or not connected), and only one arm may be away from home at a

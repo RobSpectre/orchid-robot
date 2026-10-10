@@ -14,7 +14,7 @@ const instances = {};
 const selectedArm = () => arm;  // for functions with their own local "arm"
 const ARM_NAMES = {a: "Keys Arm · 12 keys", b: "Chord Arm · chords & dial"};
 const ARM_SHORT = {a: "Keys Arm", b: "Chord Arm"};
-const armStatus = a => !a.connected ? "not connected" : a.tuning ? "calibrating keys" : a.parked ? `parked ${a.parked_reason}` : a.parked_reason;
+const armStatus = a => !a.connected ? "not connected" : a.tuning ? "correcting keys" : a.parked ? `parked ${a.parked_reason}` : a.parked_reason;
 function renderArms() {
   const box = $("arm-switch");
   if (!box) return;
@@ -86,8 +86,11 @@ function calibrationTools() {
       `<div class="calibration-reload"><p class="hint">Reload discards the unfinished calibration and verifies the saved settings on all six motors. Use reset after replacing or reseating a motor or joint.</p>` +
       (s.calibration ? confirm("calibration_unchanged", "This is the same arm; no motors or joints have been replaced or reseated since this calibration was saved.") : "") +
       actions(button("calibration_reload", "Reload saved calibration", true, 'data-calibration="true"')) + '</div>' +
-      (leaderMode() && state.leader?.connected && state.calibrated && state.leader?.calibrated ?
-        '<div class="calibration-reload"><p class="hint"><b>Re-centre wrist rotation</b> moves both arms’ wrist-roll zero by half a turn, so the wrist works mid-range instead of at the sensor’s −180°/+180° wrap. Saved home, rest, dial and keys are updated to match: nothing moves and nothing needs re-teaching. Do it once.</p>' +
+      ((arms ? state.calibrated : leaderMode() && state.leader?.connected && state.calibrated && state.leader?.calibrated) ?
+        '<div class="calibration-reload"><p class="hint"><b>Re-centre wrist rotation</b> ' + (arms ?
+          'moves this follower’s wrist-roll zero by half a turn, so its wrist works mid-range instead of at the end of its rotation (about ±168°). The shared leader is not changed: its wrist reading is turned by the same half turn for this follower. ' :
+          'moves both arms’ wrist-roll zero by half a turn, so the wrist works mid-range instead of at the sensor’s −180°/+180° wrap. ') +
+        'Saved home, rest, dial and keys are updated to match: nothing moves and nothing needs re-teaching. Do it once.</p>' +
         actions(button("recenter_wrist_roll", "Re-centre wrist rotation", true, 'data-calibration="true"')) + '</div>' : "")) +
     '<p class="hint">Both actions keep torque off. Reloading does not restore an earlier arm position. Motions still need the same calibration, fixture and contact tips.</p>';
 }
@@ -300,37 +303,55 @@ function keyCheck(s) {
   const label = {ok: "Orchid heard", problem: "Check the arm", pending: "Orchid", unavailable: "Note check unavailable"}[k.status] || "Orchid";
   return `<p class="${k.status === "problem" ? "notice" : "hint"} key-check" role="status"><b>${label}:</b> ${esc(k.summary)}</p>`;
 }
-// 04 Tune keys: MIDI-guided tune-up (tune.py). Gentle trials checked by Orchid, small capped corrections.
+// 04 Correct keys (tune.py): test each key by what Orchid hears, then move or deepen it; small capped corrections.
 const tuning = (s = state) => s?.tune?.status === "running" || !!s?.tune_queue?.length;
 function tuneSection() {
   const s = state, t = s.tune, limits = s.tune_limits || {}, results = s.tune_results || {}, queue = s.tune_queue || [];
   const busy = tuning(s), taught = notes.filter(k => allStatuses()[k]?.recorded);
-  let html = intro("Calibrate the keys with Orchid.", `<b>Find</b>: gentle presses (${limits.speed}× speed, ${Math.round(limits.hardness * 100)}% hardness) while Orchid Studio listens, until two agree on where the key triggers. ` +
-    `<b>Set</b>: touch ${limits.margin}° before that point and press ${limits.depth}° past it, so every key gets the same approach and pressure. ` +
-    `<b>Verify</b>: ${limits.passes} clean presses in a row at your Arm speed and press hardness save it. Pressing deeper is capped at ${limits.limit_deg}° past what you taught; a wrong key stops for a re-teach with the leader.`);
+  let html = intro("Correct the keys with Orchid.", `<b>Test</b>: each key is played ${limits.presses} times in a row at your Arm speed and press hardness while Orchid Studio listens, and every press is recorded: the right key, a neighbour, two keys at once, a double trigger or nothing. ` +
+    `<b>Move</b>: when a neighbour sounds, the hover, touch and press slide together toward the right key, by how often the neighbour sounded, and the key is tested again. ` +
+    `<b>Depth</b>: the right key but missed or doubled: gentle presses find where it triggers, then touch goes ${limits.margin}° before it and press ${limits.depth}° past it. ` +
+    `A key is corrected when a test is ${limits.presses} clean presses out of ${limits.presses} (up to ${limits.rounds} tests). A stroke that comes down to the side of its press is straightened first. ` +
+    `Moves are capped at a key’s width sideways and ${limits.limit_deg}° deeper than you taught; beyond that, re-teach with the leader.`);
   if (s.owns && !s.owns.some(k => notes.includes(k)))
-    return html + `<p class="notice" role="status">Key calibration is for the keys arm. Choose the <b>${esc(ARM_SHORT.a)}</b> in the sidebar.</p>`;
-  if (!s.key_check_available) return html + '<p class="notice" role="status">Tuning listens to Orchid through Orchid Studio, so it needs real hardware and Studio running with <b>--sound-input Orchid</b>.</p>';
+    return html + `<p class="notice" role="status">Correcting keys is for the keys arm. Choose the <b>${esc(ARM_SHORT.a)}</b> in the sidebar.</p>`;
+  if (s.key_layout?.fitted) {
+    const off = Object.values(s.key_layout.keys || {});
+    html += off.length ? `<div class="notice" role="status"><b>Taught off the keyboard’s pattern</b> (fitted from all taught presses, ${s.key_layout.pitch_mm} mm a key; correcting starts with these):<ul>${off.map(k => `<li>${esc(k.text)}</li>`).join("")}</ul></div>` :
+      `<p class="hint">Every taught press sits on the keyboard’s pattern (${s.key_layout.pitch_mm} mm a key).</p>`;
+  }
+  if (!s.key_check_available) return html + '<p class="notice" role="status">Correcting listens to Orchid through Orchid Studio, so it needs real hardware and Studio running with <b>--sound-input Orchid</b>.</p>';
   if (busy) {
     const key = t?.status === "running" ? t : null;
-    const stage = key && (key.phase === "verify" ? `verify at ${key.speed}× · ${key.passes}/${limits.passes} clean` : "finding the trigger");
-    html += `<div class="tune-progress" role="status"><strong>${key ? `Calibrating ${esc(key.name)} · try ${key.trial} · ${stage}` : "Next key…"}</strong>` +
+    const stage = key && (key.test_only ? `${limits.presses} presses at ${key.speed}×` :
+      key.phase === "test" ? `test ${key.rounds + 1} · ${limits.presses} presses at ${key.speed}×` : "finding the trigger");
+    html += `<div class="tune-progress" role="status"><strong>${key ? `${key.test_only ? "Testing" : "Correcting"} ${esc(key.name)} · ${stage}` : "Next key…"}</strong>` +
       `<span>${queue.length ? `${queue.length} more: ${queue.map(esc).join(" ")}` : "Last key"}</span></div>` +
-      (key ? `<ol class="tune-log">${key.log.map(e => `<li class="${esc(e.outcome)}"><b>${e.phase === "verify" ? "Verify" : "Find"} ${e.trial}</b> ${esc(e.text)}</li>`).join("")}</ol>` : "") +
-      actions(button("tune_stop", "■ Stop calibration", false));
+      (key ? `<ol class="tune-log">${key.log.map(e => `<li class="${esc(e.outcome)}"><b>${{test: "Test", straighten: "Straighten"}[e.phase] || "Find"} ${e.trial || ""}</b> ${esc(e.text)}</li>`).join("")}</ol>` : "") +
+      actions(button("tune_stop", "■ Stop correcting", false));
   } else {
     if (t) html += `<p class="${t.status === "done" ? "hint" : "notice"}" role="status"><b>${esc(t.name)}:</b> ${esc(t.message)}</p>`;
-    html += confirm("beside_arm", "I am beside the arm with Stop motion in reach. Each try presses one key gently.", "Ready to tune");
+    html += confirm("beside_arm", `I am beside the arm with Stop motion in reach. Each test plays one key ${limits.presses} times at my playing speed.`, "Ready to correct");
     if (s.phase === "teach_follow") html += '<p class="hint">Hold the arm first; it follows the leader now.</p>' + actions(button("teach_hold", "Hold here", false));
-    else if (s.phase !== "teach_hold") html += '<p class="hint">The arm holds at home before tuning.</p>' +
+    else if (s.phase !== "teach_hold") html += '<p class="hint">The arm holds at home before correcting.</p>' +
       (powered() ? confirm("supported", "The follower is already powered. I am supporting it: torque blinks off for a moment while LeRobot’s motor settings are applied.", "Support the follower") : "") +
       actions(button("teach_begin", "Go to home ▶", false, 'data-pose="home" data-play="1"'));
-    else if (taught.length) html += actions(button("tune_start", taught.length === 1 ? `Calibrate ${esc(taught[0])}` : `Calibrate all ${taught.length} taught keys`, false, `data-controls="${esc(taught.join(","))}"`));
+    else if (taught.length) {
+      // Off the pattern is only a hint: a key whose last test or correction passed is not offered again.
+      const off = Object.keys(s.key_layout?.keys || {}).filter(k => taught.includes(k) && results[k]?.status !== "done");
+      const failed = taught.filter(k => results[k]?.status === "failed");  // the last test or correction did not pass
+      html += actions(
+        button("tune_start", taught.length === 1 ? `Test ${esc(taught[0])}` : `Test all ${taught.length} taught keys`, true, `data-controls="${esc(taught.join(","))}" data-test-only="1"`) +
+        button("tune_start", taught.length === 1 ? `Correct ${esc(taught[0])}` : `Correct all ${taught.length} taught keys`, !!(off.length || failed.length), `data-controls="${esc(taught.join(","))}"`) +
+        (failed.length ? button("tune_start", `Correct the ${failed.length} key${failed.length === 1 ? "" : "s"} that failed (${failed.map(esc).join(" ")})`, false, `data-controls="${esc(failed.join(","))}"`) :
+          off.length ? button("tune_start", `Correct the ${off.length} key${off.length === 1 ? "" : "s"} off the pattern (${off.map(esc).join(" ")})`, false, `data-controls="${esc(off.join(","))}"`) : ""));
+    }
   }
   html += `<div class="tune-grid" role="group" aria-label="Keys">${notes.map(k => {
     const r = results[k], now = busy && t?.status === "running" && t.control === k, waiting = queue.includes(k);
-    const label = !allStatuses()[k]?.recorded ? "not taught" : now ? "tuning…" : waiting ? "queued" : !r ? "—" :
-      r.status === "done" ? "✓ calibrated" : r.status === "failed" ? "✗ re-teach" : "stopped";
+    const label = !allStatuses()[k]?.recorded ? "not taught" : now ? (t.test_only ? "testing…" : "correcting…") : waiting ? "queued" : !r ? "—" :
+      r.kind === "test" && r.clean != null ? `${r.status === "done" ? "✓" : "✗"} ${r.clean}/${r.presses} clean` :
+      r.status === "done" ? "✓ corrected" : r.status === "failed" ? "✗ re-teach" : "stopped";
     return `<button data-action="tune_start" data-controls="${esc(k)}" class="secondary tune-key ${now ? "current" : r ? esc(r.status) : ""}" title="${esc(r?.message || "")}"><strong>${esc(k)}</strong><small>${label}</small></button>`;
   }).join("")}</div>`;
   return html;
@@ -343,7 +364,7 @@ function teachWorkflow(s) {
   const heard = p === "teach_hold" && t.played === chosen.id;
   const play = (label, secondary = true) => button("teach_play", label, secondary);  // speed comes from the shared setting
   const description = `<p class="description">${esc(s.message)}</p>` + keyCheck(s) + (t.roll_guard ?
-    '<p class="notice" role="status">Wrist rotation paused: the leader’s wrist crossed its ±180° edge. Turn it back toward the follower’s wrist angle to resume.</p>' : "");
+    '<p class="notice" role="status">The leader’s wrist is turned further than the follower’s can go (about ±168°), so the follower’s wrist waits at its end. Turn the leader’s wrist back toward the middle and it follows again. If this control needs the wrist turned further, re-centre this arm’s wrist once: hold the follower, <b>Release or disconnect → Release torque</b>, then <b>Calibrate motors → Re-centre wrist rotation</b>. Taught controls are kept.</p>' : "");
   const playback = p === "teach_play" ? '<progress id="teach-progress" max="1" value="0" aria-label="Playback progress"></progress>' + actions(button("teach_hold", "■ Stop & hold here", true)) : "";
   const got = pointsFor(s, chosen.id);
   // A step chosen for retraining (tap its box) comes first; otherwise the first step not yet taught.
@@ -387,8 +408,11 @@ function teachWorkflow(s) {
     else html += actions(button("teach_follow", "Follow the leader →") + (recorded ? play(`Play ${name} ▶`) : ""));
   }
   if (p === "teach_follow") html += t.mode === "following" ? actions(capture + (!next ? play(`Play ${name} ▶`, false) : "") + button("teach_hold", "Hold here", true)) : actions(button("teach_hold", "Hold here", true));
+  if (t.reteaching === chosen.id && ["teach_hold", "teach_follow"].includes(p))
+    html += actions(button("teach_cancel_reteach", "✕ Cancel re-teach", true)) +
+      `<p class="hint">Re-teaching ${name} from the start. Its saved motion is kept, and plays, until the last step is captured. Cancel keeps it as it was.</p>`;
   html += playback;
-  if (["teach_hold", "teach_follow"].includes(p) && lead) html += '<p class="hint"><kbd>Space</kbd> presses the highlighted button. To retrain one step, tap its box, guide the arm there, and press Space; the other steps are kept. ' +
+  if (["teach_hold", "teach_follow"].includes(p) && lead) html += '<p class="hint"><kbd>Space</kbd> presses the highlighted button. Following a taught control re-teaches all its steps in order; tap a step you just captured to take it again. ' +
     (dial ? "Hover above the knob, open the jaws, lower around it, then grip. Capturing the grip lets go and returns home on its own. Play turns only the wrist by the angle above, lets go, and raises back out; it never turns back while gripping. The steps are shared by CW and CCW; each has its own angle."
           : "Capturing the press returns to home on its own. Play goes home → hover → touch → press and back.") +
     ' Home is set with ⌂ Home on the map.</p>';
@@ -625,14 +649,14 @@ function render() {
   document.querySelector(".instrument-shell").style.display = ["connect", "calibration"].includes(section) ? "none" : "";
   $("calibration-tools").hidden = ["connect", "tune"].includes(section);
   document.body.classList.toggle("calibrating", section === "calibration");
-  document.querySelector(".page-heading h1").textContent = section === "calibration" ? "Give the arm its bearings." : section === "tune" ? "Calibrate the keys." : "Teach the instrument.";
+  document.querySelector(".page-heading h1").textContent = section === "calibration" ? "Give the arm its bearings." : section === "tune" ? "Correct the keys." : "Teach the instrument.";
   document.querySelector(".page-heading p").textContent = section === "calibration" ? "Guided calibration. Six motors. One joint at a time." :
     section === "tune" ? "Find each trigger point. Set the same approach and pressure. Verify at playing speed." : "Twelve keys. Eight chord buttons. Two voicing gestures.";
   for (const name of ["connect", "calibration", "notes", "tune"]) {
     $("nav-" + name).classList.toggle("active", name === section);
     $("nav-" + name).querySelector("b").textContent = name === "connect" && s.connected || name === "calibration" && referencesReady() || name === "notes" && count === 22 ? "✓" : "";
   }
-  $("step-label").textContent = section === "connect" ? "01 / CONNECTION" : section === "calibration" ? "02 / MOTOR CALIBRATION" : section === "tune" ? "04 / KEY CALIBRATION" : "03 / CONTROL TRAINING";
+  $("step-label").textContent = section === "connect" ? "01 / CONNECTION" : section === "calibration" ? "02 / MOTOR CALIBRATION" : section === "tune" ? "04 / CORRECT KEYS" : "03 / CONTROL TRAINING";
   $("phase-badge").textContent = p === "fault" ? "STOPPED" : s.pending ? "IN PROGRESS" : p.replaceAll("_", " ").toUpperCase();
   const nextKeyboardKey = JSON.stringify([s.keys, s.controls, s.selected, selectedNote, p, s.calibrated]);
   if (nextKeyboardKey !== keyboardKey) {
@@ -764,7 +788,8 @@ function updateButtons() {
   });
   document.querySelectorAll("[data-view]").forEach(b => b.disabled = blocked ||
     (b.dataset.view !== "connect" && (!state.connected || (b.dataset.view !== "current" && state.leader_following))) ||
-    (b.dataset.view === "notes" && (!setupIdle() || !referencesReady())) ||
+    // Training is reachable from setup and from a holding arm (e.g. back from Correct keys), not mid-correction.
+    (b.dataset.view === "notes" && (!(setupIdle() || (teachSessionPhases.includes(state.phase) && !tuning())) || !referencesReady())) ||
     (b.dataset.view === "tune" && (!referencesReady() || tuning())));
   document.querySelectorAll("[data-calibration-target]").forEach(b => b.disabled = blocked || !setupIdle());
   // Stop reaches every follower, so it works whichever arm is shown.
@@ -801,7 +826,7 @@ function dispatchButton(b) {
   if (["calibration_reset","calibration_reload"].includes(action)) args.target = calibrationTarget();
   if (action === "simulate_leader") { args.motor = $("leader-sim-joint").value; args.delta = Number(b.dataset.delta); }
   if (action === "control_start") args.control = b.dataset.control;
-  if (action === "tune_start") args.controls = b.dataset.controls.split(",");
+  if (action === "tune_start") { args.controls = b.dataset.controls.split(","); if (b.dataset.testOnly) args.test_only = true; }
   // Every teaching command names the key selected on the map, so the app never falls back to the previous key.
   if (["teach_begin","teach_follow","teach_hold","teach_record","teach_play","teach_capture"].includes(action)) args.control = targetControl();
   if (action === "teach_play") { if (b.dataset.speed) args.speed = Number(b.dataset.speed); args.force = b.dataset.force === "true"; }

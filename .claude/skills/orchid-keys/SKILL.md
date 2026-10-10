@@ -123,8 +123,14 @@ like the others.
 - A sequence with chords or with both arms' controls plays one step at a time and always waits (`--no-wait` does not
   apply). It takes longer than a single-arm sequence.
 - Teaching and re-teaching happen in the console with the leader arm, not through this skill.
-- A key that keeps double-triggering or not sounding can be fixed with **04 Calibrate keys** in the console
-  (the user beside the arm). Suggest it; it is not available through the API. While it runs, plays are refused.
+- **04 Correct keys** in the console fixes a key the arm presses wrongly. Suggest it when a key keeps sounding a
+  neighbour (`wrong key, C# sounded`), two keys at once (`C and C# sounded together`), double-triggers or does not
+  sound. It plays each key 5 times at the user's playing speed, records which key sounded each time, moves the
+  hover, touch and press toward the right key (or sets the press depth), and repeats until 5 presses out of 5 are
+  clean. **Test all taught keys** on the same page only checks every key (5 presses each, nothing changed) and
+  offers to correct the ones that failed. The console also lists keys taught off the keyboard's pattern. The user must be beside the arm. It is not
+  available through the API, and plays are refused while it runs. A key more than a slot off, or more than a key's
+  width, still needs re-teaching with the leader.
 
 ## HTTP API (what the script calls)
 

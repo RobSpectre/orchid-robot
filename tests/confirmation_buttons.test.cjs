@@ -287,6 +287,17 @@ test('a taught key offers Play, even while another key is being taught',()=>{
   assert.match(ui.elements.workflow.innerHTML,/data-action="teach_begin" class="primary" data-control="C" data-play="1">Play C/);
 });
 
+test('a re-teach in progress offers Cancel re-teach',()=>{
+  const ui=consoleHarness();
+  vm.runInContext(`state.teaching_mode="leader";state.phase="teach_follow";state.message="m";state.selected="C";
+    state.catalog={C:{id:"C",label:"C",kind:"key",name:"C"}};state.selected_control=state.catalog.C;
+    state.keys={C:{status:"registered",recorded:true}};state.controls={};
+    state.teach={mode:"following",points_for:"C",points:["home","hover"],home_saved:true,reteaching:"C"};selectedNote=null;`,ui.context);
+  assert.match(vm.runInContext('teachWorkflow(state)',ui.context),/data-action="teach_cancel_reteach"[^>]*>✕ Cancel re-teach/);
+  vm.runInContext('state.teach.reteaching=null;',ui.context);
+  assert.doesNotMatch(vm.runInContext('teachWorkflow(state)',ui.context),/teach_cancel_reteach/);
+});
+
 test('the Home button sets and visits the one home',()=>{
   const ui=consoleHarness();
   const render=(phase,teach)=>{
@@ -384,6 +395,8 @@ test('re-centring the wrist roll is offered with both arms connected and needs s
   assert.match(html,/data-confirm="supported"/);
   vm.runInContext('state.leader.connected=false;calibrationTools();',ui.context);
   assert.doesNotMatch(ui.elements['calibration-tools-content'].innerHTML,/recenter_wrist_roll/);
+  vm.runInContext('arms={a:{available:true},b:{available:true}};calibrationTools();',ui.context);  // two followers: this one alone
+  assert.match(ui.elements['calibration-tools-content'].innerHTML,/this follower’s wrist-roll zero[^]*shared leader is not changed/);
 });
 
 test('a taught key has a press length and the shared speed, and Play sends the press length',async()=>{
@@ -659,6 +672,31 @@ test('both references are required before moving the workflow to training',()=>{
   vm.runInContext('state.leader.calibrated=true;updateButtons();',ui.context);
   assert.equal(ui.trainingNav.disabled,false);
   assert.equal(vm.runInContext('workflowSection()',ui.context),'notes');
+});
+
+test('Train controls is reachable again from Correct keys while the arm holds, but not mid-correction',()=>{
+  const ui = consoleHarness();
+  vm.runInContext('state.calibrated=true;state.phase="teach_hold";state.teaching_mode="manual";tuneView=true;render=()=>updateButtons();updateButtons();',ui.context);
+  assert.equal(vm.runInContext('workflowSection()',ui.context),'tune');
+  assert.equal(ui.trainingNav.disabled,false);
+  ui.click(ui.trainingNav);
+  assert.equal(vm.runInContext('workflowSection()',ui.context),'notes');
+  vm.runInContext('tuneView=true;state.tune={status:"running"};updateButtons();',ui.context);
+  assert.equal(ui.trainingNav.disabled,true);  // Stop correcting stays in view while a key is being corrected
+  assert.equal(ui.commands.length,0);
+});
+
+test('Correct keys offers the keys whose last run failed, not keys that passed but sit off the pattern',()=>{
+  const ui = consoleHarness();
+  const html = vm.runInContext(`state.calibrated=true;state.phase="teach_hold";state.teaching_mode="manual";state.key_check_available=true;
+    state.owns=notes.slice();state.keys=Object.fromEntries(notes.map(k=>[k,{status:"registered",recorded:true}]));state.controls={};
+    state.tune_limits={presses:5,rounds:4,margin:1,depth:0.75,limit_deg:3,speed:0.5,hardness:0.25};
+    state.tune_results={"C#":{status:"failed",kind:"correct"},"F#":{status:"failed",kind:"test",clean:2,presses:5},A:{status:"done",kind:"correct"}};
+    state.key_layout={fitted:true,pitch_mm:17,keys:{A:{text:"A is 5 mm toward A#"},B:{text:"B is 4 mm toward A#"}}};
+    tuneSection();`,ui.context);
+  assert.match(html,/data-controls="C#,F#"[^>]*>Correct the 2 keys that failed \(C# F#\)/);
+  assert.doesNotMatch(html,/off the pattern \(/);  // A passed; B is only offered once nothing has failed
+  assert.match(html,/✗ 2\/5 clean/);
 });
 
 test('returning during a hold exposes supported release without enabling arm selection',()=>{

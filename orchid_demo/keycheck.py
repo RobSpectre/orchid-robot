@@ -87,6 +87,12 @@ def check_step(step, started, speed, events):
         return check_chord(step, result, presses, at)
     if not presses:
         return {**result, "status": "missed", "text": f"{expected}: missed, no note"}
+    # Every key Orchid heard, not just each press's lowest: two keys struck together arrive as one press (Studio groups
+    # notes within 8 ms), so the finger landed between them.
+    result["heard"] = sorted({NAMES[n % 12] for e in presses for n in (e.get("notes") or ())} or set(result["notes"]),
+                             key=NAMES.index)
+    if any(len({n % 12 for n in e.get("notes") or ()}) > 1 for e in presses):
+        return {**result, "status": "double", "text": f"{expected}: {' and '.join(result['heard'])} sounded together"}
     if any(e["name"] != expected for e in presses):
         heard = ", ".join(result["notes"])
         return {**result, "status": "wrong", "text": f"{expected}: wrong key, {heard} sounded"}

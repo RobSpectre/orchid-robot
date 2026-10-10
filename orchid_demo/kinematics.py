@@ -107,3 +107,69 @@ def clearance(path_a: list, calibration_a: dict, path_b: list, calibration_b: di
     a = [skeleton(pose, calibration_a, "a") for pose in path_a]
     b = [skeleton(pose, calibration_b, "b") for pose in path_b]
     return min(distance(x, y) for x in a for y in b)
+
+
+# --- Small fingertip moves, for correcting keys (tune.py): the model's absolute position can be 2 cm off, but a move of
+# a few millimetres from a real pose is accurate, because the joint geometry is exact; only the zeros are estimated.
+ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")
+
+
+def fingertip(pose: dict, calibration: dict, arm: str) -> tuple:
+    """(tip, wrist) in plate millimetres: the finger's end (between the jaws) and the wrist-rotation joint behind it."""
+    wrist, tip = skeleton(pose, calibration, arm)[3]
+    return tip, wrist
+
+
+def joints(pose: dict, calibration: dict, arm: str) -> list:
+    """The arm's joint positions and fingertip, plate mm: shoulder lift, elbow, wrist flex, wrist roll, fingertip."""
+    seg = skeleton(pose, calibration, arm)
+    return [seg[0][0], seg[0][1], seg[1][1], seg[2][1], seg[3][1]]
+
+
+def pitch(tip, wrist) -> float:
+    """How steeply the finger points, in degrees (negative: tip below wrist)."""
+    return math.degrees(math.atan2(tip[2] - wrist[2], math.hypot(tip[0] - wrist[0], tip[1] - wrist[1])))
+
+
+def reach(pose: dict, calibration: dict, arm: str, target, keep_pitch=None, tolerance_mm=0.05) -> dict:
+    """pose with its four arm joints changed so the fingertip is at target (plate mm), the finger keeping its pitch
+    (keep_pitch, default the pose's own). Wrist roll and gripper stay. Raises ValueError if it cannot get there."""
+    tip, wrist = fingertip(pose, calibration, arm)
+    want = pitch(tip, wrist) if keep_pitch is None else keep_pitch
+    q = dict(pose)
+
+    def error(q):
+        tip, wrist = fingertip(q, calibration, arm)
+        return [target[0] - tip[0], target[1] - tip[1], target[2] - tip[2], want - pitch(tip, wrist)]
+    for _ in range(25):
+        e = error(q)
+        if max(abs(v) for v in e) < tolerance_mm:
+            return q
+        columns = []
+        for j in ARM_JOINTS:  # numerical Jacobian, 0.01 deg steps
+            nudged = error({**q, j: q[j] + 0.01})
+            columns.append([(e[i] - nudged[i]) / 0.01 for i in range(4)])
+        rows = [[columns[c][r] for c in range(4)] for r in range(4)]
+        step = _solve([[sum(rows[k][i] * rows[k][j] for k in range(4)) + (1e-4 if i == j else 0) for j in range(4)]
+                       for i in range(4)], [sum(rows[k][i] * e[k] for k in range(4)) for i in range(4)])
+        scale = min(1.0, 2.0 / max(1e-9, max(abs(s) for s in step)))  # at most 2 deg a joint per iteration
+        q = {**q, **{j: q[j] + s * scale for j, s in zip(ARM_JOINTS, step)}}
+    raise ValueError(f"the arm cannot put its finger there (still {max(abs(v) for v in error(q)[:3]):.1f} mm off)")
+
+
+def _solve(a, b):
+    """a x = b for a small square system (Gaussian elimination with partial pivoting)."""
+    n = len(b)
+    m = [row[:] + [b[i]] for i, row in enumerate(a)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(m[r][c]))
+        m[c], m[p] = m[p], m[c]
+        if abs(m[c][c]) < 1e-12:
+            raise ValueError("the arm cannot move its finger that way here")
+        for r in range(c + 1, n):
+            f = m[r][c] / m[c][c]
+            m[r] = [x - f * y for x, y in zip(m[r], m[c])]
+    x = [0.0] * n
+    for r in reversed(range(n)):
+        x[r] = (m[r][n] - sum(m[r][k] * x[k] for k in range(r + 1, n))) / m[r][r]
+    return x

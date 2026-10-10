@@ -1,16 +1,27 @@
-"""Key calibration regime: find each key's trigger point by listening, set touch and press around it, verify at playing speed.
+"""Correct keys: press each key the way it is played, hear which key Orchid reports, and move the taught motion until
+it presses the right key, cleanly, every time.
 
-1. Find    gentle presses (FIND_SPEED, FIND_HARDNESS). The note-on time Orchid reports, placed on the commanded
-           path of that press, is the key's trigger pose. FINDS presses must agree within AGREE_DEG.
-           No note: press a little deeper (STEP_DEG a time, never more than LIMIT_DEG past the taught press).
-2. Set     touch = the point on that path TOUCH_MARGIN deg before the trigger; press = PRESS_DEPTH deg past it.
-           Every key then gets the same room to approach and the same pressure. Measured on the commanded path,
-           so the gap between command and encoder is the same as during playback.
-3. Verify  plays at the operator's Arm speed and press hardness until VERIFY_PASSES clean presses in a row.
-           Pressed twice: MARGIN_STEP more room above the trigger. No note: DEPTH_STEP deeper. Wrong key: stop.
+0. Straighten  (no press) a stroke that drifts sideways along the row (touch or hover more than STRAIGHT_MM to the side
+           of the press, in the keyboard model: keyboard.py) is rebuilt to come straight down onto the press.
+1. Test    the key played TEST_PRESSES times in a row from home at the operator's Arm speed and press hardness, as in
+           playing. Every press is heard: clean, a neighbour, two keys at once, a double trigger, or nothing.
+2. Move    a neighbour sounding moves hover, touch and press together, away from it (keyboard.Keyboard.correction):
+           along the row toward a black key that hit a white neighbour, or two white keys; forward, onto the wide front,
+           for a white key that hit a black key. By half the way between the two keys for every press it took (two
+           keys at once count half), on the first move at least as far as the keyboard pattern says the key sits toward
+           that neighbour, and at most half a key's width a round (MAX_STEP_KEYS). Test again.
+3. Depth   the right key every time but missed or double-triggered: find the trigger with gentle presses (FIND_SPEED,
+           FIND_HARDNESS; FINDS presses agreeing within AGREE_DEG; no note: STEP_DEG deeper, never LIMIT_DEG past what
+           was taught), set touch TOUCH_MARGIN before it and press PRESS_DEPTH past it; later rounds step those by
+           MARGIN_STEP (double triggers) or DEPTH_STEP (misses). A neighbour sounding while finding moves away from it
+           (as half a test's worth, FIND_NEIGHBOUR_SHARE) and tests again. Test again.
+Done when a test is TEST_PRESSES clean presses out of TEST_PRESSES, within MAX_ROUNDS tests. A key further off than its
+neighbours, a move over a key's width (or MAX_SHIFT_MM) from where it was taught, or a move the arm could only make by
+swinging (LINK_FACTOR, MAX_JOINT_DEG) stops for a re-teach.
 
-Distances are the largest joint change (deg). Gripper opening and wrist roll keep their taught values.
-Nothing is saved until verify passes; the taught points are kept.
+Depth distances are the largest joint change (deg); sideways ones are fingertip millimetres from the arm model (exact
+for small moves; only its absolute position is uncertain), keeping the finger's pitch. Gripper opening and wrist roll
+keep their taught values. Nothing is saved until a test passes; the taught points are kept.
 """
 from __future__ import annotations
 
@@ -21,10 +32,46 @@ FINDS, MAX_FINDS, AGREE_DEG = 2, 5, 0.5
 STEP_DEG, LIMIT_DEG = 0.75, 3.0
 TOUCH_MARGIN, MARGIN_STEP, MAX_MARGIN = 1.0, 0.5, 2.5
 PRESS_DEPTH, DEPTH_STEP, MAX_DEPTH = 0.75, 0.25, 1.5
-VERIFY_PASSES, MAX_VERIFY = 2, 6
+TEST_PRESSES, MAX_ROUNDS = 5, 6
 PAUSE_S = 1.5
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")
+STRAIGHT_MM = 1.5
+MAX_SHIFT_MM = 20.0  # never more than this, nor more than one key's width (the fitted pitch), from where it was taught
+MAX_STEP_KEYS = 0.5  # a round moves at most half a key's width; the next test shows how much further to go
+FIND_NEIGHBOUR_SHARE = 0.5  # a neighbour sounding on one gentle, deeper press: the finger is at its edge
+# Sanity bounds on a sideways move (the fingertip itself is placed exactly): no part of the arm may move more than
+# LINK_FACTOR times the fingertip's move plus LINK_SLACK_MM (no swinging the arm somewhere else to get there), and no
+# joint more than MAX_JOINT_DEG. Near the edge of its reach (C on the right mount) a key's width takes about 25 deg of
+# elbow while every link moves under twice as far as the finger.
+LINK_FACTOR, LINK_SLACK_MM, MAX_JOINT_DEG = 3.0, 5.0, 30.0
 MIN_DIRECTION_DEG = 0.3
+
+
+def tally(steps: list, target: str) -> dict:
+    """What a test's presses heard: clean, missed, repeated (the key twice), and each neighbour's share of the presses
+    (a neighbour alone counts 1, two keys at once 1/2 each)."""
+    count = {"clean": 0, "missed": 0, "repeated": 0, "wrong": 0, "double": 0}
+    neighbours = {}
+    for step in steps:
+        status = step["status"]
+        count["clean" if status == "ok" else status if status in count else "missed"] += 1
+        others = [n for n in step.get("heard") or step.get("notes") or [] if n != target]
+        if status in ("wrong", "double") and others:
+            weight = 1.0 / len(others) / (2 if target in (step.get("heard") or []) else 1)
+            for name in others:
+                neighbours[name] = neighbours.get(name, 0.0) + weight / len(steps)
+    return {**count, "neighbours": {k: round(v, 3) for k, v in neighbours.items()}, "presses": len(steps)}
+
+
+def describe(tally: dict, target: str) -> str:
+    parts = [f"{tally['clean']}/{tally['presses']} clean"]
+    for name, share in tally["neighbours"].items():
+        parts.append(f"{name} {round(share * tally['presses'], 1):g}×")
+    if tally["missed"]:
+        parts.append(f"{tally['missed']} missed")
+    if tally["repeated"]:
+        parts.append(f"{tally['repeated']} sounded twice")
+    return f"{target}: " + ", ".join(parts)
 
 
 def gap(a, b):
