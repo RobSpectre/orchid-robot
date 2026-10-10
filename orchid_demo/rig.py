@@ -10,6 +10,9 @@ apart by rule: an arm may leave its home only while the other is parked (holding
 own taught home or rest, or not connected), and one claim, taken under a single lock, decides which arm may be away from
 home. A move back to home needs only the other arm to be still, so neither can be stranded away from home.
 
+Between notes of a phrase or score the Keys Arm may wait over the last key's hover instead of going home (engine.approach),
+so it goes straight to the next key. It is then away from home, and the Chord Arm only leaves its home for a chord.
+
 A chord is the one time both arms are away together (play_chord): The Chord Arm presses and holds the chord button, Keys Arm plays
 the key, and once the key is down the Chord Arm lets go and returns home while the Keys Arm finishes. The rig runs that order itself, allows
 the overlap only for that chord's own commands, and first checks the two arms' modelled paths stay apart
@@ -36,6 +39,10 @@ LEAVES_HOME = ("teach_follow", "teach_play", "teach_sequence", "teach_go_rest", 
                "move_home", "control_start", "test", "retry", "next", "home_start", "leader_hold", "dial_capture_start",
                "chord_press")
 GOES_HOME = ("teach_go_home", "chord_release")
+# Following the leader: the operator guides this arm by hand. While the other arm has no home or rest yet (just
+# connected, calibrated or swapped), it cannot be parked; this arm may still be taught as long as the other holds still.
+FOLLOWS = ("teach_follow", "leader_resume")
+UNPLACED = "position unknown"  # Engine.parked's reason when the arm has no home or rest to be parked at
 CHORD_TIMEOUT_S = 60.0
 RELEASE_AFTER_S = 0.1  # recording seconds past the key reaching its press before the chord button lets go
 
@@ -93,8 +100,20 @@ class Rig:
                     return
                 if action == "chord_release" and arm == run["chord_arm"]:
                     return
+                if action == "chord_press" and arm == run["chord_arm"] and not other.parked_now[0]:
+                    # The Keys Arm waits over the last key's hover for this chord's key (play_chord checked the
+                    # clearance from there); it must be holding still.
+                    m.require(other.phase == "teach_hold" and other.parked_now[1] != "moving",
+                              f"{NAMES[other.arm_id]} is moving. Wait until it holds still before pressing the chord button.")
+                    return
             parked, why = other.parked_now  # published by the other arm's own thread; never its lock
             name = NAMES[other.arm_id]
+            guided = action in FOLLOWS or action == "teach_begin" and args.get("follow") is True
+            if guided and not parked and why.startswith(UNPLACED):
+                # The other arm holds still with nowhere to park yet (no home or rest: just connected, calibrated or
+                # swapped). The operator guides this arm with the leader, past it; automatic moves still wait for it.
+                self.holder = arm
+                return
             if self.holder not in (None, arm) and self.holder == other.arm_id and not parked:
                 raise m.SafetyError(f"{name} is away from its home ({why}). Send it home before moving this arm.")
             if action in GOES_HOME:
@@ -189,6 +208,11 @@ class Rig:
                       "In the operator console, send it home first.")
         try:
             gap = self.chord_clearance(key, chord)
+            if gap < kinematics.CLEARANCE_MM and not keys.parked_now[0]:
+                # Waiting over the last key's hover is in the chord button's way: from home, then.
+                self.command(keys, "teach_go_home", {})
+                self.wait(lambda: keys.phase != "teach_play" and keys.parked_now[0], 10.0)
+                gap = self.chord_clearance(key, chord)
         except ValueError as exc:
             raise m.SafetyError(str(exc)) from exc
         m.require(gap >= kinematics.CLEARANCE_MM, f"{key} with {CATALOG[chord]['name']} would bring the arms within {gap:.0f} mm of "
@@ -221,7 +245,9 @@ class Rig:
             self.wait(lambda: "teach_play" not in (keys.phase, chords.phase), CHORD_TIMEOUT_S + held)
             m.require(not stopped(), "Stopped during the chord; both arms hold where they are.")
             m.require(keys.teach_played == key, f"Keys Arm did not play {key}: {keys.message}")
-            self.wait(lambda: keys.parked_now[0] and chords.parked_now[0], 2.0)  # so the next chord sees both parked
+            # So the next chord sees the Chord Arm parked, and the Keys Arm home or still over this key's hover (stay).
+            stay = (play or {}).get("stay") is True
+            self.wait(lambda: chords.parked_now[0] and (keys.parked_now[0] or stay and keys.parked_now[1] != "moving"), 2.0)
         finally:
             with self.lock:
                 self.chord = None

@@ -56,6 +56,25 @@ def test_a_sequence_checks_each_step_in_its_own_window():
     assert result["status"] == "problem" and result["summary"].endswith("E: missed, no note")
 
 
+def test_a_key_tested_five_times_must_sound_once_per_press_and_never_in_between():
+    """Five presses of C, each 2 s long: every note heard belongs to exactly one press, so a retrigger as the arm lifts
+    or near the boundary with the next press counts against that press, not as the next one's note."""
+    steps = [{"key": "C", "start": 2.0 * i, "end": 2.0 * (i + 1), "marks": {"touch": 2.0 * i + 0.8, "press": 2.0 * i + 1.0}}
+             for i in range(5)]
+    context = {"play": 1, "started": 0.0, "speed": 1.0, "steps": steps}
+    once = [press(2.0 * i + 0.9) for i in range(5)]
+    assert [s["status"] for s in check(context, once)["steps"]] == ["ok"] * 5
+    # Press 2 sounds again just before the boundary (inside both padded windows before): it is press 2 sounding twice.
+    result = check(context, once + [press(5.9)])
+    assert [s["status"] for s in result["steps"]] == ["ok", "ok", "repeated", "ok", "ok"]
+    assert result["steps"][2]["text"] == "C: sounded 2 times"
+    # The last press sounds again after the arm is back home: still caught.
+    assert check(context, once + [press(10.3)])["steps"][4]["status"] == "repeated"
+    # Each window is its own: no note is counted twice, and none falls between two.
+    spans = keycheck.windows(steps, 0.0, 1.0)
+    assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
+
+
 def test_an_unreachable_studio_only_marks_the_check_unavailable():
     def fetch():
         raise LookupError("Orchid Studio is not reachable")
@@ -82,3 +101,16 @@ def test_recordings_mark_the_press_stroke_and_sequences_shift_them():
 def test_a_release_matches_its_press_despite_rounding():
     result = check_step(STEP, 100.0, 1.0, [press(101.5000004), release(101.5, 0.6)])
     assert result["held_s"] == 0.6 and "held 0.60 s" in result["text"]
+
+
+def test_a_key_monitor_that_is_not_hearing_orchid_makes_the_check_unavailable_not_a_miss(monkeypatch):
+    import io
+    import json
+
+    def studio(reply):
+        monkeypatch.setattr(keycheck.urllib.request, "urlopen", lambda request, timeout: io.BytesIO(json.dumps(reply).encode()))
+    error = "Expected one exact MIDI port named 'Orchid'; found 0"
+    studio({"status": "ok", "events": [], "key_monitor": {"status": "error", "error": error}})
+    assert "not hearing Orchid" in str(pytest.raises(LookupError, keycheck.StudioKeys()).value)
+    studio({"status": "ok", "events": [], "key_monitor": {"status": "ready"}})
+    assert keycheck.StudioKeys()() == []  # listening, and nothing played: that is a miss, checked as usual

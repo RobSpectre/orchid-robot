@@ -20,6 +20,9 @@ JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_ro
 # of Orchid and the Keys Arm, where the model puts the closest pair (Sus with C) 56 mm apart; this floor only catches a
 # pose taught into the other arm's way (e.g. after a re-teach). The links are about 45 mm wide and the model can be 2 cm off.
 CLEARANCE_MM = 40.0
+# A direct move from one key's hover to the next (the Keys Arm between notes) may dip at most this far below the lower
+# of the two hovers; deeper and it goes by way of home instead (engine.hop).
+HOP_DIP_MM = 5.0
 
 
 def _matmul(a, b):
@@ -107,6 +110,18 @@ def clearance(path_a: list, calibration_a: dict, path_b: list, calibration_b: di
     a = [skeleton(pose, calibration_a, "a") for pose in path_a]
     b = [skeleton(pose, calibration_b, "b") for pose in path_b]
     return min(distance(x, y) for x in a for y in b)
+
+
+def dip(start: dict, end: dict, calibration: dict, arm: str, samples: int = 16) -> float:
+    """How far a straight joint-space move from start to end (how a recording moves between two poses) takes the
+    fingertip or the wrist below the lower of the two poses, in mm (0: never below). Joint-space moves arc: between
+    two hovers far apart along the keys, the finger can sag toward Orchid even though both ends are high enough."""
+    def low(pose):
+        tip, wrist = fingertip(pose, calibration, arm)
+        return min(tip[2], wrist[2])
+    floor = min(low(start), low(end))
+    lowest = min(low({j: start[j] + (end[j] - start[j]) * i / samples for j in start}) for i in range(1, samples))
+    return max(0.0, floor - lowest)
 
 
 # --- Small fingertip moves, for correcting keys (tune.py): the model's absolute position can be 2 cm off, but a move of

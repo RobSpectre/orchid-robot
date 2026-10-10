@@ -1,6 +1,6 @@
 ---
 name: orchid-keys
-description: Play, sequence and adjust the taught Orchid synth controls (12 keys, chord buttons, voicing dial) on the SO101 arms through the running operator console's API, including chords (a key played with a chord button held, using both arms). Use when the user asks to play a key, a chord, a dial direction, a melody, a rhythm or a chord progression, change the default note value or a dial turn angle, change the arms' speed, send an arm home, or stop it.
+description: Play, compose (jams that evolve: see JAMMING.md), sequence and adjust the taught Orchid synth controls (12 keys, chord buttons, voicing dial) on the SO101 arms through the running operator console's API, including chords (a key played with a chord button held, using both arms) and whole scores on Orchid Studio's beat. Use when the user asks to play a key, a chord, a dial direction, a melody, a rhythm or a chord progression, change the default note value or a dial turn angle, change the arms' speed, send an arm home, or stop it.
 ---
 
 # Orchid keys
@@ -37,10 +37,90 @@ transport runs, every note lands on its beat grid: the arm waits above the key a
 stopped, a phrase keeps its own time at Studio's tempo from its first note. orchid-robot does all the timing. Give it
 the notes and their values, never sleeps or delays between commands.
 
-In a phrase each step's note value is how long it sounds and when the next one comes. `r:1/4` is a rest. The arm goes
-home between notes, which takes about a second or more. When a note comes sooner than the arm can get there, it lands
+In a phrase each step's note value is how long it sounds and when the next one comes. `r:1/4` is a rest. Between two
+keys the Keys Arm lifts to the key's hover and goes straight to the next key's hover; it goes home only at the end (or
+when something else comes between, such as a voicing turn). A change still takes a second or more. When a note comes
+sooner than the arm can get there, it lands
 late by whole beats and the rest of the phrase moves with it. The reply then says `N beats late, the arm could not move
 faster`. That is not a fault: suggest longer note values, rests, a slower tempo in Studio, or a higher `--speed`.
+
+## Scores: whole pieces on the beat
+
+**Jamming? Read [JAMMING.md](JAMMING.md) first.** It covers composing diverse, evolving music on this rig: the chord
+colours, key changes, layer roles, Studio's Perform modes and the rules that keep a jam from settling into one key.
+
+For anything with timing, a progression, a riff or a song, send the whole piece as **one score**. orchid-robot plans
+every move as one performance on Orchid Studio's beat: when each arm leaves home, when the chord button goes down,
+and how long each note can be held so the next one still lands. Don't send a piece as many separate plays: each
+separate call starts from scratch and costs time between notes.
+
+```bash
+python3 scripts/orchid.py score "1.1 C+maj:1  2.1 A+min:1  3.1 F+maj:1  4.1 G+sus:1" --plan   # plan only: nothing moves
+python3 scripts/orchid.py score "1.1 C+maj:1  2.1 A+min:1  3.1 F+maj:1  4.1 G+sus:1"
+python3 scripts/orchid.py score "1.1 C+maj:2bars  3.1 A+min:1  4.1 F+maj:1/2  4.3 G+maj:1/2"
+python3 scripts/orchid.py score piece.json         # {"events": [{"bar": 1, "beat": 1, "key": "C", "chord": "maj", "duration": "1"}]}
+```
+
+Each note is `BAR.BEAT KEY[+CHORD][:NOTE]`. Bars are Studio's 4/4 bars counted from 1. Beats are 1–4, and `1.2.5`
+is bar 1, the "and" of beat 2. A chord is one key with one chord button. The Keys Arm plays one key at a time, so
+two notes at the same moment are refused. The score starts on its first note's beat of Studio's next bar while the
+transport runs.
+
+**Write long chords.** Orchid is a chord instrument, and it shines with sustained chords. Prefer chords of a bar or
+more (`:1`, `:2bars`, `:4bars`) over many short notes, and let a progression breathe. Every note is held for exactly
+its written length, however long. Holds are never cut to make room.
+
+**Plan first** (`--plan`, or `"plan_only": true`). After a note's hold, the Keys Arm lifts to that key's hover and
+goes straight to the next key's hover while the next chord button goes down. The plan works out each change from the
+taught motions (from hover to hover), plus what earlier performances measured. Changes between nearby keys are
+quickest. When a change cannot be made on its written bar, it **moves
+later by whole bars**, keeping its beat of the bar, and everything after it moves too. The plan lists every move, for
+example `A+min at bar 2 beat 1 moves 1 bar later, to bar 3`. If the plan has moves, tell the user and suggest
+writing the chord a bar later, a slower tempo in Studio, or a higher `--speed`. Don't shorten the chords.
+
+Play scores at **2.5–3× arm speed** (`--speed 2.5`). At 1.2× every change takes about twice as long, and more of
+the score moves later. A note the arms can only reach up to 80 ms late is played that little late, not moved a bar.
+
+**After playing**, each note is reported as on the beat, so many ms early or late, or moved later by whole bars.
+orchid-robot learns from Orchid's notes where every key sounds, and the rig's fixed delay (about 0.1 s), and how long
+changes really take, so timing improves as it plays. Don't compensate by shifting notes in the score yourself.
+
+### Sound, perform and fx (Orchid Studio)
+
+A score can set Orchid Studio's sound for Orchid's voice, at the start and at chosen bars:
+
+- `sound`: a Pistil preset 1–100 (Studio's `sounds-list` names them).
+- `perform`: Studio's Live Perform settings, which turn each held chord into a figure. `mode` is strum, arp, harp,
+  bloom, orbit, drift, spark and more; there are also `pattern`, `step_beats` and `gate`. Studio's `perform-options`
+  lists them all.
+- `fx`: `{"reverb": {"mix": 0–100, "room": "hall"}, "delay": {"mix": 0–100, "beats": 0.5, "feedback": 0–95}}`. Rooms
+  are small, medium, large, chamber, hall, large-hall, plate and cathedral. A mix of 0 turns an effect off.
+- `voicing`: Orchid's own voicing dial position (0–127, the value Orchid reports). The Chord Arm turns the dial until
+  Orchid reports that position: usually 1–3 turns, each a few seconds. It learns how far a turn moves the dial.
+  The dial must be taught on the Chord Arm.
+- `changes`: `[{"bar": 9, "perform": {"mode": "harp"}}, {"bar": 17, "sound": 40, "voicing": 52, "fx": {...}}]`. Studio
+  settings land on their bar line, and move with it if the music before it moved later. A voicing change turns the
+  dial between the notes, before that bar's note. The plan counts that time, so the note may move a bar or two later.
+  Set the voicing at the start where you can, and change it sparingly.
+
+Long chords through a Perform mode such as arp, harp or bloom, with reverb, are where this instrument shines.
+
+`sound` and `fx` go to Studio's live voice (voice 5, the arms' pass). In a looped score (`loop_slot`) they also go to
+that loop layer's voice, which plays every pass after. The layer also plays through the score's `perform` settings.
+Each loop layer keeps its own sound and effects, so set them per part. A `Studio refused fx: unknown host command`
+means Studio's audio host needs rebuilding (`orchid-studio build-host`, then restart Studio): tell the user.
+
+```bash
+python3 scripts/orchid.py score "1.1 C+maj:2bars 3.1 A+min:2bars 5.1 F+maj:2bars 7.1 G+sus:2bars" --sound 12 --perform mode=harp --fx '{"reverb": {"mix": 35, "room": "cathedral"}}'
+```
+
+### Looping: Studio repeats what the arms played, on the beat
+
+With `loop_slot` (CLI `--loop 1`) and Studio's loops playing (`loop-start`), the score starts on the loop's next pass.
+The arms play it once. Then Studio's loop layer gets **what Orchid sent on that pass**: each chord's notes, voicing and
+velocity, placed exactly on its written beat for its written length. So it repeats the arms' real performance, without
+their timing slips, from the next loop boundary. A chord nothing sounded for is left out, and the reply lists it. The
+score must fit inside Studio's loop (1–16 bars), so set the loop length first, and keep the arms' plan inside it.
 
 ## Long notes and sweeping chords
 
@@ -142,6 +222,7 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 | `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
 | `POST /api/controls/{id}/play` | `{speed?, duration? ("1/4", "2bars", "1bar+1/2"), turn_degrees?, wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?, turn_degrees?}], speed?, wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |
+| `POST /api/score` | `{events:[{bar, beat, key, chord?, duration?}], sound?, perform?, fx?, voicing?, changes?:[{bar, beat?, sound?, perform?, fx?, voicing?}], loop_slot?, speed?, plan_only?}` | `{status, message, plan:{bpm, on_studio_beat, moves:[{bar, beat, to_bar, bars, needs_s, has_s, text}], moved_bars, length_bars}, played:[{bar, beat, key, chord, slipped_beats, late_ms, heard}], key_check?}` |
 | `POST /api/chords/play` | `{key, chord, speed?, duration?}` (`chord` is a button id, e.g. `chord.maj`) | `{…, key, chord, clearance_mm, duration, rhythm, key_check?}` once both arms are home |
 | `POST /api/controls/{id}` | `{turn_degrees}` (dial directions) | saves the default |
 | `POST /api/settings` | `{speed?, duration? (note value), press_hardness? (0.1–1)}` | saves defaults |

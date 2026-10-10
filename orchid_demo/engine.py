@@ -60,6 +60,17 @@ def shift_roll(deg, ticks):
     return round((raw - 2047.5) * 360 / 4095, 3)
 
 
+def onset_fit(notes, delay_max):
+    """Least squares for into = fraction[key] x stroke + delay over {key: [(into, stroke), ...]}: one slope per key,
+    one shared intercept, the intercept kept in [0, delay_max]. Returns ({key: fraction}, delay)."""
+    sums = {k: (len(p), sum(s for _, s in p), sum(s * s for _, s in p), sum(i for i, _ in p), sum(i * s for i, s in p))
+            for k, p in notes.items() if p}
+    numerator = sum(si - sis * ss / sss for n, ss, sss, si, sis in sums.values() if sss)
+    denominator = sum(n - ss * ss / sss for n, ss, sss, si, sis in sums.values() if sss)
+    delay = min(delay_max, max(0.0, numerator / denominator)) if denominator > 1e-9 else 0.0
+    return {k: (sis - delay * ss) / sss for k, (n, ss, sss, si, sis) in sums.items() if sss}, delay
+
+
 def stroke_gap(a, b, ignore=()):
     return teach_motion.max_gap({k: v for k, v in a.items() if k not in ignore}, {k: v for k, v in b.items() if k not in ignore})
 
@@ -168,6 +179,9 @@ class Engine:
         # This follower's wrist zero re-centred alone (two followers share the leader): the leader's wrist reading plus
         # this many degrees is this follower's. Valid only under the calibration it was made with.
         self.leader_roll_doc = self.repo.get("leader_roll_offset")
+        # Where in its touch -> press stroke each key really sounds, learned from Orchid's notes (onset_heard).
+        self.onsets = self.repo.get("onsets") or {}
+
         self.teach_dial_doc = self.repo.get("teach_dial")  # hover/open/lower/grip shared by both dial directions
         self.teach_settings = {**DEFAULT_TEACH_SETTINGS, **(self.repo.get("teach_settings") or {})}
         self.teach_sequence_label = None
@@ -436,6 +450,8 @@ class Engine:
                                 "presses": tune_rules.TEST_PRESSES, "rounds": tune_rules.MAX_ROUNDS,
                                 "depth": tune_rules.PRESS_DEPTH, "limit_deg": tune_rules.LIMIT_DEG},
                 "tune_queue": list(self.tune_queue), "tune_results": deepcopy(self.tune_results), "key_layout": self.key_layout(),
+                "onsets": {k: round(f, 3) for k, f in self.onset_model()[0].items()},
+                "onset_delay_ms": round(self.onset_model()[1] * 1000),
                 "tune": None if not self.tune else {k: deepcopy(self.tune.get(k)) for k in (
                     "control", "name", "status", "phase", "trial", "rounds", "tests", "speed", "hardness", "margin", "depth", "log", "message",
                     "test_only")},
@@ -1031,8 +1047,8 @@ class Engine:
         points = self.control_points(control)
         if CATALOG[control]["kind"] == "button":
             frames = teach_motion.hold_recording(points, control)["frames"] + teach_motion.return_recording(points, control)["frames"]
-        else:
-            frames = teach_motion.waypoint_recording(points, control)["frames"]
+        else:  # from the hover it waits over, if it does, and back home (a superset of staying at the hover)
+            frames = self.control_motion(control, {}, after=self.over_key())[0]["frames"]
         path = [frame["goal"] for frame in frames]
         stride = max(1, len(path) // poses)
         path = path[::stride] + path[-1:]
@@ -1041,9 +1057,65 @@ class Engine:
             path = [{j: now[j] + (path[0][j] - now[j]) * i / 6 for j in now} for i in range(6)] + path
         return path
 
-    def control_motion(self, control, args, speed=1.0):
+    def play_timing(self, control, speed, after=None):
+        """For planning a score: seconds from home to the note (lead; after: from that key's hover instead, as when it
+        follows that key), from the note back home with no hold (rise), and from the note back up to its hover (lift: when
+        another key follows), at this speed. Read-only."""
+        recording, _ = self.control_motion(control, {"sound_s": 1e-3}, speed, after=after)
+        end, strike = recording["frames"][-1]["t"], recording.get("marks", {}).get("strike")
+        strike = end / 2 if strike is None else strike
+        timing = {"lead": strike / speed, "rise": (end - strike) / speed}
+        if CATALOG[control]["kind"] == "key":
+            stayed, _ = self.control_motion(control, {"sound_s": 1e-3, "stay": True}, speed, after=after)
+            timing["lift"] = (stayed["frames"][-1]["t"] - stayed["marks"]["strike"]) / speed
+        return timing
+
+    HOVER_MATCH_DEG = 2.0  # the arm waits over a key's hover when its held goal is this close to it
+
+    def over_key(self):
+        """The key whose hover the arm holds still at (it played that key and stayed for the next one), else None."""
+        if not self.teach or self.teach.mode != "holding":
+            return None
+        best = None
+        last = (self.teach_played,) if self.teach_played in self.owns else ()
+        for key in (*last, *self.owns):  # the key just played first: it wins a tie with a key taught at the same hover
+            if key not in m.KEYS or (self.notes.get(key) or {}).get("format") != WAYPOINT_FORMAT:
+                continue
+            try:
+                hover = self.control_points(key)["hover"]["goal"]
+            except m.SafetyError:
+                return None
+            gap = teach_motion.max_gap(hover, self.teach.goal)[1]
+            if gap <= self.HOVER_MATCH_DEG and (best is None or gap < best[1]):
+                best = (key, gap)
+        return best and best[0]
+
+    def approach(self, control, points, after):
+        """How a key's play gets to its hover: from home, or, when the arm waits over another key's hover (after), straight
+        from there, unless that move would sag toward Orchid (kinematics.dip): then by way of home. Returns the approach
+        (teach.waypoint_recording) and the points it adds."""
+        if after is None or CATALOG[control]["kind"] != "key":
+            return ("home",), {}
+        start = self.control_points(after)["hover"]
+        try:
+            sag = kinematics.dip(start["goal"], points["hover"]["goal"], self.calibration, self.arm_id)
+        except (ValueError, KeyError, TypeError):  # no model of this arm: never guess
+            sag = float("inf")
+        return (("from",) if sag <= kinematics.HOP_DIP_MM else ("from", "home")), {"from": start}
+
+    def chord_timing(self, chord, speed):
+        """For planning a score: seconds for this arm to press and hold a chord button, and to let it go and get home."""
+        points = self.control_points(chord)
+        return {"chord_press": teach_motion.hold_recording(points, chord)["frames"][-1]["t"] / speed,
+                "chord_release": teach_motion.return_recording(points, chord)["frames"][-1]["t"] / speed}
+
+    def control_motion(self, control, args, speed=1.0, after=...):
         """The full motion for a taught control. A press length or dial angle given here becomes its new default.
-        sound_s (a musical duration in seconds) sets the press so the note sounds that long at this speed instead."""
+        sound_s (a musical duration in seconds) sets the press so the note sounds that long at this speed instead.
+        A key starts from the hover of `after` (default: the key whose hover the arm waits over now; None: home), and
+        stay (args) ends it back up at its own hover, for the next key, instead of at home."""
+        if after is ...:
+            after = self.over_key()
         entry = self.recording_entry(control)
         if entry["format"] != WAYPOINT_FORMAT:
             return entry, "the recorded motion"
@@ -1057,22 +1129,29 @@ class Engine:
                 degrees = args.get("turn_degrees", entry.get("turn_degrees", DIAL_DIRECTIONS[control]))
                 m.require(type(degrees) in (int, float), "Enter the turn angle in degrees.")
                 recording = teach_motion.dial_recording(points, float(degrees), control)
-                changed = {"turn_degrees": float(degrees)} if degrees != entry.get("turn_degrees") else {}
+                # keep_default: a turn for one purpose (setting the voicing), not a new default for the direction
+                changed = {"turn_degrees": float(degrees)} if degrees != entry.get("turn_degrees") and not args.get("keep_default") else {}
                 description = f"home → hover → open → lower → grip → turn {degrees:g}° → let go → raise → home"
             else:
                 press_s = args.get("press_s", entry.get("press_s", self.teach_settings["press_s"]))
                 m.require(type(press_s) in (int, float) and 0 <= press_s <= teach_motion.MAX_PRESS_S,
                           f"Choose a press length from 0 to {teach_motion.MAX_PRESS_S:g} seconds.")
                 hardness = self.teach_settings["press_hardness"]
-                recording = teach_motion.waypoint_recording(points, control, float(press_s), hardness)
+                strike = (self.strike_fraction(control), self.onset_delay(control) * speed)  # fraction; delay in recording time
+                approach, start = self.approach(control, points, after)
+                points = {**points, **start}
+                path = {"approach": approach, "stay": args.get("stay") is True and CATALOG[control]["kind"] == "key"}
+                recording = teach_motion.waypoint_recording(points, control, float(press_s), hardness, *strike, **path)
                 changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
                 if "sound_s" in args:  # a note value: the press is whatever makes it sound that long
                     sound_s = args["sound_s"]
                     m.require(type(sound_s) in (int, float) and 0 < sound_s < float("inf"), "A note needs a length.")
                     press_s = teach_motion.press_for(float(sound_s), recording, speed)
-                    recording = teach_motion.waypoint_recording(points, control, press_s, hardness)
+                    recording = teach_motion.waypoint_recording(points, control, press_s, hardness, *strike, **path)
                     changed = {}
-                description = f"home → hover → touch → press ({hardness:.0%} hardness, held {press_s:.2f} s) and back"
+                origin = {("home",): "home", ("from",): f"{after}'s hover", ("from", "home"): f"{after}'s hover → home"}[approach]
+                description = (f"{origin} → hover → touch → press ({hardness:.0%} hardness, held {press_s:.2f} s) → hover"
+                               + ("" if path["stay"] else " → home"))
         except ValueError as exc:
             raise m.SafetyError(str(exc)) from exc
         if changed:
@@ -1105,14 +1184,17 @@ class Engine:
         m.require(isinstance(rhythm, dict) and isinstance(rhythm.get("steps"), list) and len(rhythm["steps"]) == len(self.play_steps),
                   "Give one rhythm step per played step.")
         timed = [(n, step) for n, step in enumerate(self.play_steps) if "strike" in step["marks"]]
-        schedule = music.Schedule(rhythm["timing"], [rhythm["steps"][n]["offset"] for n, _ in timed], rhythm.get("at"))
+        schedule = music.Schedule(rhythm["timing"], [rhythm["steps"][n]["offset"] for n, _ in timed], rhythm.get("at"),
+                                  rhythm.get("align", 1), rhythm.get("phase", 0.0), rhythm.get("slip", 1))
         self.rhythm = {"bpm": rhythm["timing"]["bpm"], "grid": bool(rhythm["timing"].get("grid")), "steps": schedule.report}
 
         def timer(i, now):
             n, step = timed[i]
             lead = (step["marks"]["strike"] - step["marks"]["hover"]) / speed
-            until = schedule.strike(i, now + lead) - lead
+            due = schedule.strike(i, now + lead)
+            until = due - lead
             step["clock"] = {"t": max(now, until), "at": step["marks"]["hover"]}  # recording time -> clock, for the key check
+            step["due"] = due  # when its note should sound: the key check reports how far off it was
             schedule.report[-1]["control"] = step["key"]
             return until
         return [step["marks"]["hover"] for _, step in timed], timer
@@ -1211,8 +1293,12 @@ class Engine:
             self.teach_played = self.selected
             note = (f" {self.teach.clipped_steps} steps were limited to {teach_motion.FOLLOW_CAP:.0f}° from the measured "
                     "pose (the arm lagged or was blocked)." if self.teach.clipped_steps else "")
-            # Between key presses the arm waits at home; rest is only visited on request (Go to rest).
-            self.transition("teach_hold", f"Played {name}; holding at home. Space plays it again; pick another key to teach it.{note}")
+            # Between key presses the arm waits at home, or over the key's hover when another key follows (stay);
+            # rest is only visited on request (Go to rest).
+            if self.over_key() == self.selected:
+                self.transition("teach_hold", f"Played {name}; holding over its hover for the next key.{note}")
+            else:
+                self.transition("teach_hold", f"Played {name}; holding at home. Space plays it again; pick another key to teach it.{note}")
 
     def request_key_check(self):
         """Compare what Orchid sent during this play with what was played, off the motor loop."""
@@ -1227,10 +1313,65 @@ class Engine:
                                   "steps": deepcopy(self.play_steps)})
         self.play_steps = None
 
+    ONSET_NOTES, ONSET_MIN_NOTES = 15, 3  # learn from a key's last 15 notes once it has 3
+    ONSET_DELAY_MAX_S = 0.15
+
+    def onset_heard(self, steps):
+        """Every clean note teaches when its key sounds: seconds into its touch -> press stroke, and that stroke's
+        length (which the arm speed sets). Kept per key with the key's saved points (a re-teach or correction starts
+        over)."""
+        changed = False
+        for step in steps:
+            key, into, stroke = step.get("control"), step.get("into_stroke_s"), step.get("stroke_s")
+            if step.get("status") != "ok" or key not in m.KEYS or into is None or not stroke or not 0.0 <= into / stroke <= 1.5:
+                continue
+            saved_at = (self.notes.get(key) or {}).get("saved_at")
+            entry = self.onsets.get(key) if (self.onsets.get(key) or {}).get("saved_at") == saved_at else None
+            recent = [p for p in ((entry or {}).get("notes") or []) if isinstance(p, list)][-(self.ONSET_NOTES - 1):]
+            self.onsets[key] = {"notes": recent + [[into, stroke]], "saved_at": saved_at}
+            changed = True
+        if changed:
+            self.repo.put("onsets", self.onsets)
+
+    def onset_model(self):
+        """Where each key sounds, as a fraction of its touch -> press stroke, and one delay for the whole rig (servo lag
+        and MIDI, in seconds, the same at any speed): a note sounds at touch + fraction x stroke + delay. A least-squares
+        fit (a slope per key, one shared intercept), refitted without notes far off it (the odd deep or glancing one).
+        Heard at one speed only, the two cannot be told apart: the delay is then 0 and the fraction carries it."""
+        stamp = tuple((k, e.get("saved_at"), len(e.get("notes") or []), (self.notes.get(k) or {}).get("saved_at"))
+                      for k, e in sorted(self.onsets.items()))
+        cached = getattr(self, "_onset_model", None)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        notes = {}
+        for key, entry in self.onsets.items():
+            pairs = [p for p in (entry.get("notes") or []) if isinstance(p, list)]
+            if entry.get("saved_at") == (self.notes.get(key) or {}).get("saved_at") and len(pairs) >= self.ONSET_MIN_NOTES:
+                notes[key] = pairs
+        fractions, delay = onset_fit(notes, self.ONSET_DELAY_MAX_S)
+        if fractions:
+            residuals = sorted(abs(into - fractions[k] * stroke - delay) for k, pairs in notes.items() for into, stroke in pairs)
+            limit = max(0.03, 3 * residuals[len(residuals) // 2])
+            kept = {k: [(i, s) for i, s in pairs if abs(i - fractions[k] * s - delay) <= limit] for k, pairs in notes.items()}
+            fractions, delay = onset_fit({k: v for k, v in kept.items() if v}, self.ONSET_DELAY_MAX_S)
+        self._onset_model = (stamp, (fractions, delay))
+        return fractions, delay
+
+    def strike_fraction(self, control):
+        """Where in the touch -> press stroke this key sounds: learned once heard often enough, else the default."""
+        return self.onset_model()[0].get(control, teach_motion.STRIKE_FRACTION)
+
+    def onset_delay(self, control):
+        """The rig's delay from the commanded stroke to the note, for a key whose fraction is learned (seconds)."""
+        fractions, delay = self.onset_model()
+        return delay if control in fractions else 0.0
+
     def collect_key_check(self):
         result = self.key_checker.poll() if self.key_checker else None
         if result and result["play"] == self.plays:  # an older play's late result is not this play's
             self.key_check = result
+            if not self.tuning:  # correcting presses deliberately vary their depth: not how the key plays
+                self.onset_heard(result.get("steps") or [])
             self.event("key_check", result["summary"], {"status": result["status"], "steps": result["steps"]})
             if self.tune and self.tune["status"] == "running" and self.tune["waiting"]:
                 self.tune_result(result)
@@ -2629,17 +2770,22 @@ class Engine:
             m.require(isinstance(steps, list) and 1 <= len(steps) <= 64 and all(isinstance(x, dict) for x in steps),
                       "Give 1 to 64 steps, each like {\"control\": \"C\"}.")
             speed = self.play_speed(args)
-            parts = []
-            for step in steps:
+            parts, after = [], self.over_key()
+            for n, step in enumerate(steps):
                 control = step.get("control")
                 m.require(isinstance(control, str) and control in CATALOG, f"Unknown control {control!r}.")
                 m.require(((self.notes.get(control) if control in m.KEYS else self.controls.get(control)) or {}).get("format") == WAYPOINT_FORMAT,
                           f"{CATALOG[control]['name']} has no taught steps; sequences use taught home/hover/touch/press motions.")
-                parts.append(self.control_motion(control, {k: v for k, v in step.items() if k != "control"}, speed)[0])
+                # Key after key: from one key's hover straight to the next one's; anything else goes through home.
+                following = steps[n + 1].get("control") if n + 1 < len(steps) else None
+                follows = CATALOG[control]["kind"] == "key" and following in CATALOG and CATALOG[following]["kind"] == "key"
+                options = {**{k: v for k, v in step.items() if k != "control"}, "stay": follows}
+                parts.append(self.control_motion(control, options, speed, after=after)[0])
+                after = control if follows else None
             self.teach_sequence_label = " → ".join(CATALOG[x["control"]]["label"] for x in steps)
             self.start_playback(teach_motion.sequence_recording(parts), speed, args)
-            self.transition("teach_play", f"Playing {self.teach_sequence_label} at {speed:g}× speed, through home between "
-                            "controls. Stop motion holds the arm.")
+            self.transition("teach_play", f"Playing {self.teach_sequence_label} at {speed:g}× speed, from each key's hover to "
+                            "the next one's. Stop motion holds the arm.")
         elif action == "teach_settings":
             changes = {}
             if "speed" in args:

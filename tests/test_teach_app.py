@@ -773,8 +773,21 @@ def test_speed_is_a_global_setting_available_in_any_phase(engine):
     assert "speed" in reject(engine, "teach_settings", speed=3.5)["message"]
 
 
-def test_a_sequence_plays_each_key_through_home_in_order(engine):
+def spread_keys(engine, keys=("C", "D")):
+    """Taught keys as on Orchid: well away from home, side by side (taught_keys puts them a few degrees apart)."""
+    home = dict(engine.teach.goal)
+    engine.save_teach_home({"goal": home, "measured": home})
+    for n, key in enumerate(keys):
+        hover = {**home, "shoulder_pan": home["shoulder_pan"] + 20 + 8 * n, "shoulder_lift": home["shoulder_lift"] + 25}
+        poses = {"hover": hover, "touch": {**hover, "wrist_flex": hover["wrist_flex"] + 6},
+                 "press": {**hover, "wrist_flex": hover["wrist_flex"] + 9}}
+        points = {**engine.notes[key]["points"], **{k: {"goal": v, "measured": v} for k, v in poses.items()}}
+        engine.save_control_entry(key, {**engine.notes[key], "points": points})
+
+
+def test_a_sequence_plays_each_key_in_order_from_hover_to_hover_and_ends_at_home(engine):
     taught_keys(engine, ("C", "D"))
+    spread_keys(engine)
     command(engine, "teach_sequence", steps=[{"control": "C"}, {"control": "D", "press_s": 1.0}, {"control": "C"}])
     assert engine.phase == "teach_play" and "C → D → C" in engine.message
     sent = spy(engine)
@@ -785,8 +798,30 @@ def test_a_sequence_plays_each_key_through_home_in_order(engine):
     order = [next(k for k in ("C", "D") if sent[i] == pytest.approx(engine.notes[k]["points"]["press"]["goal"])) for i in hits]
     collapsed = [k for i, k in enumerate(order) if i == 0 or k != order[i - 1]]
     assert collapsed == ["C", "D", "C"]
-    assert sent[-1] == pytest.approx(engine.repo.get("teach_home")["point"]["goal"])
+    home = engine.repo.get("teach_home")["point"]["goal"]
+    assert not any(g == pytest.approx(home, abs=0.5) for g in sent[hits[0]:hits[-1]])  # never home between keys
+    assert sent[-1] == pytest.approx(home)
     assert "no taught steps" in reject(engine, "teach_sequence", steps=[{"control": "E"}])["message"]
+
+
+def test_a_key_can_stay_at_its_hover_and_the_next_one_starts_there_unless_that_move_would_sag(engine, monkeypatch):
+    from orchid_demo import kinematics
+    taught_keys(engine, ("C", "D"))
+    spread_keys(engine)
+    hover = {k: engine.notes[k]["points"]["hover"]["goal"] for k in ("C", "D")}
+    home = engine.repo.get("teach_home")["point"]["goal"]
+    frames = played_frames(engine, control="C", stay=True)
+    assert frames[-1]["goal"] == pytest.approx(hover["C"]) and engine.over_key() == "C"
+    assert "holding over its hover" in engine.message and not engine.parked()[0]
+    frames = played_frames(engine, control="D")  # straight from C's hover, then home
+    assert frames[0]["goal"] == pytest.approx(hover["C"]) and frames[-1]["goal"] == pytest.approx(home)
+    assert not any(f["goal"] == pytest.approx(home, abs=0.5) for f in frames[:len(frames) // 2])
+    assert engine.over_key() is None and engine.parked()[0]
+    played_frames(engine, control="C", stay=True)
+    monkeypatch.setattr(kinematics, "dip", lambda *a, **k: kinematics.HOP_DIP_MM + 1)  # the direct move would sag toward Orchid
+    frames = played_frames(engine, control="D", stay=True)
+    assert frames[0]["goal"] == pytest.approx(hover["C"]) and any(f["goal"] == pytest.approx(home) for f in frames)
+    assert engine.over_key() == "D"
 
 
 def test_api_acts_only_while_the_console_is_in_control(engine):

@@ -46,6 +46,7 @@ MAX_PLAY_SPEED = 3.0  # playback speed multiplier (1.0 = the taught/planned timi
 # Soft hold: once a press has had HOLD_SETTLE_S to bottom out, hold where the arm actually stopped plus at most
 # HOLD_PUSH_DEG toward the taught press, not the full taught depth (which can sit past the key's bottom and keep the
 # motor pushing for as long as the note is held). The small preload keeps the key down.
+STRIKE_FRACTION = 0.5  # where in the touch -> press stroke a key is assumed to sound, before it has been heard
 HOLD_SETTLE_S = 0.15
 HOLD_PUSH_DEG = 0.5
 MAX_PRESS_S = 60.0  # the longest press length in seconds (console); note values (music.py) have no limit
@@ -109,26 +110,34 @@ def _frames(points: dict, legs: list, marks: dict | None = None) -> list:
 
 
 def waypoint_recording(points: dict, key: str = "", press_s: float = PRESS_DWELL_S,
-                       hardness: float = PRESS_HARDNESS) -> dict:
+                       hardness: float = PRESS_HARDNESS, strike_fraction: float = STRIKE_FRACTION,
+                       strike_delay: float = 0.0, approach: tuple = ("home",), stay: bool = False) -> dict:
     """Full playback: home -> hover -> touch -> press, dwell, then the same points in reverse.
-    hardness (0.1-1) slows only the touch -> press stroke, relative to the other strokes."""
-    missing = [name for name in POINTS if name not in points]
+    hardness (0.1-1) slows only the touch -> press stroke, relative to the other strokes.
+    approach: the points travelled through to the hover, the first where it starts (("from",): straight from the hover
+    the arm waits at after the note before, a point named "from" in points). stay: end back up at the hover, ready for
+    the next key, instead of at home."""
+    missing = [name for name in (*POINTS, *approach) if name not in points]
     if missing:
         raise ValueError("Capture " + ", ".join(missing) + " first.")
     if not MIN_PRESS_HARDNESS <= hardness <= 1.0:
         raise ValueError(f"Press hardness must be between {MIN_PRESS_HARDNESS:.0%} and 100%.")
     marks = {}
     frames = _frames(points, [
-        ("home", "hover", TRAVEL_SPEED), ("hover", "touch", STROKE_SPEED), ("touch", "press", STROKE_SPEED, 1 / hardness),
+        *[(a, b, TRAVEL_SPEED) for a, b in zip(approach, (*approach[1:], "hover"))],
+        ("hover", "touch", STROKE_SPEED), ("touch", "press", STROKE_SPEED, 1 / hardness),
         ("press", "press", press_s),
-        ("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)], marks)
+        ("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED), *([] if stay else [("hover", "home", TRAVEL_SPEED)])],
+        marks)
     # When the stroke starts (touch), reaches the bottom (press) and lifts off: what a key check times against.
-    # strike and release: where the key is taken to sound and stop, halfway through the strokes down and up (a tuned key
-    # triggers between touch and press). hover: where a timed play waits so its strike lands on the beat.
+    # strike: when the key sounds: a fraction of the touch -> press stroke (STRIKE_FRACTION until the engine has learned
+    # it for this key from Orchid's notes) plus the rig's delay (strike_delay, in recording time). release: halfway up. hover: where a timed play waits so its
+    # strike lands on the beat.
     down, up = marks["press"] - marks["touch"], marks["press>touch"] - marks["press_held"]
     return {"key": key, "frames": frames, "holds": [_hold(points, marks["press"], marks["press>touch"])], "marks": {
         "hover": marks["hover"], "touch": marks["touch"], "press": marks["press"], "lift": marks["press_held"],
-        "strike": round(marks["touch"] + down / 2, 4), "release": round(marks["press_held"] + up / 2, 4)}}
+        "strike": round(marks["touch"] + down * strike_fraction + strike_delay, 4),
+        "release": round(marks["press_held"] + up / 2, 4)}}
 
 
 def press_for(sound_s: float, recording: dict, speed: float) -> float:
@@ -212,10 +221,16 @@ def _soften(goal: dict, measured: dict, hold: dict) -> dict:
 
 def no_deeper(recording: dict, goal: dict, points: dict) -> dict:
     """A recording that starts at the bottom of a press (letting a held chord button go), never asking for more depth
-    than the soft hold the arm is at (goal), so it lifts without first pushing back down to the taught press."""
+    than the soft hold the arm is at (goal) while it lifts off, so it does not first push back down to the taught
+    press. Only up to touch: hover and home are where they are, whichever side of the press a joint's home lies."""
     into = _hold(points, 0.0, None)["into"]
-    return {**recording, "frames": [{**f, "goal": {j: goal[j] if into.get(j) and (v - goal[j]) * into[j] > 0 else v
-                                                   for j, v in f["goal"].items()}} for f in recording["frames"]]}
+    lifted = recording.get("marks", {}).get("touch", float("inf"))
+
+    def capped(f):
+        if f["t"] > lifted:
+            return f
+        return {**f, "goal": {j: goal[j] if into.get(j) and (v - goal[j]) * into[j] > 0 else v for j, v in f["goal"].items()}}
+    return {**recording, "frames": [capped(f) for f in recording["frames"]]}
 
 
 def _hold(points: dict, start: float, until) -> dict:
@@ -227,9 +242,12 @@ def _hold(points: dict, start: float, until) -> dict:
 
 
 def return_recording(points: dict, key: str = "") -> dict:
-    """The reverse half only, starting at the captured press: press -> touch -> hover -> home."""
-    return {"key": key, "frames": _frames(points, [
-        ("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)])}
+    """The reverse half only, starting at the captured press: press -> touch -> hover -> home.
+    marks["touch"]: when the lift off the button is done (no_deeper caps only up to there)."""
+    marks = {}
+    frames = _frames(points, [("press", "touch", STROKE_SPEED), ("touch", "hover", STROKE_SPEED),
+                              ("hover", "home", TRAVEL_SPEED)], marks)
+    return {"key": key, "frames": frames, "marks": {"touch": marks["touch"]}}
 
 
 class Session:

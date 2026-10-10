@@ -10,6 +10,7 @@ Tempo and the beat grid come from Orchid Studio's timeline, the clock its MIDI c
 read over its loopback API with the time.monotonic() stamp both programs share. While Studio's transport runs, a
 play's first strike lands on the next beat of that grid; otherwise the phrase keeps its own time from its first note.
 A note the arm cannot reach in time slips by whole beats, and every later note slips with it, so the rhythm holds.
+A note it misses by no more than LATE_OK_S is played that little late instead: waiting a beat or bar would cost more.
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ NOTATION = re.compile(r"^(?:(?P<letter>[whqes])|(?P<num>\d+)(?:/(?P<den>\d+))?)(
 BARS = re.compile(r"^(?P<bars>\d+(?:\.\d+)?)\s*bars?$")
 BEATS_PER_BAR = 4  # Studio's bars (its loops and drum patterns are 4/4)
 DEFAULT_DURATION = "1/8"
+# A note the arm can only reach this late is played late rather than moved to the next beat (or bar, in a score):
+# under about 1/30 of a beat at 76 BPM, too little to hear, where waiting would cost a whole beat or bar.
+LATE_OK_S = 0.08
 HOW = "Write a duration as a note value (1/4, 1/8, 1/2, 1, dotted 1/8., triplet 1/8t), bars (2bars), or tied with + (1bar+1/4)"
 
 
@@ -53,23 +57,43 @@ def _part(text, value):
     return length * {"": 1, ".": Fraction(3, 2), "t": Fraction(2, 3)}[match["mod"]]
 
 
-class StudioClock:
-    """Orchid Studio's beat timeline over its loopback HTTP API (command "clock")."""
+class Studio:
+    """Orchid Studio's loopback HTTP API (its /command endpoint)."""
 
-    def __init__(self, port, timeout=0.5):
+    def __init__(self, port, timeout=2.0):
         self.url, self.timeout = f"http://127.0.0.1:{port}/command", timeout
 
-    def __call__(self):
-        request = urllib.request.Request(self.url, data=json.dumps({"command": "clock"}).encode(),
+    def __call__(self, command, **fields):
+        request = urllib.request.Request(self.url, data=json.dumps({"command": command, **fields}).encode(),
                                          headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 reply = json.loads(response.read())
+        except urllib.error.HTTPError as exc:  # Studio answers a refused command with an error body
+            try:
+                reply = json.loads(exc.read())
+            except ValueError:
+                reply = {"status": "error", "error": f"HTTP {exc.code}"}
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            raise m.SafetyError(f"Orchid Studio is not reachable on {self.url} ({getattr(exc, 'reason', exc)}): musical "
-                                "durations follow its tempo and beat. Start Orchid Studio, then play again.") from None
-        clock = reply.get("clock") if reply.get("status") == "ok" else None
-        m.require(clock, f"Orchid Studio did not report its clock ({reply.get('error') or 'update Orchid Studio'}).")
+            raise m.SafetyError(f"Orchid Studio is not reachable on {self.url} ({getattr(exc, 'reason', exc)}). "
+                                "Start Orchid Studio, then try again.") from None
+        m.require(reply.get("status") != "error", f"Orchid Studio refused {command}: {reply.get('error') or 'no reason given'}.")
+        return reply
+
+
+class StudioClock:
+    """Orchid Studio's beat timeline (command "clock")."""
+
+    def __init__(self, port, timeout=0.5):
+        self.studio = Studio(port, timeout)
+
+    def __call__(self):
+        try:
+            reply = self.studio("clock")
+        except m.SafetyError as exc:
+            raise m.SafetyError(f"{exc} Musical durations follow its tempo and beat.") from None
+        clock = reply.get("clock")
+        m.require(clock, "Orchid Studio did not report its clock (update Orchid Studio).")
         return clock
 
 
@@ -92,8 +116,12 @@ class Schedule:
     The first strike goes on the next grid beat it can make (or as soon as it can, with no grid, or at `at`); every
     later one at its offset from there. A strike that cannot be made slips the rest of the phrase by whole beats."""
 
-    def __init__(self, timing: dict, offsets: list, at=None):
+    def __init__(self, timing: dict, offsets: list, at=None, align=1, phase=0.0, slip=1):
+        """align, phase: start where Studio's beat count is phase beats past a multiple of align (a score: its first
+        note on its own beat of the bar, align=BEATS_PER_BAR). slip: a late note moves this many beats at a time (a
+        score: whole bars, so every note stays on the beat of the bar it was written on)."""
         self.beat_s, self.grid, self.offsets, self.at = timing["beat_s"], timing.get("grid"), list(offsets), at
+        self.align, self.phase, self.slip = align, phase, slip
         self.origin, self.slip_beats, self.report = None, 0, []
 
     def strike(self, i, earliest):
@@ -103,14 +131,20 @@ class Schedule:
                 self.origin = self.at
             elif self.grid:
                 beat = self.grid["beat"] + (earliest - self.grid["t"]) / self.beat_s
-                self.origin = self.grid["t"] + (math.ceil(beat - 1e-6) - self.grid["beat"]) * self.beat_s
+                start = self.phase + self.align * math.ceil((beat - self.phase) / self.align - 1e-6)
+                self.origin = self.grid["t"] + (start - self.grid["beat"]) * self.beat_s
             else:
                 self.origin = earliest
         target = self.origin + (self.offsets[i] - self.offsets[0] + self.slip_beats) * self.beat_s
         late = 0
+        if target + 1e-6 < earliest <= target + LATE_OK_S:  # a hair late: play it now, a few ms off, not a bar later
+            self.report.append({"step": i, "strike_at": round(earliest, 4), "slipped_beats": 0, "earliest": round(earliest, 4),
+                                "late_ms": round((earliest - target) * 1000)})
+            return earliest
         if earliest > target + 1e-6:
-            late = math.ceil((earliest - target) / self.beat_s - 1e-6)
+            late = self.slip * math.ceil((earliest - target) / (self.beat_s * self.slip) - 1e-6)
             self.slip_beats += late
             target += late * self.beat_s
-        self.report.append({"step": i, "strike_at": round(target, 4), "slipped_beats": late})
+        # earliest: when it could have sounded, for learning how long changes really take (score.learn)
+        self.report.append({"step": i, "strike_at": round(target, 4), "slipped_beats": late, "earliest": round(earliest, 4)})
         return target

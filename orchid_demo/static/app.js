@@ -418,6 +418,64 @@ function teachWorkflow(s) {
     ' Home is set with ⌂ Home on the map.</p>';
   return html;
 }
+// Guided training: everything this arm needs taught, in order (home, rest, then each of its controls), one at a time.
+// The voicing dial is one step: its two directions share the taught points.
+// Not in the guided training for now (they can still be taught from the map): the chord extension buttons.
+const NOT_GUIDED = ["chord.6", "chord.m7", "chord.M7", "chord.9"];
+function trainingSteps(s = state) {
+  const statuses = allStatuses(), owned = s.owns || Object.keys(s.catalog || {});
+  const steps = [{id: "home", name: "Home", label: "⌂", done: !!s.poses_saved?.home},
+                 {id: "rest", name: "Rest", label: "☾", done: !!s.poses_saved?.rest}];
+  for (const id of owned) {
+    const c = s.catalog?.[id];
+    if (!c || NOT_GUIDED.includes(id) || (c.kind === "dial" && steps.some(x => x.dial))) continue;
+    const members = c.kind === "dial" ? owned.filter(d => s.catalog[d]?.kind === "dial") : [id];
+    steps.push({id, name: c.kind === "dial" ? "Voicing dial" : c.name, label: c.kind === "dial" ? "↻↺" : c.label, dial: c.kind === "dial",
+                done: members.every(d => statuses[d]?.status === "registered")});
+  }
+  return steps;
+}
+const stepOf = id => state?.catalog?.[id]?.kind === "dial" ? trainingSteps().find(x => x.dial)?.id : id;
+const currentStep = () => stepOf(selectedNote || state.selected);
+function trainingGuide(s) {
+  const steps = trainingSteps(s), done = steps.filter(x => x.done).length, total = steps.length;
+  const next = steps.find(x => !x.done), current = currentStep(), name = ARM_SHORT[selectedArm()] || "The arm";
+  const head = next ? `Step ${steps.indexOf(next) + 1} of ${total} · ${esc(next.name)}` : `${esc(name)} is trained ✓`;
+  // Just moved on by itself: say so loudly, so a quick re-teach of the step just taught does not land on this one.
+  const moved = guide.moved && guide.moved.to === current && guide.moved.arm === selectedArm() ? steps.find(x => x.id === guide.moved.from) : null;
+  const notice = moved ? `<p class="notice training-moved" role="status"><b>${esc(moved.name)} is taught ✓. Now teaching ${esc(steps.find(x => x.id === current)?.name || "")}.</b> ` +
+    `To teach ${esc(moved.name)} again instead, <button type="button" class="secondary" data-note="${esc(moved.id)}">↶ Back to ${esc(moved.name)}</button></p>` : "";
+  const hint = !next ? "Every pose and control is taught. Tap any step to play or re-teach it." :
+    next.id === current ? (next.id === "home" ? "Follow the leader, guide the arm to a clear pose above Orchid, then Set home here." :
+      next.id === "rest" ? "Follow the leader, guide the arm to a parking pose clear of the other arm, then Set rest here." :
+      `Teach ${esc(next.name)} below. When it is taught, the next step comes up on its own.`) :
+    `Next to teach: ${esc(next.name)}.`;
+  return `<section class="training-guide${next ? "" : " complete"}" aria-label="${esc(name)} training">` +
+    `<div class="training-head"><strong>${head}</strong><span>${done} / ${total} trained</span></div>` +
+    `<progress class="training-progress" max="${total}" value="${done}" aria-label="${esc(name)}: ${done} of ${total} steps trained"></progress>` +
+    `<ol class="training-steps">${steps.map(x => `<li><button type="button" data-note="${esc(x.id)}" class="${[x.done ? "done" : "", x === next ? "next" : "", x.id === current ? "current" : ""].filter(Boolean).join(" ")}" ` +
+      `title="${esc(x.name)}${x.done ? " · trained" : x === next ? " · next" : ""}" aria-current="${x.id === current ? "step" : "false"}"><span>${x.done ? "✓" : x === next ? "●" : "○"}</span>${esc(x.label)}</button></li>`).join("")}</ol>` +
+    notice + `<p class="hint">${hint}</p>` +
+    // Not in .actions: Space stays on the step's own button (e.g. a step chosen for re-teaching).
+    (next && next.id !== current ? `<div class="training-next"><button type="button" class="primary" data-note="${esc(next.id)}">Go to step ${steps.indexOf(next) + 1}: ${esc(next.name)} →</button></div>` : "") +
+    '</section>';
+}
+// When the step in hand gets trained, move on to the next untrained one as soon as the arm is still (holding, or
+// following the leader), so the operator is taken through the steps one by one.
+let guide = {arm: null, done: {}, advance: null, moved: null};  // moved: the last move on by itself, from and to
+function guideAdvance(s) {
+  if (!s.calibrated || !s.catalog) return;
+  const steps = trainingSteps(s), now = Object.fromEntries(steps.map(x => [x.id, x.done])), current = currentStep();
+  if (guide.arm === selectedArm() && current && guide.done[current] === false && now[current]) guide.advance = current;
+  guide.arm = selectedArm(); guide.done = now;
+  if (!guide.advance) return;
+  if (guide.advance !== current) { guide.advance = null; return; }
+  const still = setupIdle(s) || (s.phase === "teach_hold" && s.teach?.mode === "holding") || (s.phase === "teach_follow" && s.teach?.mode === "following");
+  if (!still) return;
+  const next = steps.find(x => !x.done);
+  guide.advance = null;
+  if (next) { guide.moved = {arm: selectedArm(), from: current, to: next.id}; selectedNote = next.id; targetPoint = null; renderKey = ""; keyboardKey = ""; }
+}
 function workflow() {
   const s = state, sim = isSim(), p = s.phase;
   const dialFields = p === "dial_ready" ? [$("dial-reference")?.value, $("dial-effect")?.value] : [];
@@ -583,7 +641,7 @@ function workflow() {
   }
   if (!connectionView && p.startsWith("calibration_")) html = `<p class="calibration-arm-label">CALIBRATING ${s.calibration_target === "leader" ? "LEADER · follower stays torque off" : "FOLLOWER"}</p>` + window.OrchidPanels.calibration(s) + html;
   if (!connectionView && p === "connected" && !s.calibrated) html += '<div class="setup-checklist"><strong>Before starting</strong><ul><li>Secure the base and reseated joints; keep the instrument outside the arm’s reach.</li><li>Support the full arm weight before torque releases.</li><li>Use the delay and optional spoken cues to keep both hands available.</li></ul><p>Calibration stays torque off. OFF flags do not remove gearbox drag.</p></div>';
-  if (workflowSection() === "notes") html = leaderStrip() + html;
+  if (workflowSection() === "notes") html = leaderStrip() + (referencesReady() ? trainingGuide(s) : "") + html;
   $("workflow").innerHTML = html;
   if (dialFields[0] !== undefined && $("dial-reference")) $("dial-reference").value = dialFields[0];
   if (dialFields[1] !== undefined && $("dial-effect")) $("dial-effect").value = dialFields[1];
@@ -606,7 +664,9 @@ function render() {
   if (!state) return;
   const s = state, p = s.phase;
   if (p === "disconnected") { connectionView = false; calibrationView = false; calibrationChoice = null; tuneView = false; }
-  const key = [JSON.stringify(connectPlan), JSON.stringify(s.discovery), JSON.stringify(Object.values(arms || {}).map(a => [a.connected, a.available, a.leader])), s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following, s.home?.id, s.home_ready, connectionView, calibrationView, calibrationTarget(), s.teach?.mode, s.teach?.warning, s.teach?.played, s.teach?.returning, s.teach?.going_home, s.teach?.home_saved_at, s.teach?.going_rest, s.teach?.rest_saved_at, JSON.stringify(s.teach_settings), JSON.stringify(s.key_check), JSON.stringify(s.tune), JSON.stringify(s.tune_queue), JSON.stringify(s.tune_results), tuneView, JSON.stringify(s.teach?.points), s.teach?.points_for, powered(s), JSON.stringify(allStatuses()[selectedNote || s.selected])].join(":");
+  guideAdvance(s);
+  const trained = s.catalog ? trainingSteps(s) : [];
+  const key = [trained.map(x => x.done ? 1 : 0).join(""), JSON.stringify(guide.moved), JSON.stringify(connectPlan), JSON.stringify(s.discovery), JSON.stringify(Object.values(arms || {}).map(a => [a.connected, a.available, a.leader])), s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following, s.home?.id, s.home_ready, connectionView, calibrationView, calibrationTarget(), s.teach?.mode, s.teach?.warning, s.teach?.played, s.teach?.returning, s.teach?.going_home, s.teach?.home_saved_at, s.teach?.going_rest, s.teach?.rest_saved_at, JSON.stringify(s.teach_settings), JSON.stringify(s.key_check), JSON.stringify(s.tune), JSON.stringify(s.tune_queue), JSON.stringify(s.tune_results), tuneView, JSON.stringify(s.teach?.points), s.teach?.points_for, powered(s), JSON.stringify(allStatuses()[selectedNote || s.selected])].join(":");
   if (key !== renderKey) {
     cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools(); homeTools(); leaderPanel();
     say(["teach_record", "teach_play", "teach_follow", "dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_hover", "note_pressed", "note_touch", "retreating", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
@@ -638,8 +698,10 @@ function render() {
     autoScanned = true; submit("refresh_ports");
   }
   if ($("connection-fault")) $("connection-fault").textContent = s.error || "Motor state is unverified.";
-  const count = Object.values(allStatuses()).filter(k => k.status === "registered").length;
-  $("completed").innerHTML = `${count}<span>/22</span>`;
+  // This arm's training: its home, rest and controls, trained out of all of them.
+  const count = trained.filter(x => x.done).length;
+  $("completed").innerHTML = `${count}<span>/${trained.length}</span>`;
+  $("completed-label").textContent = `${(ARM_SHORT[selectedArm()] || "ARM").toUpperCase()} · STEPS TRAINED`;
   $("mode").textContent = isSim() ? "SIMULATION · NO HARDWARE" : "HARDWARE MODE";
   $("mode").className = `badge ${isSim() ? "" : "hardware"}`;
   renderConnection();
@@ -654,7 +716,7 @@ function render() {
     section === "tune" ? "Find each trigger point. Set the same approach and pressure. Verify at playing speed." : "Twelve keys. Eight chord buttons. Two voicing gestures.";
   for (const name of ["connect", "calibration", "notes", "tune"]) {
     $("nav-" + name).classList.toggle("active", name === section);
-    $("nav-" + name).querySelector("b").textContent = name === "connect" && s.connected || name === "calibration" && referencesReady() || name === "notes" && count === 22 ? "✓" : "";
+    $("nav-" + name).querySelector("b").textContent = name === "connect" && s.connected || name === "calibration" && referencesReady() || name === "notes" && trained.length && count === trained.length ? "✓" : "";
   }
   $("step-label").textContent = section === "connect" ? "01 / CONNECTION" : section === "calibration" ? "02 / MOTOR CALIBRATION" : section === "tune" ? "04 / CORRECT KEYS" : "03 / CONTROL TRAINING";
   $("phase-badge").textContent = p === "fault" ? "STOPPED" : s.pending ? "IN PROGRESS" : p.replaceAll("_", " ").toUpperCase();

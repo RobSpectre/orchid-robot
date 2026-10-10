@@ -111,7 +111,7 @@ def test_tally_counts_each_press_and_how_often_each_neighbour_sounded():
              {"status": "missed"}, {"status": "repeated"}]
     tally = tune.tally(steps, "C")
     assert tally == {"clean": 1, "missed": 1, "repeated": 1, "wrong": 1, "double": 1, "neighbours": {"C#": 0.3}, "presses": 5}
-    assert tune.describe(tally, "C") == "C: 1/5 clean, C# 1.5×, 1 missed, 1 sounded twice"
+    assert tune.describe(tally, "C") == "C: 1/5 clean, C# 1.5×, 1 missed, 1 sounded more than once"
 
 
 def test_a_key_that_presses_right_five_times_is_left_as_it_is(engine):
