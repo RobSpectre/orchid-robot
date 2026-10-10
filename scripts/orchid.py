@@ -15,6 +15,9 @@ They follow Orchid Studio's tempo, and while its transport runs every note lands
     python3 scripts/orchid.py chord C maj --duration 1/2   # C with the Maj button held (Chord Arm)
     python3 scripts/orchid.py seq "C+maj:1 A+min:1 F+maj:1 G+sus:1"   # chords in a phrase; mix with plain keys
     python3 scripts/orchid.py chord C maj --duration 4bars              # a long sweeping chord
+    python3 scripts/orchid.py score "1.1 C+maj:1  2.1 A+min:1  3.1 F+maj:1  4.1 G+sus:1"   # a whole piece, bar.beat
+    python3 scripts/orchid.py score piece.json --plan  # {"events": [{"bar":1,"beat":1,"key":"C","chord":"maj",...}]}
+    python3 scripts/orchid.py score "1.1 C+maj:2bars 3.1 A+min:2bars" --sound 12 --perform mode=harp --loop 1
     python3 scripts/orchid.py set ccw --turn -25      # a dial direction's default turn
     python3 scripts/orchid.py speed 2                 # arm speed for everything (0.1-3)
     python3 scripts/orchid.py duration 1/4            # the note value when none is given
@@ -30,6 +33,7 @@ import argparse
 import json
 import sys
 import urllib.error
+from urllib.parse import quote
 import urllib.request
 
 ALIASES = {"cw": "voicing.cw", "ccw": "voicing.ccw", "dim": "chord.dim", "min": "chord.min", "maj": "chord.maj",
@@ -43,6 +47,35 @@ def control_id(name: str) -> str:
     if len(name) <= 2 and name[:1].isalpha():
         return name[0].upper() + name[1:]  # c -> C, c# -> C#
     return name
+
+
+def score_events(text: str) -> list:
+    """Events from "1.1 C+maj:1/2 2.3 E" (BAR.BEAT KEY[+CHORD][:NOTE]; beat 2.5 is "1.2.5"), a .json file or stdin."""
+    if text == "-" or text.endswith(".json"):
+        data = json.load(sys.stdin if text == "-" else open(text))
+        return data  # a list of events, or the whole score: events, sound, perform, fx, changes, loop_slot
+    tokens, events = text.replace(",", " ").replace("|", " ").split(), []
+    for when, what in zip(tokens[::2], tokens[1::2]):
+        bar, _, beat = when.partition(".")
+        name, _, note = what.partition(":")
+        key, _, held = name.partition("+")
+        events.append({"bar": int(bar), "beat": float(beat or 1), "key": control_id(key),
+                       **({"chord": control_id(held)} if held else {}), **({"duration": note} if note else {})})
+    if len(tokens) % 2:
+        raise SystemExit(f"Each note is BAR.BEAT then KEY: {tokens[-1]!r} has no partner.")
+    return events
+
+
+def perform_settings(text: str) -> dict:
+    """mode=arp,pattern=pulse,step_beats=0.5 -> {"mode": "arp", "pattern": "pulse", "step_beats": 0.5}"""
+    settings = {}
+    for part in text.split(","):
+        name, _, value = part.partition("=")
+        try:
+            settings[name.strip()] = json.loads(value)
+        except ValueError:
+            settings[name.strip()] = value.strip()
+    return settings
 
 
 class Console:
@@ -71,8 +104,9 @@ class Console:
             raise SystemExit(f"Cannot reach the console at {self.url} ({exc.reason}). Is app.py running?") from None
 
 
-def report(result: dict) -> None:
-    print(result.get("message") or result.get("status"))
+def report(result: dict, say: bool = True) -> None:
+    if say:
+        print(result.get("message") or result.get("status"))
     check = result.get("key_check")
     if check:  # what Orchid actually sent, from Orchid Studio's key monitor
         label = {"ok": "Orchid heard", "problem": "CHECK THE ARM", "unavailable": "Note check unavailable"}.get(check["status"], "Notes")
@@ -92,6 +126,15 @@ def main(argv=None) -> None:
     play.add_argument("control")
     seq = sub.add_parser("seq")
     seq.add_argument("steps", help='space-separated steps, each CONTROL[+CHORD][:NOTE] or r:NOTE for a rest: "C+maj:1/2 r:1/4 E:1/4"')
+    piece = sub.add_parser("score", help="play a score: keys and chords at bars and beats, on Orchid Studio's beat")
+    piece.add_argument("events", help='"BAR.BEAT KEY[+CHORD][:NOTE] ..." (1.1 C+maj:1/2 2.3 E), a .json file, or - for JSON on stdin')
+    piece.add_argument("--plan", action="store_true", help="only plan it: nothing moves")
+    piece.add_argument("--sound", type=int, help="Studio's Pistil preset 1-100 for Orchid's voice")
+    piece.add_argument("--perform", help="Studio Live Perform settings: mode=arp,pattern=pulse,step_beats=0.5")
+    piece.add_argument("--fx", help='Studio effects as JSON: {"reverb": {"mix": 30, "room": "hall"}}')
+    piece.add_argument("--loop", type=int, metavar="LAYER", help="hand the composition to Studio's loop layer 1-4 to repeat")
+    piece.add_argument("--voicing", type=int, metavar="POSITION", help="Orchid's voicing dial position (0-127) to start from")
+    piece.add_argument("--speed", type=float)
     chord = sub.add_parser("chord", help="play a key with a chord button held (needs both arms)")
     chord.add_argument("key")
     chord.add_argument("chord", help="dim, min, maj, sus, 6, m7, M7 or 9")
@@ -126,7 +169,7 @@ def main(argv=None) -> None:
         return
     if args.command == "play":
         body = {k: v for k, v in {"speed": args.speed, "duration": args.duration, "turn_degrees": args.turn}.items() if v is not None}
-        report(console.call("POST", f"/api/controls/{control_id(args.control)}/play", {**body, "wait": not args.no_wait}))
+        report(console.call("POST", f"/api/controls/{quote(control_id(args.control), safe='')}/play", {**body, "wait": not args.no_wait}))
     elif args.command == "seq":
         steps = []
         for token in args.steps.split():
@@ -142,8 +185,37 @@ def main(argv=None) -> None:
         body = {"key": control_id(args.key), "chord": control_id(args.chord),
                 **{k: v for k, v in {"speed": args.speed, "duration": args.duration}.items() if v is not None}}
         report(console.call("POST", "/api/chords/play", body))
+    elif args.command == "score":
+        given = score_events(args.events)
+        body = {**(given if isinstance(given, dict) else {"events": given}), "plan_only": args.plan,
+                **({"speed": args.speed} if args.speed is not None else {}),
+                **({"sound": args.sound} if args.sound is not None else {}),
+                **({"perform": perform_settings(args.perform)} if args.perform else {}),
+                **({"fx": json.loads(args.fx)} if args.fx else {}),
+                **({"loop_slot": args.loop} if args.loop is not None else {}),
+                **({"voicing": args.voicing} if args.voicing is not None else {})}
+        result = console.call("POST", "/api/score", body)
+        print(result.get("message"))
+        for turn in (result.get("studio") or {}).get("voicing") or []:
+            print(f"Voicing for bar {turn['bar']}: " + (f"dial at {turn['reached']} ({len(turn['turns'])} turns)" if turn["ok"] else
+                                                        f"not set to {turn['target']}: {turn.get('reason')}"))
+        loop = (result.get("studio") or {}).get("loop")
+        if loop and loop.get("kept"):
+            print(f"Studio's loop layer {loop['slot']} repeats this pass, each chord on its written beat, from Studio beat "
+                  f"{loop.get('applies_at_beat')}" + ("; left out (nothing sounded): " + ", ".join(
+                      f"bar {m_['bar']} beat {m_['beat']:g} {m_['key']}" for m_ in loop["missed"]) if loop.get("missed") else ""))
+        elif loop:
+            print(f"Loop layer {loop['slot']} unchanged: {loop.get('reason')}")
+        for note in result.get("played") or []:
+            name = note["key"] + (f"+{note['chord'].split('.')[-1]}" if note.get("chord") else "")
+            late = note.get("late_ms")
+            where = ("not heard" if late is None else "on the beat" if abs(late) < 10 else
+                     f"{abs(late)} ms {'late' if late > 0 else 'early'}")
+            slipped = f", {note['slipped_beats']} beat{'s' if note['slipped_beats'] != 1 else ''} late" if note.get("slipped_beats") else ""
+            print(f"  bar {note['bar']} beat {note['beat']:g}  {name:<10} {where}{slipped}")
+        report(result, say=False)
     elif args.command == "set":
-        report(console.call("POST", f"/api/controls/{control_id(args.control)}", {"turn_degrees": args.turn}))
+        report(console.call("POST", f"/api/controls/{quote(control_id(args.control), safe='')}", {"turn_degrees": args.turn}))
     elif args.command == "speed":
         report(console.call("POST", "/api/settings", {"speed": args.value}))
     elif args.command == "duration":

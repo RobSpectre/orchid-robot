@@ -357,3 +357,21 @@ def test_an_arm_at_its_rest_is_parked_too(rig):
     assert a.parked_now == (True, "at rest")
     r.claim("b", "teach_play", {})  # Chord Arm may move while Keys Arm rests
     assert r.holder == "b"
+
+
+def test_an_arm_with_no_home_yet_does_not_stop_the_other_being_taught_with_the_leader(rig):
+    """Just connected, calibrated or swapped, an arm has no home or rest to park at. Holding still, it lets the other
+    arm follow the leader (the operator guides it past), but nothing moves the other arm by itself."""
+    r, a, b = rig
+    a.parked_now = (False, "position unknown: no home set or not calibrated")
+    r.claim("b", "teach_begin", {"follow": True})  # set the Chord Arm's home and rest with the leader
+    r.claim("b", "teach_follow", {})
+    assert r.holder == "b"
+    r.holder = None
+    with pytest.raises(SafetyError, match="Keys Arm is not parked"):
+        r.claim("b", "teach_play", {})  # an automatic move still waits for it
+    with pytest.raises(SafetyError, match="Keys Arm is not parked"):
+        r.claim("b", "teach_go_rest", {})
+    a.parked_now = (False, "moving")  # someone is moving it: not even guided teaching
+    with pytest.raises(SafetyError, match="Keys Arm is not parked"):
+        r.claim("b", "teach_follow", {})

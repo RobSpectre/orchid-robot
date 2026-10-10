@@ -1749,3 +1749,52 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
   border-radius:10px;
   font-size:13px;
 }
+
+/* Guided training: this arm's steps in order, with how many are trained. */
+.training-guide {
+  margin:0 0 20px;
+  padding:14px 16px;
+  border:1px solid var(--line);
+  border-radius:10px;
+}
+.training-guide.complete { border-color:#6f6033; }
+.training-head {
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  gap:12px;
+  flex-wrap:wrap;
+  margin-bottom:8px;
+}
+.training-head span { font-size:11px; letter-spacing:.06em; color:var(--muted); font-variant-numeric:tabular-nums; }
+.training-progress { height:9px; }
+.training-steps {
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  list-style:none;
+  margin:12px 0 4px;
+  padding:0;
+}
+.training-steps button {
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  min-width:44px;
+  min-height:34px;
+  padding:6px 10px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:transparent;
+  color:#8e887c;
+  font-size:13px;
+  font-weight:600;
+}
+.training-steps button span { font-size:11px; }
+.training-steps button.done { color:#ddbd77; border-color:#6f6033; }
+.training-steps button.next { color:var(--accent); border-color:var(--accent); }
+.training-steps button.current { box-shadow:0 0 0 2px var(--accent); }
+.training-steps button:disabled { cursor:not-allowed; opacity:.7; }
+.training-next { margin-top:10px; }
+.training-moved { margin:10px 0 0; }
+.training-moved button { margin-left:6px; padding:6px 12px; }

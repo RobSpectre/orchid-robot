@@ -64,13 +64,13 @@ def tally(steps: list, target: str) -> dict:
 
 
 def describe(tally: dict, target: str) -> str:
-    parts = [f"{tally['clean']}/{tally['presses']} clean"]
+    parts = [f"{tally['clean']}/{tally['presses']} clean" + (" (one note each)" if tally["clean"] == tally["presses"] else "")]
     for name, share in tally["neighbours"].items():
         parts.append(f"{name} {round(share * tally['presses'], 1):g}×")
     if tally["missed"]:
         parts.append(f"{tally['missed']} missed")
     if tally["repeated"]:
-        parts.append(f"{tally['repeated']} sounded twice")
+        parts.append(f"{tally['repeated']} sounded more than once")
     return f"{target}: " + ", ".join(parts)
 
 

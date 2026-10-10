@@ -208,6 +208,26 @@ Leader → Hand the leader over**, then on the other arm **Find leader → Conne
 The arms' reach overlaps above Orchid, so an **interlock** keeps them apart: an arm may leave its home only while the
 other is parked (holding still within 5° of its own home or rest, or not connected), and only one arm may be away from home at a
 time. A move back home needs only the other arm to hold still. Teach each arm a home and a rest clear of the other arm's reach.
+An arm with no home or rest yet (just connected, recalibrated or swapped) cannot be parked, so it does not block the other
+arm being taught with the leader, as long as it holds still: you guide that arm past it. Automatic moves (Play, Go to
+home, Go to rest, the API) still wait until both arms have somewhere to park.
+
+**Guided training.** On **03 Train controls**, each arm shows the steps it needs taught, in order, with a progress bar:
+home, rest, then its controls (the Keys Arm's 12 keys; the Chord Arm's Dim, Min, Maj and Sus buttons and the voicing
+dial, one step for both directions). The extension buttons (6, m7, M7, 9) are left out of the guide for now; they can
+still be taught by selecting them on the map. The next untrained step is highlighted. When the step in hand is trained, the console moves on to the
+next one by itself once the arm is still, so you can work through them one by one; **Go to step N** jumps back to the
+next untrained step after you look at another. Tap any step to re-teach or play it. The counter at the top shows the
+selected arm's trained steps.
+
+**Hover to hover.** In a phrase or score the Keys Arm does not go home between keys: it lifts back to the key's hover and
+moves straight to the next key's hover. So teach every **hover high enough above Orchid** that a move between any two
+hovers clears the keys and the case. orchid-robot also checks each such move with the arm model: when the joints' path
+between two hovers would sag more than 5 mm below the lower hover (a long jump across the keyboard can arc downward),
+that change goes by way of home instead. While the Keys Arm waits over a hover, the Chord Arm only leaves home for a
+chord, after the modelled clearance check from that pose; if that check fails, the Keys Arm goes home first. If a
+performance stops with the Keys Arm over a key, it goes home, unless you pressed Stop motion (which always holds the arm
+where it is).
 
 **Chords.** A key played with a chord button is the one time both arms are away from home together, and orchid-robot runs
 it from one instruction (`orchid.py chord C maj`, `POST /api/chords/play`, or a sequence step with a `chord`):
@@ -243,6 +263,7 @@ python3 scripts/orchid.py seq "C:1/4 E:1/4 r:1/4 G:1/2" --speed 1.5
 python3 scripts/orchid.py chord C maj --duration 1/2   # both arms: Maj held by the Chord Arm, C played by the Keys Arm
 python3 scripts/orchid.py seq "C+maj:1 A+min:1 F+maj:1 G+sus:1"
 python3 scripts/orchid.py chord C maj --duration 4bars   # a long sweeping chord: the Keys Arm holds C for four bars
+python3 scripts/orchid.py score "1.1 C+maj:1  2.1 A+min:1  3.1 F+maj:1  4.1 G+sus:1" --plan   # a whole piece, planned
 python3 scripts/orchid.py set ccw --turn -25     # a dial direction's turn angle
 python3 scripts/orchid.py speed 2                # shared arm speed
 python3 scripts/orchid.py duration 1/4           # the note value when none is given
@@ -257,11 +278,38 @@ tempo, read from Studio's timeline (`clock` command), the same timeline its MIDI
 from the strike, halfway down the press stroke, to the release, halfway back up; the hold at the bottom fills the rest.
 While Studio's transport runs, the arm waits above each key and strikes on Studio's beat. The first note goes on the
 next beat it can make, and each later note goes its written length after the one before. When it is stopped, a phrase
-keeps its own time from its first note. The arm returns home between notes, so a note that comes sooner than the arm can
-get there lands late by whole beats, and the rest of the phrase moves with it. The reply says how many beats late it was.
+keeps its own time from its first note. Between two keys the Keys Arm lifts to the key's hover and goes straight to the
+next key's hover, and goes home after the last note. A note that comes sooner than the arm can get there lands late by
+whole beats, and the rest of the phrase moves with it. The reply says how many beats late it was.
 Simulation, with no Studio, keeps 120 BPM. The console's own Play still uses the press length in seconds.
 
-HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `GET /api/clock`, `POST /api/controls/{id}/play` (`duration?`, `speed?`, `turn_degrees?`), `POST /api/controls/{id}` (`turn_degrees`), `POST /api/sequence` (steps `{control or "rest", chord?, duration?}`), `POST /api/chords/play` (`key`, `chord`, `speed?`, `duration?`), `POST /api/settings` (`speed`, `duration`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence on one arm is one motion that passes through home between controls. A sequence with chords or with both arms' controls plays one step at a time, each arm back home before the next, keeping the rhythm across steps.
+**Scores.** `POST /api/score` (CLI `score`) plays a whole piece as one performance: keys and chords at bars and beats
+of Studio's 4/4 bars, each with a note value. orchid-robot plans every move: when each arm leaves home, and when the
+chord button goes down. It starts on the first note's beat of Studio's next bar. **Every note is held for its written
+length**, since long chords suit Orchid. A change that cannot be made on its written bar after that moves later by
+whole bars, keeping its beat of the bar, and the rest of the piece moves with it. `plan_only` returns the plan without
+moving, listing every such move. After playing, the reply says how far each note landed from its beat.
+
+**Sound, perform, fx and looping.** A score can also set Orchid Studio's Pistil `sound` (1–100) for Orchid's
+voice (Studio's Live Perform voice), its Live Perform settings (`perform`: mode such as arp, harp or bloom, pattern,
+step, gate), and its effects (`fx`: reverb and delay). It can set them at the start and change them at chosen bars
+(`changes`). Changes land on their bar line, and move with it when the music before it moved later. With
+`loop_slot` and Studio's loops playing, the score starts on the loop's next pass. The arms play it once. Then Studio's
+loop layer gets what Orchid sent on that pass, each chord on its written beat for its written length, and repeats it
+from the next loop boundary. A chord nothing sounded for is left out. All of these need
+Orchid Studio (`--studio-port`), and effects need its native audio host rebuilt once (`orchid-studio build-host`).
+`voicing` (0–127, at the start or in `changes`) sets Orchid's own voicing dial. The Chord Arm turns it and checks
+Orchid's reported position, sizing each turn from how far the last one moved it and remembering that in
+`DATA_DIR/voicing.json`. A change between notes delays the next note by the turns it takes, and the plan counts that.
+It needs both dial directions taught and Studio's key monitor on.
+
+**Timing is learned.** Every note Orchid reports tells orchid-robot when that key sounded in its press. That is split
+into where in the stroke each key triggers and one delay for the whole rig (servo lag and MIDI, about 0.1 s), so the
+timing holds at any arm speed. Each performance also measures how long each kind of change really took (key to key,
+chord to chord and so on), and the next plan uses it (`DATA_DIR/score-timing.json`). Re-teaching or correcting a key
+starts its learning over. Notes played while correcting keys are not used.
+
+HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `GET /api/clock`, `POST /api/controls/{id}/play` (`duration?`, `speed?`, `turn_degrees?`), `POST /api/controls/{id}` (`turn_degrees`), `POST /api/sequence` (steps `{control or "rest", chord?, duration?}`), `POST /api/score` (`events`, `speed?`, `plan_only?`), `POST /api/chords/play` (`key`, `chord`, `speed?`, `duration?`), `POST /api/settings` (`speed`, `duration`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence on one arm is one motion: from key to key it goes hover to hover, and through home between other controls. A sequence with chords or with both arms' controls plays one step at a time, keeping the rhythm across steps: the Keys Arm waits over the last key's hover between keys, and the Chord Arm goes home after each chord.
 
 ## Register the eight chord buttons
 
