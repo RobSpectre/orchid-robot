@@ -105,8 +105,6 @@ The database stores calibration, a pre-calibration backup, fixture identity/cont
 
 If Python is killed mid-calibration, automatic rollback cannot be guaranteed. The backup remains on disk and motor mismatch prevents note use; operators should complete a new calibration before teaching. Never restore an old database and assume its calibration still matches motor EEPROM.
 
-Existing terminal tools import `orchid_key` through a compatibility wrapper around `orchid_demo.motion`; their command syntax and root-level map defaults are retained. Legacy key maps are not imported automatically because their geometry may predate the mechanical repair.
-
 ## Validation boundaries
 
 Tests cover the original motion limits plus the full 12-key/36-trial simulated workflow, all eight chord buttons, both dial directions, forward-loop ordering, missing lift-off, unsafe return/contact paths, changed grips, required reset/effect confirmations, command freshness/idempotency, lost leases, tracking failures, interrupted handover, calibration rollback, changed contact tools, invalidated records, restart, schema-1 migration, mode isolation, local HTTP security, and no automatic hardware connection. Browser checks cover calibration, press registration, dial capture/review, and responsive layout. Hardware adapter tests use a fake bus; passing them does not validate physical timing, loads, clearance, or contact pressure.
