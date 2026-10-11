@@ -143,6 +143,11 @@ the layers that keep the pass, each shaped for its part:
   then chords 2 and 4.
 - A layer's own `sound`/`fx` go to its voice only; `perform` is its Perform setting (add `velocity_limit: 127`, or
   Studio caps velocities at 80). The score's `sound`/`fx` go to the live voice and the layers without their own.
+- **Make the live pass sound like the layer.** While the arms play, the room hears Studio's live voice, at Orchid's own
+  octave and press velocity (often 15–40) on whatever sound it had, so a pass recorded into a bass layer two octaves
+  down at velocity 100 seems silent the first time round. Give the score the layer's `sound` and `fx`, and a `perform`
+  with the layer's `octave` and `velocity` (Studio Perform settings, as the layer's own register and level), and set
+  Studio's `live` mixer channel to the layer's level.
 - Several layers from one pass need an Orchid Studio that keeps a waiting composition per layer
   (`status.looper.pending_composes`); an older one is refused with a 409.
 
