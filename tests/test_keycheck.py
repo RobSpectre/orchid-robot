@@ -38,14 +38,10 @@ def test_wrong_missed_and_repeated_notes(events, status, text):
     assert (result["status"], result["text"]) == (status, text)
 
 
-def test_chord_buttons_expect_no_midi_and_dials_count_clicks():
+def test_chord_buttons_expect_no_midi():
     button = {"key": "chord.min", "start": 0.0, "end": 3.0}
     assert check_step(button, 0.0, 1.0, [])["status"] == "unchecked"
     assert check_step(button, 0.0, 1.0, [press(1.0, "E")])["status"] == "stray"
-    dial = {"key": "voicing.cw", "start": 0.0, "end": 3.0}
-    clicks = [{"type": "voicing", "t": 1.0, "delta": 1}, {"type": "voicing", "t": 1.1, "delta": 1}]
-    assert check_step(dial, 0.0, 1.0, clicks)["clicks"] == 2
-    assert check_step(dial, 0.0, 1.0, [])["text"] == "Clockwise: the dial did not click"
 
 
 def test_a_sequence_checks_each_step_in_its_own_window():

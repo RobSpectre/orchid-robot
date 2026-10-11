@@ -1,4 +1,4 @@
-"""Two followers on one Orchid: The Keys Arm plays the keys, Chord Arm the chord buttons and voicing dial.
+"""Two followers on one Orchid: The Keys Arm plays the keys, Chord Arm the chord buttons.
 
 The app always has both; The Chord Arm shows up once a second follower is detected, connected or remembered. Each arm is only
 ever taught and plays its own controls. Each follower is recognised by the calibration in its motors (discovery.matches),
@@ -35,8 +35,7 @@ NAMES = {"a": "Keys Arm", "b": "Chord Arm"}  # what the operator sees; "a" and "
 PARKED_DEG = 5.0
 # Actions that drive the motors away from where the arm is.
 LEAVES_HOME = ("teach_follow", "teach_play", "teach_sequence", "teach_go_rest", "tune_start", "leader_resume",
-               "move_home", "control_start", "test", "retry", "next", "home_start", "leader_hold", "dial_capture_start",
-               "chord_press")
+               "move_home", "control_start", "test", "retry", "next", "home_start", "leader_hold", "chord_press")
 GOES_HOME = ("teach_go_home", "chord_release")
 # Following the leader: the operator guides this arm by hand. While the other arm has no home or rest yet (just
 # connected, calibrated or swapped), it cannot be parked; this arm may still be taught as long as the other holds still.
@@ -130,11 +129,11 @@ class Rig:
                     self.holder = None
 
     def split(self):
-        """Chord Arm connected: the keys / chords-and-dial split applies."""
+        """Chord Arm connected: the keys / chords split applies."""
         return any(engine.arm is not None for arm, engine in self.engines.items() if arm != "a")
 
     def owned(self, arm):
-        """Each arm is taught and plays only its own controls: The Keys Arm the keys, Chord Arm the chord buttons and dial."""
+        """Each arm is taught and plays only its own controls: The Keys Arm the keys, Chord Arm the chord buttons."""
         return ROLES[arm]
 
     def ports_in_use(self, arm):

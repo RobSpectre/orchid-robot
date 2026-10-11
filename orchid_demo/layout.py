@@ -7,8 +7,8 @@ each base_link origin and the direction the arm faces (base_link +x). The base's
 floor (z 2.45); base_link is 2.4 mm above the rib bottoms.
 
 Keys Arm (keys) is on the right mount: its taught key presses, run through the SO101 model, fall in a row across
-Orchid with the black keys behind the white ones; on the left mount they would not. Chord Arm (chord buttons and
-dial) is on the left mount. Orchid sits in the rimmed pocket and is about 43 mm tall (measured).
+Orchid with the black keys behind the white ones; on the left mount they would not. Chord Arm (chord buttons) is on
+the left mount. Orchid sits in the rimmed pocket and is about 43 mm tall (measured).
 Joint zeros come from hand-centred calibration midpoints, so modelled positions can be off by about 2 cm. The display
 uses it as is. The chord clearance check (kinematics.py) uses it only with a margin that covers that error.
 """

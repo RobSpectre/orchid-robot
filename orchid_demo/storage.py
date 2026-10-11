@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
 from .motion import KEYS, stamp
 from .controls import EXTRA_CONTROLS
+
+log = logging.getLogger(__name__)
 
 
 class Repository:
@@ -14,6 +17,7 @@ class Repository:
         self.directory = directory / mode
         self.directory.mkdir(parents=True, exist_ok=True)
         self.mode = mode
+        self.ignored = set()  # saved controls this version no longer has (e.g. voicing.cw/ccw), already logged
         self.db = sqlite3.connect(self.directory / "operator.sqlite3", check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
@@ -57,8 +61,13 @@ class Repository:
                             (stamp(), "note_saved", f"{note} trial accepted", json.dumps(entry)))
 
     def controls(self):
-        saved = {name: json.loads(entry) for name, entry in self.db.execute("SELECT control,entry FROM controls")}
-        return {name: saved.get(name) for name in EXTRA_CONTROLS}
+        saved = {name: entry for name, entry in self.db.execute("SELECT control,entry FROM controls")}
+        unknown = sorted(set(saved) - set(EXTRA_CONTROLS) - self.ignored)
+        if unknown:  # left by an earlier version (the voicing dial was taught as voicing.cw / voicing.ccw): kept, never used
+            self.ignored.update(unknown)
+            log.warning("Ignoring saved controls this version does not play: %s (in %s). They are left in the database "
+                        "unused.", ", ".join(unknown), self.directory / "operator.sqlite3")
+        return {name: json.loads(saved[name]) if name in saved else None for name in EXTRA_CONTROLS}
 
     def save_control(self, name, entry):
         if name not in EXTRA_CONTROLS:

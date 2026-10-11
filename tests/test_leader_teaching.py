@@ -80,26 +80,6 @@ def test_leader_press_captures_measured_follower_and_verifies_three_trials(engin
     assert isinstance(engine.controller, LeaderController) and not engine.controller.engaged
 
 
-@pytest.mark.parametrize("control,direction", [("voicing.cw", 12), ("voicing.ccw", -12)])
-def test_leader_dial_forward_loop_and_handover(engine, control, direction):
-    prepare(engine, control)
-    command(engine, "dial_capture_start", fixed_pad=True, reference="C major", expected_effect="Small voicing change")
-    move(engine)
-    command(engine, "dial_capture_contact")
-    move(engine, motor="wrist_roll", ticks=direction)
-    command(engine, "dial_capture_turn", direction_verified=True)
-    move(engine, ticks=-12)
-    command(engine, "dial_capture_lift", rim_clear=True)
-    move(engine, motor="wrist_roll", ticks=-direction)
-    command(engine, "dial_capture_return", hands_clear=True, rim_clear=True)
-    command(engine, "capture_home_return", path_clear=True)
-    assert engine.phase == "holding" and engine.arm.enabled
-    for _ in range(3):
-        command(engine, "test", hands_clear=True, reference_reset=True)
-        command(engine, "pass", effect_verified=True)
-    assert engine.statuses(engine.controls)[control]["status"] == "registered"
-
-
 def test_connection_and_calibration_are_separate_and_persisted(engine):
     connect(engine, teaching_mode="leader")
     assert not engine.arm.enabled and not engine.leader.enabled
