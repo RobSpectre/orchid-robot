@@ -302,8 +302,9 @@ each in its own octave (whatever octave Orchid is set to), held as written or le
 plays (`merge`), with its own level, sound, fx and Perform settings: so short, on-time arm notes become sustained pads, a
 bass and an arpeggio. All of these need
 Orchid Studio (`--studio-port`), and effects need its native audio host rebuilt once (`orchid-studio build-host`).
-A score does not set Orchid's voicing: the arms never turn the voicing dial. Set it in software with Orchid Studio's
-`chord-voicing` command.
+A score's `voicing` (1–60, at the start or in `changes` on a bar line) moves Orchid's chords up and down the keyboard.
+Orchid Studio sets it in software (`chord-voicing`), so it costs the arms no time: the arms never turn the voicing
+dial.
 
 **Timing is learned.** Every note Orchid reports tells orchid-robot when that key sounded in its press. That is split
 into where in the stroke each key triggers and one delay for the whole rig (servo lag and MIDI, about 0.1 s), so the
@@ -324,8 +325,9 @@ Set up a reference chord and keep Orchid's playstyle consistent. A chord button 
 The arms do not play Orchid's large voicing dial, and there is nothing to teach for it: the instrument has **20 registered motions** (twelve keys, eight chord buttons). Voicing is set in software instead, with Orchid Studio's `chord-voicing` command. The dial is reserved as the operator's stop control.
 
 **Turn the voicing dial to stop the arms.** Any turn of Orchid's voicing dial, however small, holds every arm where it
-is, exactly like **Stop motion** or Esc: a performance in progress ends, programs' plays are refused, and the fault
-reads "Stopped by Orchid's voicing dial". Support the arm and press **Hold & keep playing** to go on. orchid-robot reads
+is, exactly like **Stop motion** or Esc, and says "Stopped by Orchid's voicing dial": a performance in progress ends.
+Unlike Stop motion, programs (scripts, Claude, the Hermes set) then may not move the arms at all until you act in the
+console: the first console action you take (holding, playing a key, going home) lets them play again. orchid-robot reads
 the dial through Orchid Studio's key monitor about twenty times a second, so it acts within roughly a tenth of a second.
 The console shows "or turn Orchid's voicing dial" beside Stop motion while it is watching, and "voicing-dial stop off"
 (in red) when it cannot, for example while Studio is restarting or its key monitor is off. Studio setting the voicing

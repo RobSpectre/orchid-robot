@@ -2743,6 +2743,7 @@ class Engine:
         if self.stop_event.is_set():
             self.stops += 1  # a chord in progress (rig.Rig.play_chord) leaves both arms where Stop put them
             self.chord_pressing = self.chord_releasing = False
+            reason = getattr(self, "stop_reason", None)  # a stop from outside the console says why (request_stop)
             if self.teach and self.phase in TEACH_SESSION_PHASES:
                 # Stop motion = hold at a fresh measured pose. Teaching continues from the hold.
                 self.stop_event.clear()
@@ -2752,12 +2753,13 @@ class Engine:
                     self.teach_returning = self.teach_going_home = False
                     self.teach_going_rest = None
                     if self.tuning:
-                        self.tune_stop("Stopped by Stop motion. Nothing was saved.")
-                    self.transition("teach_hold", "Stopped; holding here. Start following or play again when ready.")
+                        self.tune_stop(f"{reason or 'Stopped by Stop motion'}. Nothing was saved.")
+                    self.transition("teach_hold", f"{reason or 'Stopped'}; holding here. Start following or play again when ready.")
                 except Exception as exc:
                     self.fault(exc)
             else:
-                self.fault(m.SafetyError("Stop requested. No automatic retraction or torque release."))
+                self.fault(m.SafetyError(f"{reason}. No automatic retraction or torque release." if reason else
+                                         "Stop requested. No automatic retraction or torque release."))
         try:
             command = self.commands.get_nowait()
         except queue.Empty:

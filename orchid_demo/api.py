@@ -70,8 +70,8 @@ class ScoreEvent(BaseModel):
     duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)
 
 
-class StudioSettings(BaseModel):
-    """Orchid Studio settings for the voice Orchid's notes sound on (Live Perform, slot 5)."""
+class VoiceSettings(BaseModel):
+    """Orchid Studio settings for a voice Orchid's notes sound on (Live Perform, slot 5, or a loop layer's)."""
     model_config = ConfigDict(extra="forbid")
     sound: StrictInt | None = Field(default=None, ge=1, le=100, description="Pistil preset number (Studio sounds-list)")
     perform: dict[str, Any] | None = Field(default=None, description="Live Perform settings: mode (strum, arp, harp, "
@@ -80,12 +80,20 @@ class StudioSettings(BaseModel):
                                       "(Studio fx)")
 
 
+class StudioSettings(VoiceSettings):
+    """A score's Studio settings: its voices', and Orchid's chord voicing, which moves the chords up and down the keyboard
+    (inversion and octave). Studio sets it in software (chord-voicing): the arms never turn the voicing dial, which is
+    the operator's stop."""
+    voicing: StrictInt | None = Field(default=None, ge=1, le=60, description="Orchid's chord voicing, 1-60 (Studio "
+                                      "chord-voicing)")
+
+
 class ScoreChange(StudioSettings):
     bar: StrictInt = Field(ge=1, le=9999)
     beat: float = Field(default=1, ge=1, lt=5)
 
 
-class LoopLayer(StudioSettings):
+class LoopLayer(VoiceSettings):
     """One Studio loop layer that keeps this pass: what Orchid sent, on the written beats, shaped for the layer's part.
     sound and fx (when given) go to this layer's voice only; perform is the layer's Perform settings."""
     slot: StrictInt = Field(ge=1, le=4)
@@ -171,11 +179,14 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     engine = engines["a"]
     token = secrets.token_urlsafe(32)
 
+    dial_stopped = {}  # set by a dial stop: programs may not play again until the operator acts in the console
+
     def stop_by_dial(turn):
-        """A hand on Orchid's voicing dial: every arm holds where it is, as with the console's Stop (dialstop.py)."""
+        """A hand on Orchid's voicing dial: every arm holds where it is, as with the console's Stop (dialstop.py), and
+        programs wait for the operator: a set running on a heartbeat must not simply play on."""
+        dial_stopped.update(at=time.strftime("%H:%M:%S"), value=turn.get("value"))
         for member in engines.values():
-            member.request_stop("Stopped by Orchid's voicing dial (the operator's stop): support the arm, then Hold & keep "
-                                "playing in the console")
+            member.request_stop("Stopped by Orchid's voicing dial (the operator's stop)")
     # Orchid's voicing dial is the operator's stop, watched through Studio's key monitor (on by default with a Studio)
     watcher = DialStop(studio, stop_by_dial) if (studio_port if dial_stop is None else dial_stop) and studio else None
 
@@ -263,6 +274,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @contextmanager
     def performance(what):
+        if dial_stopped:
+            raise HTTPException(409, f"Stopped by Orchid's voicing dial at {dial_stopped['at']}: programs may not move the "
+                                     "arms until the operator resumes in the console.")
         if not performing.acquire(blocking=False):
             raise HTTPException(409, f"orchid-robot is already performing ({now_playing.get('what')}, since "
                                      f"{now_playing.get('since')}). One performance at a time: wait until it returns.")
@@ -283,7 +297,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     def session(arm: str = "a", teaching_mode: str = "leader"):
         return {"token": token, "state": pick(arm).snapshot(), "arms": rig.summary() if rig else None,
                 "connect_plan": rig.plan(teaching_mode) if rig else None,
-                "dial_stop": dict(watcher.state) if watcher else None}
+                "dial_stop": {**watcher.state, "stopped": dict(dial_stopped) or None} if watcher else None}
 
     def perform(member, owner, action, args, seconds=15):
         """Submit to one follower's worker and wait for its verdict; a refusal becomes a 409 naming the arm."""
@@ -372,6 +386,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     @app.post("/api/commands", status_code=202)
     def commands(command: Command, request: Request):
         console(request)
+        if command.action != "stop":
+            dial_stopped.clear()  # the operator is acting in the console: programs may play again
         target = pick(command.arm)
         try:
             if command.action == "stop":  # Stop motion stops every follower
@@ -447,7 +463,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 # A performance already running (one at a time): {what, since}, or None.
                 "performing": dict(now_playing) or None,
                 # Orchid's voicing dial stops the arms: whether it is being watched, and the stops it made.
-                "dial_stop": dict(watcher.state) if watcher else {"armed": False, "error": "not watching: start with --studio-port"}}
+                "dial_stop": {**watcher.state, "stopped": dict(dial_stopped) or None} if watcher else
+                {"armed": False, "error": "not watching: start with --studio-port"}}
 
     # --- Musical time: note values, at Orchid Studio's tempo and on its beat (music.py) -------------------
 
@@ -655,14 +672,15 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 m_require_rig()
                 if step["chord"] not in Rig.CONTROLS:
                     raise HTTPException(404, f"Unknown control {step['chord']!r}.")
-        start = {k: v for k, v in (("sound", body.sound), ("perform", body.perform), ("fx", body.fx)) if v}
+        start = {k: v for k, v in (("sound", body.sound), ("perform", body.perform), ("fx", body.fx), ("voicing", body.voicing))
+                 if v}
         if body.loop_slot and body.loop_layers:
             raise HTTPException(422, "Give loop_slot (one layer) or loop_layers (several), not both.")
         layers = list(body.loop_layers) or ([LoopLayer(slot=body.loop_slot, velocity=body.loop_velocity)] if body.loop_slot else [])
         if len({layer.slot for layer in layers}) != len(layers):
             raise HTTPException(422, "Each loop layer can keep a pass once: give every slot one entry.")
         if (start or body.changes or layers) and studio is None:
-            raise HTTPException(409, "Sound, perform, fx and looping need Orchid Studio: start the app with Orchid Studio "
+            raise HTTPException(409, "Sound, perform, fx, voicing and looping need Orchid Studio: start the app with Orchid Studio "
                                      "(--studio-port), or leave them out.")
         loop = None
         if layers:
@@ -704,7 +722,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                                            "loop: the loop layer still gets every note on its written beat; only the live "
                                            "pass runs on while the arms finish (turn `live` down if it clashes)")
         planned["changes"] = [{"bar": c["bar"], "beat": c.get("beat", 1),
-                               **{k: c[k] for k in ("sound", "perform", "fx") if c.get(k) is not None}} for c in later]
+                               **{k: c[k] for k in ("sound", "perform", "fx", "voicing") if c.get(k) is not None}} for c in later]
         if body.plan_only:
             return {"status": "planned", "plan": planned, "message": plan_note(planned)}
         perform_running = bool(studio and (start or later) and (studio("status").get("performance")))

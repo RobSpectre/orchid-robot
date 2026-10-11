@@ -132,6 +132,8 @@ def main(argv=None) -> None:
     piece.add_argument("--perform", help="Studio Live Perform settings: mode=arp,pattern=pulse,step_beats=0.5")
     piece.add_argument("--fx", help='Studio effects as JSON: {"reverb": {"mix": 30, "room": "hall"}}')
     piece.add_argument("--loop", type=int, metavar="LAYER", help="hand the composition to Studio's loop layer 1-4 to repeat")
+    piece.add_argument("--voicing", type=int, metavar="1-60", help="Orchid's chord voicing (moves chords up and down the "
+                       "keyboard), set by Orchid Studio in software, never the dial")
     chord = sub.add_parser("chord", help="play a key with a chord button held (needs both arms)")
     chord.add_argument("key")
     chord.add_argument("chord", help="dim, min, maj, sus, 6, m7, M7 or 9")
@@ -182,6 +184,7 @@ def main(argv=None) -> None:
                 **({"sound": args.sound} if args.sound is not None else {}),
                 **({"perform": perform_settings(args.perform)} if args.perform else {}),
                 **({"fx": json.loads(args.fx)} if args.fx else {}),
+                **({"voicing": args.voicing} if args.voicing is not None else {}),
                 **({"loop_slot": args.loop} if args.loop is not None else {})}
         result = console.call("POST", "/api/score", body)
         print(result.get("message"))

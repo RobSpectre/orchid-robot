@@ -142,6 +142,8 @@ def setting_steps(settings: dict, perform_running: bool, voices=(STUDIO_VOICE,))
     this music: the live voice (5) for the arms' pass, and for a looped score its loop layer's voice (1-4), which
     plays every pass after."""
     steps = []
+    if settings.get("voicing") is not None:  # Orchid's own voicing, in software: the dial is the operator's stop
+        steps.append(("chord-voicing", {"value": settings["voicing"]}, f"voicing {settings['voicing']}"))
     if settings.get("sound") is not None:
         steps += [("layer-preset", {"slot": voice, "preset": settings["sound"]}, f"sound {settings['sound']} (voice {voice})")
                   for voice in voices]

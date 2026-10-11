@@ -378,15 +378,6 @@ def test_a_take_is_composed_for_the_end_of_the_pass_the_arms_played_on():
     assert score.pass_end({"strike_at": 1000.0 + 26 * beat_s, "slipped_beats": 4}, 6.0, grid, beat_s, 32) == 448
 
 
-def test_a_score_cannot_ask_the_arms_to_set_orchids_voicing(plate):
-    """The arms never turn Orchid's voicing dial: a score has no voicing, on its start or its changes."""
-    client, a, b, command, auth = plate
-    for extra in ({"voicing": 40}, {"changes": [{"bar": 1, "voicing": 40}]}):
-        refused = client.post("/api/score", json={"events": [{"bar": 1, "beat": 1, "key": "C"}], "plan_only": True, **extra},
-                              headers=auth)
-        assert refused.status_code == 422 and "voicing" in refused.text
-
-
 def test_a_looped_scores_sound_and_fx_reach_its_loop_layers_voice_and_the_layer_gets_its_perform_mode(plate):
     """In a jam the loop layers are what plays on: sound and fx go to the layer's voice as well as the live voice."""
     from orchid_demo.keycheck import KeyChecker
@@ -402,6 +393,25 @@ def test_a_looped_scores_sound_and_fx_reach_its_loop_layers_voice_and_the_layer_
     assert ("fx", {"slot": 5, "reverb": {"mix": 30, "room": "plate"}}) in sent and ("fx", {"slot": 3, "reverb": {"mix": 30, "room": "plate"}}) in sent
     composed = [f for c, f in sent if c == "loop-compose"]
     assert composed[-1]["slot"] == 3 and composed[-1]["settings"] == {"mode": "bloom"}
+
+
+def test_a_score_sets_orchids_voicing_in_software_at_the_start_and_on_its_bar_line(plate):
+    """Voicing moves the chords up and down the keyboard: Studio sets it (chord-voicing); the arms never turn the dial."""
+    client, a, b, command, auth = plate
+    events = [{"bar": 1, "beat": 1, "key": "C", "duration": "1"}, {"bar": 2, "beat": 1, "key": "D", "duration": "1"}]
+    planned = client.post("/api/score", json={"events": events, "voicing": 20, "changes": [{"bar": 2, "voicing": 44}],
+                                              "plan_only": True}, headers=auth).json()
+    assert planned["plan"]["changes"] == [{"bar": 2, "beat": 1, "voicing": 44}]
+    played = client.post("/api/score", json={"events": events, "voicing": 20, "changes": [{"bar": 2, "voicing": 44}]},
+                         headers=auth)
+    assert played.status_code == 200, played.text
+    sent = [f["value"] for c, f, _ in client.studio_calls if c == "chord-voicing"]
+    assert sent == [20, 44]
+    for bad in (0, 61):
+        assert client.post("/api/score", json={"events": events, "voicing": bad, "plan_only": True}, headers=auth).status_code == 422
+    layer = client.post("/api/score", json={"events": events, "loop_layers": [{"slot": 1, "voicing": 20}], "plan_only": True},
+                        headers=auth)
+    assert layer.status_code == 422  # voicing is Orchid's, not a loop layer's
 
 
 def test_a_program_sends_both_arms_home_and_orchid_robot_moves_them_one_at_a_time(plate):

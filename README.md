@@ -78,7 +78,7 @@ The following steps describe guiding the follower by hand. For leader teaching, 
 
 Select the **chord bank** to teach Dim, Min, Maj, Sus, 6, m7, M7, and 9 with the same hover/contact/press workflow. Review the intended button response with a consistent reference chord and playstyle; extensions do not sound alone.
 
-Together the instrument has **20 independently registered motions**. The arms do not play Orchid's large voicing dial: voicing is set in software (Orchid Studio's `chord-voicing` command), and the dial is reserved as the operator's stop control.
+Together the instrument has **20 independently registered motions**. The arms do not play Orchid's large voicing dial: a score's `voicing` (moving chords up and down the keyboard) is set in software through Orchid Studio, and the dial is reserved as the operator's stop control.
 
 Enable **5-second delay** to free both hands before capture or torque release. It defaults on in hardware mode. Spoken cues are optional and depend on browser speech support. There is no microphone requirement. Cancel the countdown before it finishes to take no action; Escape also requests a stop when connected.
 

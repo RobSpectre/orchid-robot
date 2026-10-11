@@ -71,10 +71,14 @@ def test_the_app_watches_the_dial_and_both_arms_stop(tmp_path):
         while not client.get("/api/controls").json()["dial_stop"]["armed"] and time.monotonic() < until:
             time.sleep(0.02)
         studio.turn(40)
-        while not all(e.stop_event.is_set() or getattr(e, "stop_reason", None) for e in app.state.engines.values()) \
-                and time.monotonic() < until:
+        stopped = lambda e: "voicing dial" in (e.snapshot().get("error") or e.snapshot().get("message") or "")  # noqa: E731
+        while not all(stopped(e) for e in app.state.engines.values()) and time.monotonic() < until:
             time.sleep(0.02)
-        assert all("voicing dial" in (e.stop_reason or "") for e in app.state.engines.values())
-        assert client.get("/api/controls").json()["dial_stop"]["stops"] == 1
+        assert all(stopped(e) for e in app.state.engines.values())  # each arm's stop says the dial did it
+        dial = client.get("/api/controls").json()["dial_stop"]
+        assert dial["stops"] == 1 and dial["stopped"]["value"] == 40
+        token = client.get("/api/session").json()["token"]
+        refused = client.post("/api/rest", json={}, headers={"x-orchid-token": token})
+        assert refused.status_code == 409 and "voicing dial" in refused.json()["detail"]  # a program waits for the operator
     with TestClient(create_app(tmp_path / "plain", studio=studio), base_url="http://127.0.0.1") as client:
         assert client.get("/api/controls").json()["dial_stop"]["armed"] is False  # no Studio port: no watch by default

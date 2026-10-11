@@ -944,8 +944,9 @@ function showDialStop(dial) {
   if (!chip) return;
   chip.hidden = !dial;
   if (!dial) return;
-  chip.textContent = dial.armed ? "or turn Orchid's voicing dial" : "voicing-dial stop off";
-  chip.classList.toggle("off", !dial.armed);
+  chip.textContent = dial.stopped ? `stopped by the voicing dial at ${dial.stopped.at}: programs wait for you`
+    : dial.armed ? "or turn Orchid's voicing dial" : "voicing-dial stop off";
+  chip.classList.toggle("off", !dial.armed || Boolean(dial.stopped));
   chip.title = dial.armed ? "Any turn of Orchid's voicing dial holds every arm where it is, like Stop motion."
     : `The voicing dial is not watched: ${dial.error || "Orchid Studio's key monitor is not answering"}. Use Stop motion or Esc.`;
 }

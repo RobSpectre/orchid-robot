@@ -6,8 +6,8 @@ description: Play and compose music (jams that evolve: see JAMMING.md) on the ta
 # Orchid keys
 
 The SO101 follower plays controls that were taught in the operator console (home → hover → touch → press for
-keys and chord buttons). The arms never play Orchid's voicing dial: voicing is set in software (Orchid Studio's
-`chord-voicing` command), and the dial is reserved as the operator's stop control. This skill sends **music** to
+keys and chord buttons). The arms never play Orchid's voicing dial: a score's `voicing` is set in software (by Orchid
+Studio), and the dial is reserved as the operator's stop control. This skill sends **music** to
 orchid-robot's performance API with `scripts/orchid.py` (standard library only), and can ask for the arms to go home
 or to rest. orchid-robot owns everything about how the arms move: holding, the order of moves, arm speed, press
 hardness, planning, the interlock and every safety check. The operator owns the console. This skill
@@ -106,8 +106,9 @@ A score can set Orchid Studio's sound for Orchid's voice, at the start and at ch
 - `changes`: `[{"bar": 9, "perform": {"mode": "harp"}}, {"bar": 17, "sound": 40, "fx": {...}}]`. Studio
   settings land on their bar line, and move with it if the music before it moved later.
 
-A score has no voicing: the arms never turn Orchid's voicing dial (it is the operator's stop control). Orchid Studio's
-`chord-voicing` command sets the voicing in software.
+- `voicing`: Orchid's chord voicing, 1–60, which moves the chords up and down the keyboard (inversion and octave), at
+  the start or in `changes` (`{"bar": 9, "voicing": 40}`, on its bar line). Orchid Studio sets it in software
+  (`chord-voicing`), so it costs the arms no time; the arms never turn the voicing dial, which is the operator's stop.
 
 Long chords through a Perform mode such as arp, harp or bloom, with reverb, are where this instrument shines.
 
@@ -252,7 +253,7 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 | `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
 | `POST /api/controls/{id}/play` | `{duration? ("1/4", "2bars", "1bar+1/2"), wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?}], wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |
-| `POST /api/score` | `{events:[{bar, beat, key, chord?, duration?}], sound?, perform?, fx?, changes?:[{bar, beat?, sound?, perform?, fx?}], loop_slot?, loop_velocity?, loop_layers?:[{slot, octave?, transpose?, hold?, merge?, velocity?, sound?, fx?, perform?}], plan_only?}` | `{status, message, plan:{bpm, on_studio_beat, moves:[{bar, beat, to_bar, bars, needs_s, has_s, text}], moved_bars, length_bars}, played:[{bar, beat, key, chord, slipped_beats, late_ms, heard}], key_check?}` |
+| `POST /api/score` | `{events:[{bar, beat, key, chord?, duration?}], sound?, perform?, fx?, voicing?, changes?:[{bar, beat?, sound?, perform?, fx?, voicing?}], loop_slot?, loop_velocity?, loop_layers?:[{slot, octave?, transpose?, hold?, merge?, velocity?, sound?, fx?, perform?}], plan_only?}` | `{status, message, plan:{bpm, on_studio_beat, moves:[{bar, beat, to_bar, bars, needs_s, has_s, text}], moved_bars, length_bars}, played:[{bar, beat, key, chord, slipped_beats, late_ms, heard}], key_check?}` |
 | `POST /api/chords/play` | `{key, chord, duration?}` (`chord` is a button id, e.g. `chord.maj`) | `{…, key, chord, clearance_mm, duration, rhythm, key_check?}` once both arms are home |
 | `POST /api/home`, `POST /api/rest` (`?arm=a\|b` for one) | `{}` | both arms home, or to rest by way of home: orchid-robot orders the moves and checks each; refused while a performance runs |
 | `POST /api/stop` | `{}` | emergency only: holds both arms where they are |
