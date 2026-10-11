@@ -22,7 +22,7 @@ They follow Orchid Studio's tempo, and while its transport runs every note lands
     python3 scripts/orchid.py stop                    # emergency only: hold both arms where they are
 
 This performs music and can park the arms (home, rest). Everything else about the arms is orchid-robot's and the
-operator console's: holding, arm speed, press hardness, dial angles, the order of moves, safety. The console (http://127.0.0.1:8081) must be open,
+operator console's: holding, arm speed, press hardness, the order of moves, safety. The console (http://127.0.0.1:8081) must be open,
 connected and holding. orchid-robot plays one performance at a time and refuses a second while one runs.
 Standard library only; exits non-zero with the reason on refusal.
 """
@@ -35,7 +35,7 @@ import urllib.error
 from urllib.parse import quote
 import urllib.request
 
-ALIASES = {"cw": "voicing.cw", "ccw": "voicing.ccw", "dim": "chord.dim", "min": "chord.min", "maj": "chord.maj",
+ALIASES = {"dim": "chord.dim", "min": "chord.min", "maj": "chord.maj",
            "sus": "chord.sus", "6": "chord.6", "m7": "chord.m7", "M7": "chord.M7", "9": "chord.9"}
 
 
@@ -132,7 +132,6 @@ def main(argv=None) -> None:
     piece.add_argument("--perform", help="Studio Live Perform settings: mode=arp,pattern=pulse,step_beats=0.5")
     piece.add_argument("--fx", help='Studio effects as JSON: {"reverb": {"mix": 30, "room": "hall"}}')
     piece.add_argument("--loop", type=int, metavar="LAYER", help="hand the composition to Studio's loop layer 1-4 to repeat")
-    piece.add_argument("--voicing", type=int, metavar="POSITION", help="Orchid's voicing dial position (0-127) to start from")
     chord = sub.add_parser("chord", help="play a key with a chord button held (needs both arms)")
     chord.add_argument("key")
     chord.add_argument("chord", help="dim, min, maj, sus, 6, m7, M7 or 9")
@@ -153,8 +152,7 @@ def main(argv=None) -> None:
               f"speed {listing['settings']['speed']:g}× · default note {listing['settings'].get('duration', '1/8')}"
               + (f" · press hardness {listing['settings']['press_hardness']:.0%}" if "press_hardness" in listing["settings"] else ""))
         for c in listing["controls"]:
-            extra = f" turn {c['turn_degrees']:g}°" if c.get("turn_degrees") is not None else ""
-            print(f"  {c['id']:<12} {c['name']:<22} {c.get('status', 'empty')}{extra}")
+            print(f"  {c['id']:<12} {c['name']:<22} {c.get('status', 'empty')}")
         if listing.get("performing"):
             print(f"Performing now: {listing['performing']['what']} (since {listing['performing']['since']}); wait for it.")
         if not listing["ready_to_play"]:
@@ -184,13 +182,9 @@ def main(argv=None) -> None:
                 **({"sound": args.sound} if args.sound is not None else {}),
                 **({"perform": perform_settings(args.perform)} if args.perform else {}),
                 **({"fx": json.loads(args.fx)} if args.fx else {}),
-                **({"loop_slot": args.loop} if args.loop is not None else {}),
-                **({"voicing": args.voicing} if args.voicing is not None else {})}
+                **({"loop_slot": args.loop} if args.loop is not None else {})}
         result = console.call("POST", "/api/score", body)
         print(result.get("message"))
-        for turn in (result.get("studio") or {}).get("voicing") or []:
-            print(f"Voicing for bar {turn['bar']}: " + (f"dial at {turn['reached']} ({len(turn['turns'])} turns)" if turn["ok"] else
-                                                        f"not set to {turn['target']}: {turn.get('reason')}"))
         loop = (result.get("studio") or {}).get("loop")
         if loop and loop.get("kept"):
             print(f"Studio's loop layer {loop['slot']} repeats this pass, each chord on its written beat, from Studio beat "

@@ -3,9 +3,8 @@
 Each event is a key, optionally with a chord button held (the Chord Arm), at a bar and beat of 4/4 (Studio's bars),
 sounding for a note value. Every note is held for its written length: long, sustained chords are what Orchid does
 best. The plan works out, from the arms' own motion times plus what earlier performances measured (learn), when each
-change can be made. Between notes the Keys Arm waits over the last key's hover and goes straight to the next key's
-(home only when something else comes between, such as turning the voicing dial); a chord button goes down before its
-key, with the Keys Arm holding still. A note that cannot sound on its beat moves later by whole bars, keeping its beat of the bar, and the
+change can be made. Between notes the Keys Arm waits over the last key's hover and goes straight to the next key's;
+a chord button goes down before its key, with the Keys Arm holding still. A note that cannot sound on its beat moves later by whole bars, keeping its beat of the bar, and the
 rest of the score with it (music.Schedule slip). The performance reports how far each note landed from its beat.
 """
 from __future__ import annotations
@@ -45,26 +44,26 @@ def change_kind(before: dict, after: dict) -> str:
     return f"{'chord' if 'chord' in before else 'key'}>{'chord' if 'chord' in after else 'key'}"
 
 
-def motion_s(step: dict, nxt: dict, timing, direct: bool) -> float:
-    """Seconds the arms' motions take from the end of step's hold until nxt sounds. direct: the Keys Arm goes from
-    step's hover straight to nxt's (it waits there between keys), else by way of home."""
+def motion_s(step: dict, nxt: dict, timing) -> float:
+    """Seconds the arms' motions take from the end of step's hold until nxt sounds: the Keys Arm goes from step's
+    hover straight to nxt's (it waits there between keys)."""
     t = timing(step)
-    t_next = timing(nxt, step["control"]) if direct else timing(nxt)
-    back = (t.get("lift", t["rise"]) if direct else t["rise"]) + OVERHEAD_S
+    t_next = timing(nxt, step["control"])
+    back = t.get("lift", t["rise"]) + OVERHEAD_S
     if "chord" in step:  # the next move waits for the Chord Arm to be home too
         back = max(back, CHORD_LETS_GO_S + t["chord_release"] + OVERHEAD_S)
     return back + t_next["lead"] + (t_next["chord_press"] + OVERHEAD_S if "chord" in nxt else 0.0)
 
 
-def plan(placed: list, beat_s: float, timing, learned=None, before=None) -> dict:
+def plan(placed: list, beat_s: float, timing, learned=None) -> dict:
     """When each note can sound. Every note is held for its written length (long chords are what Orchid is for); a
     note that cannot sound on its beat after the one before is moved later by whole bars, so it stays on the beat of
     the bar it was written on, and so is everything after it. timing(step, after=None) -> {"lead": home (after: that
     key's hover) to the note, "rise": the note back home with no hold, "lift": the note back up to its hover,
     "chord_press": the Chord Arm home to held down (chords), "chord_release": letting go back home (chords)}, seconds
     at the playing speed. learned: {change kind: extra seconds} measured in performances (learn), on top of the motion
-    times. before: {note index: seconds of other work before it} (turning the voicing dial, from home)."""
-    learned, before = learned or {}, before or {}
+    times."""
+    learned = learned or {}
     bar_s = music.BEATS_PER_BAR * beat_s
     moved_bars, moves = 0, []
     for i, step in enumerate(placed):
@@ -74,8 +73,8 @@ def plan(placed: list, beat_s: float, timing, learned=None, before=None) -> dict
             break
         nxt = placed[i + 1]
         gap = (nxt["offset"] - step["offset"]) * beat_s
-        motion = motion_s(step, nxt, timing, direct=i + 1 not in before)
-        needs = step["hold_s"] + motion + learned.get(change_kind(step, nxt), 0.0) + before.get(i + 1, 0.0)
+        motion = motion_s(step, nxt, timing)
+        needs = step["hold_s"] + motion + learned.get(change_kind(step, nxt), 0.0)
         step["needs_s"] = round(needs, 2)
         if needs > gap + 1e-9:
             bars = math.ceil((needs - gap) / bar_s - 1e-9)
@@ -91,17 +90,16 @@ def plan(placed: list, beat_s: float, timing, learned=None, before=None) -> dict
             "length_bars": math.ceil((placed[-1]["offset"] + placed[-1]["beats"]) / music.BEATS_PER_BAR) + moved_bars}
 
 
-def learn(learned: dict, placed: list, strikes: list, timing, before=None) -> dict:
+def learn(learned: dict, placed: list, strikes: list, timing) -> dict:
     """After a performance: for each change, how much longer it really took than the motion times say, from when the
     next note could first have sounded (music.Schedule's earliest). The median of the last few per kind of change
     goes into the next plan."""
     history = {k: list(v) for k, v in (learned.get("history") or {}).items()}
-    before = before or {}
     for i in range(len(placed) - 1):
         if i + 1 >= len(strikes) or "earliest" not in strikes[i + 1]:
             break
         step, nxt = placed[i], placed[i + 1]
-        model = step["hold_s"] + motion_s(step, nxt, timing, direct=i + 1 not in before) + before.get(i + 1, 0.0)
+        model = step["hold_s"] + motion_s(step, nxt, timing)
         took = strikes[i + 1]["earliest"] - strikes[i]["strike_at"]
         kind = change_kind(step, nxt)
         history[kind] = (history.get(kind, []) + [round(took - model, 3)])[-LEARN_CHANGES:]

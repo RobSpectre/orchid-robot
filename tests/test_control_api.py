@@ -106,7 +106,7 @@ def test_api_refusals(console):
     taught(engine, command)
     assert client.post("/api/controls/E/play", json={}, headers=auth).status_code == 409  # not taught
     assert client.post("/api/controls/C/play", json={"speed": 2}, headers=auth).status_code == 422  # the console's setting
-    assert client.post("/api/controls/C/play", json={"turn_degrees": 20}, headers=auth).status_code == 422
+    assert client.post("/api/controls/C/play", json={"turn_degrees": 20}, headers=auth).status_code == 422  # no such field
     assert client.post("/api/controls/C/play", json={}).status_code == 403  # no token
     client.close_console()
     engine.lease_until = time.monotonic() - 1  # the console closed
@@ -157,8 +157,8 @@ def test_cli_names_and_steps():
     spec = importlib.util.spec_from_file_location("orchid_cli", "scripts/orchid.py")
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
-    assert [cli.control_id(x) for x in ("c", "c#", "C#", "cw", "ccw", "min", "M7", "m7")] == \
-        ["C", "C#", "C#", "voicing.cw", "voicing.ccw", "chord.min", "chord.M7", "chord.m7"]
+    assert [cli.control_id(x) for x in ("c", "c#", "C#", "min", "M7", "m7")] == \
+        ["C", "C#", "C#", "chord.min", "chord.M7", "chord.m7"]
 
 
 def test_two_followers_share_one_console(tmp_path):
@@ -178,7 +178,7 @@ def test_two_followers_share_one_console(tmp_path):
         refused = client.post("/api/controls/chord.maj/play", json={}, headers=auth)
         assert refused.status_code == 409 and "No arm is connected" in refused.json()["detail"]  # routed to Chord Arm
         listing = client.get("/api/controls").json()
-        assert {c["id"]: c["arm"] for c in listing["controls"]}["voicing.cw"] == "b" and set(listing["ready_to_play"]) == {"a", "b"}
+        assert {c["id"]: c["arm"] for c in listing["controls"]}["chord.maj"] == "b" and set(listing["ready_to_play"]) == {"a", "b"}
         command_id = str(uuid4())
         stop = client.post("/api/commands", json={"id": command_id, "action": "stop", "revision": 0, "args": {}, "arm": "b"}, headers=auth)
         assert stop.status_code == 202 and all(command_id in member.receipts for member in (a, b))  # Stop reaches both

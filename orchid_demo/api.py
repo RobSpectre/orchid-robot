@@ -17,7 +17,6 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import music
 from . import score
-from . import voicing
 from .controls import CATALOG
 from .engine import Engine
 from .motion import SafetyError
@@ -43,7 +42,6 @@ class PlayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
     duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)
-    turn_degrees: float | None = Field(default=None, ge=-90, le=90)
     wait: bool = True
 
 
@@ -60,7 +58,6 @@ class SequenceStep(BaseModel):
     control: str = Field(min_length=1, max_length=20)  # or "rest": silence for its duration
     chord: str | None = Field(default=None, min_length=1, max_length=20)  # a key played with this chord button held
     duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)
-    turn_degrees: float | None = Field(default=None, ge=-90, le=90)
 
 
 class ScoreEvent(BaseModel):
@@ -80,8 +77,6 @@ class StudioSettings(BaseModel):
                                            "bloom ...), pattern, step_beats, gate ... (Studio perform-options)")
     fx: dict[str, Any] | None = Field(default=None, description='{"delay": {mix, beats|time, feedback}, "reverb": {mix, room}} '
                                       "(Studio fx)")
-    # Orchid's own voicing dial, turned by the Chord Arm until Orchid reports this position (voicing.py)
-    voicing: StrictInt | None = Field(default=None, ge=0, le=127, description="Orchid's voicing dial position (its CC115 value)")
 
 
 class ScoreChange(StudioSettings):
@@ -107,7 +102,6 @@ class LoopLayer(StudioSettings):
     merge: bool = False
     # The layer's velocity (1-127) instead of the one Orchid reported for each press.
     velocity: StrictInt | None = Field(default=None, ge=1, le=127)
-    voicing: None = None  # the dial is Orchid's, set on the score
 
 
 class ScoreRequest(StudioSettings):
@@ -167,7 +161,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     read_clock = clock or (music.StudioClock(studio_port) if studio_port else music.fixed_clock())
     timing_file = Path(directory) / "score-timing.json"  # how long changes really take (score.learn)
     studio = studio or (music.Studio(studio_port) if studio_port else None)  # sound, perform and fx for scores
-    voicing_file = Path(directory) / "voicing.json"  # how Orchid's voicing dial answers a turn (voicing.set_voicing)
     rig = None
     if len(engines) > 1:
         rig = Rig()
@@ -267,12 +260,10 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             now_playing.clear()
             performing.release()
 
-    def no_motion_overrides(speed=None, turn_degrees=None):
-        """The arms' speed and dial turns are orchid-robot's (the console's settings), never a caller's."""
+    def no_motion_overrides(speed=None):
+        """The arms' speed is orchid-robot's (the console's setting), never a caller's."""
         if speed is not None:
             raise HTTPException(422, "Arm speed is set in the operator console, not per request: leave out `speed`.")
-        if turn_degrees is not None:
-            raise HTTPException(422, "Dial turns are orchid-robot's: leave out `turn_degrees` (a score's `voicing` sets the dial).")
 
     @app.get("/api/session")
     def session(arm: str = "a", teaching_mode: str = "leader"):
@@ -431,7 +422,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             snap = member.snapshot()
             statuses = {**snap["keys"], **snap["controls"]}
             listing += [{"id": c["id"], "name": c["name"], "kind": c["kind"], "group": c["group"], "arm": arm,
-                         **{k: statuses[c["id"]].get(k) for k in ("status", "press_s", "turn_degrees") if k in statuses[c["id"]]}}
+                         **{k: statuses[c["id"]].get(k) for k in ("status", "press_s") if k in statuses[c["id"]]}}
                         for c in snap["catalog"].values() if c["id"] in snap["owns"]]
         snap = engine.snapshot()
         ready = {arm: s["phase"] in ("teach_hold", "teach_follow") and s["lease_live"]
@@ -497,8 +488,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         """Play one taught control for `duration` (default: settings.duration), on Orchid Studio's beat while its
         transport runs. Returns when the note has been held and the arm is home, with when it struck (`rhythm`)."""
         clock = clock_now()
-        step = phrase([{"control": control, **({"duration": body.duration} if body.duration else {}),
-                        **({"turn_degrees": body.turn_degrees} if body.turn_degrees is not None else {})}], clock)[0]
+        step = phrase([{"control": control, **({"duration": body.duration} if body.duration else {})}], clock)[0]
         member = owner(control)
         result = run("teach_play", timed(step, clock), body.wait, member)
         rhythm = played_rhythm(member) if body.wait else None
@@ -557,7 +547,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                   else s["control"]) for s in (st.model_dump() for st in body.steps)]
         return {**result, "message": "Played " + " → ".join(names) + "; holding at home." + tempo_note(result["rhythm"], clock)}
 
-    def perform_steps(steps, clock, speed, bar=None, progress=None, align=music.BEATS_PER_BAR, before=None):
+    def perform_steps(steps, clock, speed, bar=None, progress=None, align=music.BEATS_PER_BAR):
         """Chords, or both arms: one step at a time. Between two keys (with or without chord buttons) the Keys Arm waits
         over the last key's hover and goes straight to the next (key_follows); otherwise each arm goes back home before
         the next step (the interlock's rule). Each strike is due its offset after the last one that sounded, so the music
@@ -565,7 +555,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         keys = engines["a"]
         stops = keys.stops
         try:
-            return play_steps(steps, clock, speed, bar, progress, align, before)
+            return play_steps(steps, clock, speed, bar, progress, align)
         except BaseException:
             # Stopped partway with the Keys Arm waiting over a key: take it home, unless the operator stopped it (Stop
             # motion holds the arm where it is) or it is faulted.
@@ -576,24 +566,22 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                     pass
             raise
 
-    def key_follows(steps, index, before=None):
+    def key_follows(steps, index):
         """Whether the Keys Arm stays over this step's key for the next one: both are keys (a chord is played from its
-        key), and nothing else happens between them (turning the voicing dial needs the Keys Arm home)."""
-        if index + 1 >= len(steps) or (before and index + 1 in before):
+        key)."""
+        if index + 1 >= len(steps):
             return False
         return all(CATALOG.get(s["control"], {}).get("kind") == "key" for s in (steps[index], steps[index + 1]))
 
-    def play_steps(steps, clock, speed, bar, progress, align, before):
+    def play_steps(steps, clock, speed, bar, progress, align):
         results, reports, last = [], [], None  # last: (strike time, offset) of the latest timed strike
         for index, step in enumerate(steps):
             if progress is not None:  # the score's conductor follows which note is next
                 progress.update(index=index, stale=getattr(engines["a"], "rhythm", None))
-            if before and index in before:  # other work first (turning the voicing dial): the note may then move a bar later
-                before[index]()
             at = last[0] + (step["offset"] - last[1]) * clock["beat_s"] if last else None
             # A score: the first note waits for its own beat of a bar; every note slips by whole bars if late.
             mode = ("start" if last is None else "slip") if bar else None
-            stay = key_follows(steps, index, before)
+            stay = key_follows(steps, index)
             if "chord" in step:
                 result = play_chord(step, clock, speed, at, mode, align, stay)
             else:
@@ -651,22 +639,14 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 if step["chord"] not in Rig.CONTROLS:
                     raise HTTPException(404, f"Unknown control {step['chord']!r}.")
         start = {k: v for k, v in (("sound", body.sound), ("perform", body.perform), ("fx", body.fx)) if v}
-        dial = [body.voicing] + [c.voicing for c in body.changes]
         if body.loop_slot and body.loop_layers:
             raise HTTPException(422, "Give loop_slot (one layer) or loop_layers (several), not both.")
         layers = list(body.loop_layers) or ([LoopLayer(slot=body.loop_slot, velocity=body.loop_velocity)] if body.loop_slot else [])
         if len({layer.slot for layer in layers}) != len(layers):
             raise HTTPException(422, "Each loop layer can keep a pass once: give every slot one entry.")
-        if (start or body.changes or layers or body.voicing is not None) and studio is None:
-            raise HTTPException(409, "Sound, perform, fx, voicing and looping need Orchid Studio (voicing is checked by its "
-                                     "key monitor): start the app with Orchid Studio (--studio-port), or leave them out.")
-        if any(v is not None for v in dial):
-            if rig is None:
-                raise HTTPException(409, "The voicing dial is turned by the Chord Arm: connect it to set the voicing.")
-            for control in ("voicing.cw", "voicing.ccw"):
-                if engines["b"].snapshot()["controls"][control]["status"] != "registered":
-                    raise HTTPException(409, f"{CATALOG[control]['name']} is not taught on the Chord Arm: teach the dial to set "
-                                             "the voicing.")
+        if (start or body.changes or layers) and studio is None:
+            raise HTTPException(409, "Sound, perform, fx and looping need Orchid Studio: start the app with Orchid Studio "
+                                     "(--studio-port), or leave them out.")
         loop = None
         if layers:
             try:
@@ -690,12 +670,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         timing = score_timing(speed)
         learned = score.load(timing_file)
         later = score.changes([c.model_dump() for c in body.changes], placed)
-        turning = {c["event"]: c["voicing"] for c in later if c.get("voicing") is not None and c["event"] > 0}
-        before = {}
-        if turning:  # a voicing change between notes: the Chord Arm turns the dial, about two turns
-            dial = engines["b"].play_timing("voicing.cw", speed)
-            before = {i: 2 * (dial["lead"] + dial["rise"] + score.OVERHEAD_S) for i in turning}
-        planned = score.plan(placed, clock["beat_s"], timing, learned["extra"], before)
+        planned = score.plan(placed, clock["beat_s"], timing, learned["extra"])
         planned = {**planned, "bpm": clock["bpm"], "on_studio_beat": bool(clock["grid"]), "events": len(placed)}
         align = music.BEATS_PER_BAR
         if loop:
@@ -712,7 +687,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                                            "loop: the loop layer still gets every note on its written beat; only the live "
                                            "pass runs on while the arms finish (turn `live` down if it clashes)")
         planned["changes"] = [{"bar": c["bar"], "beat": c.get("beat", 1),
-                               **{k: c[k] for k in ("sound", "perform", "fx", "voicing") if c.get(k) is not None}} for c in later]
+                               **{k: c[k] for k in ("sound", "perform", "fx") if c.get(k) is not None}} for c in later]
         if body.plan_only:
             return {"status": "planned", "plan": planned, "message": plan_note(planned)}
         perform_running = bool(studio and (start or later) and (studio("status").get("performance")))
@@ -723,22 +698,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 studio(command, **fields)
                 done.append(text)
             return done
-        voiced = []
-
-        def voicing_to(target, bar):
-            """Turn Orchid's voicing dial (the Chord Arm) until Orchid reports target."""
-            learned_dial = voicing.load(voicing_file)
-            current = (studio("status").get("key_monitor") or {}).get("last_voicing")
-
-            def turn(control, degrees):
-                result = run("teach_play", {"control": control, "turn_degrees": round(degrees, 1), "keep_default": True,
-                                            "speed": speed}, True, engines["b"])
-                step = ((result.get("key_check") or {}).get("steps") or [{}])[0]
-                return step.get("clicks") or 0, step.get("value")
-            report = voicing.set_voicing(target, current, turn, learned_dial)
-            voicing.save(voicing_file, learned_dial)
-            voiced.append({"bar": bar, **report})
-            return report
         try:  # the starting settings, and any change before the first note, are in place before anything plays
             applied_start = apply(start) if start else []
             if loop and loop.pop("monitor"):  # the arms' live notes sound through the first layer's voice from now
@@ -749,16 +708,13 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 applied_start += apply(own, voices=(layer.slot,)) if own else []
             for change in [c for c in later if c["event"] == 0]:
                 applied_start += apply(change)
-            for target, bar in [(body.voicing, placed[0]["bar"])] + [(c["voicing"], c["bar"]) for c in later if c["event"] == 0]:
-                if target is not None:
-                    voicing_to(target, bar)
         except SafetyError as exc:
             raise HTTPException(409, str(exc)) from exc
         later = [c for c in later if c["event"] > 0]
         for step in placed:
             step["sound_s"] = max(step["hold_s"], 1e-3)
         players = {owner(step["control"]) for step in placed}
-        one_motion = len(players) == 1 and not any("chord" in step for step in placed) and not turning
+        one_motion = len(players) == 1 and not any("chord" in step for step in placed)
         keys = engines["a"]
         progress = {"index": 0, "stale": None, "known": {}}
 
@@ -781,14 +737,13 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                                                 "rhythm": rhythm_of(placed, clock, bar="start", align=align), "speed": speed}, True, keys)
                 result["rhythm"] = played_rhythm(keys)
             else:
-                result = perform_steps(placed, clock, speed, bar=True, progress=progress, align=align,
-                                       before={i: (lambda t=target, b=placed[i]["bar"]: voicing_to(t, b)) for i, target in turning.items()})
+                result = perform_steps(placed, clock, speed, bar=True, progress=progress, align=align)
         finally:
             fired = conductor.finish() if later else {"fired": [], "errors": [], "missed": []}
         played = landed(placed, result)
         strikes = (result.get("rhythm") or {}).get("steps") or []
         if len(strikes) == len(placed) and not result.get("error"):  # a whole performance: learn how long changes took
-            score.save(timing_file, score.learn(learned, placed, strikes, timing, before))
+            score.save(timing_file, score.learn(learned, placed, strikes, timing))
         if loop:  # what the arms played on this pass, each chord on its written beat, for Studio's loop to repeat
             loop_beats = loop["bars"] * music.BEATS_PER_BAR
             at_beat = None
@@ -803,7 +758,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             loop.update({k: v for k, v in kept[0].items() if k != "slot"})
             if len(kept) > 1:
                 loop["layers"] = kept
-        studio_report = {"start": applied_start, **fired, **({"loop": loop} if loop else {}), **({"voicing": voiced} if voiced else {})}
+        studio_report = {"start": applied_start, **fired, **({"loop": loop} if loop else {})}
         note = plan_note(planned, played)
         if fired["errors"] or fired["missed"]:
             note += " Studio changes not made: " + "; ".join(
@@ -871,7 +826,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     @app.post("/api/controls/{control}/play")
     def play_control_route(control: str, body: PlayRequest):
         """Play one taught control for `duration` (a note value) on Orchid Studio's beat."""
-        no_motion_overrides(body.speed, body.turn_degrees)
+        no_motion_overrides(body.speed)
         with performance(f"play {control}"):
             return play_control(control, body)
 
@@ -886,8 +841,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     def sequence_route(body: SequenceRequest):
         """A phrase of steps in time."""
         no_motion_overrides(body.speed)
-        for step in body.steps:
-            no_motion_overrides(turn_degrees=step.turn_degrees)
         with performance("a sequence"):
             return play_sequence(body)
 

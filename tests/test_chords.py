@@ -378,11 +378,13 @@ def test_a_take_is_composed_for_the_end_of_the_pass_the_arms_played_on():
     assert score.pass_end({"strike_at": 1000.0 + 26 * beat_s, "slipped_beats": 4}, 6.0, grid, beat_s, 32) == 448
 
 
-def test_a_score_needs_the_dial_taught_to_set_the_voicing(plate):
+def test_a_score_cannot_ask_the_arms_to_set_orchids_voicing(plate):
+    """The arms never turn Orchid's voicing dial: a score has no voicing, on its start or its changes."""
     client, a, b, command, auth = plate
-    refused = client.post("/api/score", json={"events": [{"bar": 1, "beat": 1, "key": "C"}], "voicing": 40, "plan_only": True},
-                          headers=auth)
-    assert refused.status_code == 409 and "not taught on the Chord Arm" in refused.json()["detail"]
+    for extra in ({"voicing": 40}, {"changes": [{"bar": 1, "voicing": 40}]}):
+        refused = client.post("/api/score", json={"events": [{"bar": 1, "beat": 1, "key": "C"}], "plan_only": True, **extra},
+                              headers=auth)
+        assert refused.status_code == 422 and "voicing" in refused.text
 
 
 def test_a_looped_scores_sound_and_fx_reach_its_loop_layers_voice_and_the_layer_gets_its_perform_mode(plate):
