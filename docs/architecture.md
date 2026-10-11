@@ -2,6 +2,10 @@
 
 `app.py` launches FastAPI/Uvicorn on IPv4 loopback. The browser uses static HTML/CSS/JavaScript and a small JSON API. There is no Node dependency, asset build, package installation for the application, background service, or cloud connection. Hardware imports happen only when hardware discovery or connection is explicitly requested.
 
+## Modules
+
+`api.py` serves the console and the performance API; `engine.py` is one follower's worker and state machine, and `rig.py` joins the Keys Arm and the Chord Arm (one engine each) for chords and both-arm moves. `devices.py`, `discovery.py`, `leader.py` and `lerobot_teleop.py` are the hardware boundary. `teach.py` turns taught points into replayable motions; `motion.py`, `home.py` and `dial.py` hold the bounded controllers and their validation, and `controls.py` the catalog of controls. `music.py` and `score.py` time plays on Orchid Studio's beat; `keycheck.py` checks what Orchid sent, `tune.py` and `keyboard.py` correct keys from that, and `voicing.py` sets the voicing dial by ear. `kinematics.py` and `layout.py` model the arms on the registration plate for the chord clearance check. `telemetry.py`, `storage.py`, `incidents.py` and `diagnostics.py` cover display, durable state and reports.
+
 ## Ownership and control
 
 One worker thread owns the motor adapter and database writes. HTTP handlers submit validated commands to a single-slot queue and read immutable snapshots; they never issue serial commands. Command UUIDs provide bounded process-local idempotency; workflow revisions reject stale buttons and delayed commands. Only one live operator lease can submit commands. Browser heartbeat is independent of the worker, so the HTTP server can renew control during a stroke.

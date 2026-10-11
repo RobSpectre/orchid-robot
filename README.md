@@ -69,7 +69,7 @@ The server binds only to `127.0.0.1`. Keep one operator tab open. A second tab c
 
 The following steps describe guiding the follower by hand. For leader teaching, use the shared-home workflow below.
 
-1. **Connect.** Check mounting, padding, and access to the power stop. Name the fixture and select rubber-covered tips or a padded gripper. Only mark the placement unchanged if the base, instrument, contact surface, and gripper opening really are unchanged.
+1. **Connect.** Check mounting, padding, and access to the power stop, then press **Find and connect all arms**. A follower connected without the leader is taught by hand. Connecting only reads, and keeps the saved placement.
 2. **Calibrate.** Support the arm while torque releases. Capture the midpoint, then record the usable ranges of base, shoulder, elbow, wrist bend, and gripper. Wrist rotation does not require a cable-twisting sweep. Review and save; hardware writes are read back for verification.
 3. **Teach a note.** With torque off, capture **hover → first contact → sounding press**. The app records the downward stroke; playback retraces **press → contact → hover** along that exact path. Keep the gripper opening fixed.
 4. **Establish a hold.** **Capture press & hold** enables torque at the current supported pressed position. Clear your hands, then choose **Retreat to hover**. It runs only the reverse stroke from that position—no repeat press. Leader teaching already has a powered hold.
@@ -143,15 +143,28 @@ See [architecture](docs/architecture.md) and [contributing](CONTRIBUTING.md). CI
 ```text
 app.py                    Python entry point
 orchid_demo/
-  api.py                  Local HTTP interface and ownership
-  engine.py               Calibration/registration state machine
+  api.py                  Local HTTP interface, operator lease, and the performance API
+  engine.py               One follower's worker: calibration, teaching, and playback state machine
+  rig.py                  Two followers on one Orchid (Keys Arm, Chord Arm) and chords across them
   devices.py              Simulated and physical motor adapters
-  telemetry.py            Read-only joint status and display-angle conversion
+  discovery.py            Read-only USB arm discovery (shared with find_ports.py)
+  leader.py               Leader following with operator engage/pause
+  teach.py                Taught points to replayable motions, in LeRobot joint units
+  lerobot_teleop.py       LeRobot's SO101 drivers on the app's serial bus
   motion.py               Bounded stroke controller and validation
+  home.py                 Home and its measured routes
   controls.py             Keyboard, chord, and dial motion catalog
   dial.py                 Bounded forward dial loop and validation
+  voicing.py              Setting the voicing dial by turning it and listening
+  music.py, score.py      Musical time and scores on Orchid Studio's beat
+  keycheck.py, tune.py    Checking what Orchid sent; correcting keys by ear
+  keyboard.py             Key positions fitted from taught presses
+  kinematics.py, layout.py  Forward kinematics on the registration plate
+  telemetry.py            Read-only joint status and display-angle conversion
   storage.py              Durable local state
+  incidents.py, diagnostics.py  Incident bundles and the diagnostic log
   static/                 HTML, CSS, browser JavaScript (no build)
+scripts/                  orchid.py (performance CLI), migrate.py (move state), visual builders
 tests/                    Motion, workflow, API, and adapter tests
 docs/                     Operator and developer documentation
 ```
