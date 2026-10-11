@@ -53,9 +53,6 @@ function clearConfirmations(scope = document) {
 }
 const button = (action, text, secondary = false, attrs = "") => `<button data-action="${action}" class="${secondary ? "secondary" : "primary"}" ${attrs}>${text}</button>`;
 const leaderMode = () => state?.teaching_mode === "leader";
-// Leader teaching is the default; a deliberate choice of hand-guiding is remembered on this computer.
-const preferredMode = () => { try { return localStorage.getItem("orchid.teachingMode") === "manual" ? "manual" : "leader"; } catch { return "leader"; } };
-const rememberMode = value => { try { localStorage.setItem("orchid.teachingMode", value); } catch { /* storage unavailable */ } };
 const referencesReady = (s = state) => !!s?.calibrated && (s.teaching_mode !== "leader" || !!s.leader?.calibrated);
 const setupIdle = (s = state) => ["connected", "ready"].includes(s?.phase);
 const calibrationTarget = () => state?.phase.startsWith("calibration_") ? state.calibration_target :
@@ -136,25 +133,15 @@ async function request(path, body) {
   return response.json();
 }
 function renderPorts() {
-  const select = $("port"), leaderSelect = $("leader-port"), discovery = state.discovery;
-  const picker = select || leaderSelect;
-  if (!picker || !discovery) return;
+  const leaderSelect = $("leader-port"), discovery = state.discovery;
+  if (!leaderSelect || !discovery) return;
   const {ports, scanning, scanned_at: scannedAt, warnings, error: scanError} = discovery;
   const signature = JSON.stringify(discovery);
-  if (picker.dataset.snapshot === signature) return;
-  picker.dataset.snapshot = signature;
+  if (leaderSelect.dataset.snapshot === signature) return;
+  leaderSelect.dataset.snapshot = signature;
   const role = p => (p.role === "simulator" ? "Practice arm" : p.role === "follower" ? "Follower" : p.role === "leader" ? "Leader" : "Unidentified arm") +
     (p.arm ? ` · ${ARM_SHORT[p.arm]}` : "");  // recognised by the calibration in its motors
   const volts = p => p.voltage === null ? "Voltage unavailable" : `${p.voltage.toFixed(1)} V`;
-  const eligible = ports.filter(p => p.connectable);
-  if (select) {
-  const previous = select.value;
-  select.innerHTML = (!eligible.length ? `<option value="">${scanning ? "Scanning robot arms…" : scannedAt ? "No ready follower found" : "Refresh to find robot arms"}</option>` : "") +
-    ports.map(p => `<option value="${esc(p.path)}" ${p.connectable ? "" : "disabled"}>${esc(role(p))} · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("");
-  // Prefer the follower whose motors carry this arm's calibration, then an unrecognised one.
-  const mine = eligible.find(p => p.arm === arm) || eligible.find(p => !p.arm);
-  select.value = eligible.some(p => p.path === previous) ? previous : (mine || eligible[0])?.path || "";
-  }
   const previousLeader = leaderSelect.value;
   const leaders = ports.filter(p => p.leader_connectable);
   leaderSelect.innerHTML = leaders.length ? leaders.map(p => `<option value="${esc(p.path)}">Leader · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("") : '<option value="">No ready leader found · refresh connections</option>';
@@ -777,7 +764,6 @@ function render() {
     $("leader-feedback-status").textContent = p === "fault" ? `Stopped: ${s.error || s.message}` : p === "home_moving" ? "Moving to saved home. Leader input is paused; keep hands clear." : s.leader_boundary_joints?.length ? `Joint boundary: ${s.leader_boundary_joints.map(n=>motors[n]).join(", ")}. Movement farther into the endpoint is blocked; guide away from it.` : s.leader_limited ? "The driver has limited the requested target." : !freshLeader ? "Leader feedback unavailable or paused during verification." : s.teach && s.leader_following ? "Live input. Stop motion (Esc) holds the follower where it is." : s.leader_following ? "Live input · leaving this page pauses following within 1.2 seconds." : "Following is disengaged. Repositioning the leader does not move the follower.";
   }
   if ($("home-move-progress")) $("home-move-progress").value = s.home_move_progress ?? 0;
-  if ($("teach-seconds")) $("teach-seconds").textContent = `${(s.teach?.recorded_seconds ?? 0).toFixed(1)} s`;
   if ($("teach-progress")) $("teach-progress").value = s.teach?.progress ?? 0;
   if ($("home-readiness")) $("home-readiness").textContent = s.at_home ? "At home · ready" : `Home offset: ${s.home_error ?? "—"} ticks. ${p === "home_return" ? "Guide back with the leader, then pause." : p === "home_prepare" ? "Confirm clearance below to move to saved home." : p === "home_arrival" ? "Leader positioning is available. Confirm the intended home below before recording." : p === "home_moving" ? "Sending the home movement." : "Use Teach & hold to prepare the move to home."}`;
   const fresh = online && s.connected && s.feedback_at && Date.now()/1000 - s.feedback_at < 1.5 && p !== "fault";
@@ -840,8 +826,6 @@ function updateButtons() {
     }
     if (["simulate_sweep", "fail", "refresh_ports", "refresh_leader_ports"].includes(b.dataset.action)) valid = true;
     if (b.dataset.action === "connect_leader") valid = valid && setupIdle() && !state.leader?.connected && state.discovery?.ports.some(p => p.path === $("leader-port")?.value && p.leader_connectable);
-    if (b.dataset.action === "connect") valid = valid && state.discovery?.ports.some(p => p.path === $("port")?.value && p.connectable);
-    if (b.dataset.action === "connect" && $("teaching-mode")?.value === "leader") valid = valid && state.discovery?.ports.some(p => p.path === $("leader-port")?.value && p.leader_connectable);
     if (b.dataset.action === "leader_pause") valid = !!state.leader_following;
     if (b.dataset.action === "leader_resume") valid = valid && state.leader_teaching && !state.leader_following && teachingPhases.includes(state.phase);
     if (b.dataset.action === "simulate_leader") valid = isSim() && state.leader_teaching && !state.simulated_leader_input;
@@ -857,16 +841,7 @@ function updateButtons() {
     if (b.dataset.action === "calibration_next") { const range = state.ranges[state.range_motor]; valid = valid && range && range.max - range.min > 32; }
     b.disabled = blocked || !valid || (needsControllerUpdate() && !recoveryAction(b.dataset.action));
   });
-  if ($("port")) $("port").disabled = blocked || !state.discovery?.ports.some(p => p.connectable);
   if ($("leader-port")) $("leader-port").disabled = blocked || !state.discovery?.ports.some(p=>p.leader_connectable);
-  if ($("teaching-mode")) {
-    $("teaching-mode").disabled = blocked;
-    $("leader-port-field").hidden = $("teaching-mode").value !== "leader";
-    if ($("manual-connect-extras")) $("manual-connect-extras").hidden = $("teaching-mode").value === "leader";
-    if ($("leader-connect-hint")) $("leader-connect-hint").hidden = $("teaching-mode").value !== "leader";
-    $("leader-port").disabled = blocked || !state.discovery?.ports.some(p=>p.leader_connectable);
-  }
-  if ($("refresh-ports")) $("refresh-ports").textContent = state.discovery?.scanning ? "Scanning…" : "↻ Refresh connections";
   document.querySelectorAll("[data-target-point]").forEach(b => b.disabled = blocked || !!b.dataset.locked || !["teach_hold", "teach_follow"].includes(state.phase));
   document.querySelectorAll("[data-note]").forEach(b => {
     const elsewhere = !POSES[b.dataset.note] && !!state.owns && !state.owns.includes(b.dataset.note);
@@ -907,8 +882,6 @@ function dispatchButton(b) {
   const scope = actionScope(b);
   if (!b.dataset.diagnostics) scope.querySelectorAll("[data-confirm]").forEach(c => args[c.dataset.confirm] = confirmed(c));
   if (b.dataset.recovery) args.supported = confirmed($("recovery-supported"));
-  if (action === "connect" && $("teaching-mode").value === "leader") { args.prepared = true; args.fixture_unchanged = true; }  // reading only; the saved placement is kept
-  if (action === "connect") { args.fixture = $("fixture").value; args.port = $("port").value; args.tool = $("contact-tool").value; args.teaching_mode = $("teaching-mode").value; args.leader_port = $("leader-port").value; }
   if (action === "connect_leader") args.leader_port = $("leader-port").value;
   if (action === "calibrate") args.target = b.dataset.target || "follower";
   if (["calibration_reset","calibration_reload"].includes(action)) args.target = calibrationTarget();
@@ -978,7 +951,7 @@ document.addEventListener("click", event => {
   }
   else if (b.dataset.note) { selectedNote = b.dataset.note; targetPoint = null; connectionView = false; calibrationView = false; tuneView = false; render(); }
 });
-document.addEventListener("change", event => { if (event.target.id === "teaching-mode") rememberMode(event.target.value); updateButtons(); });
+document.addEventListener("change", () => updateButtons());
 document.addEventListener("input", event => {
   if (event.target.id === "turn-degrees") turnInput[targetControl()] = event.target.value;
   if (event.target.id === "press-seconds") pressInput[targetControl()] = event.target.value;
