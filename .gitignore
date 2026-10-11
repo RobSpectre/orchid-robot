@@ -10,7 +10,6 @@ orchid_keys.json.*.bak
 # Local operator state and physical calibration data
 data/
 orchid_keys.json
-leader-voltage-before-*.json
 recordings/
 keys/
 orchid-state-*.tar.gz

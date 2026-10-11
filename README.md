@@ -171,4 +171,4 @@ docs/                     Operator and developer documentation
 
 Licensed under the [MIT License](LICENSE). The SO101 3D geometry is Apache-2.0; its pinned upstream source and license are listed in [third-party notices](THIRD_PARTY_NOTICES.md). Node is used only for development checks; running the app still requires only Python and a browser.
 
-`find_ports.py` lists the arms' ports (read-only). `repair_leader_voltage.py` is a one-off diagnostic/repair utility, not part of normal operation.
+`find_ports.py` lists the arms' ports (read-only).
