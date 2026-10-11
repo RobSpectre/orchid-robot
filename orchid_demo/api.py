@@ -785,8 +785,16 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if len(strikes) == len(placed) and not result.get("error"):  # a whole performance: learn how long changes took
             score.save(timing_file, score.learn(learned, placed, strikes, timing, before))
         if loop:  # what the arms played on this pass, each chord on its written beat, for Studio's loop to repeat
-            kept = [{"slot": layer.slot, **keep_pass(placed, result, layer, loop["bars"] * music.BEATS_PER_BAR,
-                                                    layer.perform or body.perform)} for layer in layers]
+            loop_beats = loop["bars"] * music.BEATS_PER_BAR
+            at_beat = None
+            try:  # the end of the pass the arms played on: the take is heard on the next pass, even if it is a bit late
+                now = clock_now()
+                if strikes and now["grid"]:
+                    at_beat = score.pass_end(strikes[0], placed[0]["offset"], now["grid"], now["beat_s"], loop_beats)
+            except HTTPException:
+                pass
+            kept = [{"slot": layer.slot, **keep_pass(placed, result, layer, loop_beats, layer.perform or body.perform, at_beat)}
+                    for layer in layers]
             loop.update({k: v for k, v in kept[0].items() if k != "slot"})
             if len(kept) > 1:
                 loop["layers"] = kept
@@ -797,7 +805,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 [f"bar {e['bar']}: {e['error']}" for e in fired["errors"]] + [f"bar {m_['bar']} (after the last note)" for m_ in fired["missed"]]) + "."
         return {**result, "plan": planned, "played": played, "studio": studio_report, "message": note}
 
-    def keep_pass(placed, result, layer, loop_beats, perform=None):
+    def keep_pass(placed, result, layer, loop_beats, perform=None, at_beat=None):
         """Hand a Studio loop layer this pass: what Orchid sent for each note, placed on its written beat (score.take),
         in the layer's register, held as the layer asks and, for an overdub, added to what the layer plays. It takes
         over at the next loop boundary."""
@@ -818,11 +826,13 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 chords = score.merge(current.get("chords") or [], chords)
             chords = score.hold(chords, layer.hold, loop_beats)
             # the layer plays through its Perform settings (Studio fills in the rest from its defaults)
-            reply = studio("loop-compose", slot=layer.slot, chords=chords, **({"settings": perform} if perform else {}))
+            reply = studio("loop-compose", slot=layer.slot, chords=chords, **({"settings": perform} if perform else {}),
+                           **({"at_beat": at_beat} if at_beat is not None else {}))
         except SafetyError as exc:
             return {"kept": False, "reason": str(exc), "missed": missed}
-        return {"kept": True, "chords": len(chords), "missed": missed,
-                "applies_at_beat": (reply.get("composed") or {}).get("applies_at_beat")}
+        composed = reply.get("composed") or {}
+        return {"kept": True, "chords": len(chords), "missed": missed, "applies_at_beat": composed.get("applies_at_beat"),
+                **({"late_beats": composed["late_beats"]} if composed.get("late_beats") else {})}
 
     def landed(placed, result):
         """Per note: where it was written, how many beats it slipped, and how far from its beat it sounded."""

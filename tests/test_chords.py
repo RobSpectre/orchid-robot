@@ -364,6 +364,18 @@ def test_loop_layer_hold_and_merge_shape_the_chords():
     assert score.register([57, 60, 64], octave=5, transpose=-12) == [69, 72, 76]
 
 
+def test_a_take_is_composed_for_the_end_of_the_pass_the_arms_played_on():
+    """So the audience hears on the very next loop what it just saw the arms play, even if the arms got home late."""
+    from orchid_demo import score
+    grid, beat_s = {"t": 1000.0, "beat": 400.0}, 0.5  # 120 BPM: beat 400 at t=1000 s
+    # the pass started at beat 416 (a 32-beat loop); its first note, written at bar 2 beat 3 (offset 6), struck at beat 422
+    first = {"strike_at": 1000.0 + 22 * beat_s, "slipped_beats": 0}
+    assert score.pass_end(first, 6.0, grid, beat_s, 32) == 448
+    assert score.pass_end({**first, "strike_at": first["strike_at"] + 0.04}, 6.0, grid, beat_s, 32) == 448  # a hair late
+    # a first note moved a bar later still belongs to the pass it was written in
+    assert score.pass_end({"strike_at": 1000.0 + 26 * beat_s, "slipped_beats": 4}, 6.0, grid, beat_s, 32) == 448
+
+
 def test_a_score_needs_the_dial_taught_to_set_the_voicing(plate):
     client, a, b, command, auth = plate
     refused = client.post("/api/score", json={"events": [{"bar": 1, "beat": 1, "key": "C"}], "voicing": 40, "plan_only": True},

@@ -252,6 +252,14 @@ def take(placed: list, heard: list, velocity=None, transpose=0, octave=None) -> 
     return chords, missed
 
 
+def pass_end(first: dict, offset: float, grid: dict, beat_s: float, loop_beats: float) -> float:
+    """The timeline beat where the loop pass the arms played on ends, so its take is heard on the very next pass.
+    first: the first note's strike report ({strike_at, slipped_beats}, time.monotonic()); offset: its written beats
+    from bar 1; grid: Studio's beat clock reading ({t, beat}, the same monotonic clock)."""
+    beat = grid["beat"] + (first["strike_at"] - grid["t"]) / beat_s - (first.get("slipped_beats") or 0) - offset
+    return (round(beat / loop_beats) + 1) * loop_beats
+
+
 def merge(existing: list, chords: list) -> list:
     """Overdub: this pass's chords added to what a layer already plays. A chord at the same beat as one of this pass's
     is replaced by it. existing: the layer's chords as Studio exports them (one entry per note: beat, duration, note,
