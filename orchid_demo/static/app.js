@@ -938,6 +938,17 @@ document.addEventListener("keydown", event => {
   if (primary && !primary.disabled) primary.click();
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape") { cancelCountdown(); if (!$("stop").disabled) $("stop").click(); updateButtons(); } });
+// Orchid's voicing dial is the operator's stop: say whether it is being watched (dialstop.py).
+function showDialStop(dial) {
+  const chip = $("dial-stop");
+  if (!chip) return;
+  chip.hidden = !dial;
+  if (!dial) return;
+  chip.textContent = dial.armed ? "or turn Orchid's voicing dial" : "voicing-dial stop off";
+  chip.classList.toggle("off", !dial.armed);
+  chip.title = dial.armed ? "Any turn of Orchid's voicing dial holds every arm where it is, like Stop motion."
+    : `The voicing dial is not watched: ${dial.error || "Orchid Studio's key monitor is not answering"}. Use Stop motion or Esc.`;
+}
 async function poll() {
   try {
     const session = await request(`/api/session?arm=${arm}`);
@@ -945,6 +956,7 @@ async function poll() {
     if (instances[arm] && instances[arm] !== session.state.instance_id) { cancelCountdown(); location.reload(); return; }
     instances[arm] = instance = session.state.instance_id; token = session.token; state = session.state; online = state.worker_alive !== false;
     arms = session.arms; connectPlan = session.connect_plan;
+    showDialStop(session.dial_stop);
     if (arm !== "a" && !arms?.[arm]?.available) { arm = "a"; return; }
     globalThis.OrchidArmView?.setArms(arms);
     renderArms();

@@ -282,7 +282,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     @app.get("/api/session")
     def session(arm: str = "a", teaching_mode: str = "leader"):
         return {"token": token, "state": pick(arm).snapshot(), "arms": rig.summary() if rig else None,
-                "connect_plan": rig.plan(teaching_mode) if rig else None}
+                "connect_plan": rig.plan(teaching_mode) if rig else None,
+                "dial_stop": dict(watcher.state) if watcher else None}
 
     def perform(member, owner, action, args, seconds=15):
         """Submit to one follower's worker and wait for its verdict; a refusal becomes a 409 naming the arm."""

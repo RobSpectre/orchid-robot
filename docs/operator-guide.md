@@ -323,6 +323,15 @@ Set up a reference chord and keep Orchid's playstyle consistent. A chord button 
 
 The arms do not play Orchid's large voicing dial, and there is nothing to teach for it: the instrument has **20 registered motions** (twelve keys, eight chord buttons). Voicing is set in software instead, with Orchid Studio's `chord-voicing` command. The dial is reserved as the operator's stop control.
 
+**Turn the voicing dial to stop the arms.** Any turn of Orchid's voicing dial, however small, holds every arm where it
+is, exactly like **Stop motion** or Esc: a performance in progress ends, programs' plays are refused, and the fault
+reads "Stopped by Orchid's voicing dial". Support the arm and press **Hold & keep playing** to go on. orchid-robot reads
+the dial through Orchid Studio's key monitor about twenty times a second, so it acts within roughly a tenth of a second.
+The console shows "or turn Orchid's voicing dial" beside Stop motion while it is watching, and "voicing-dial stop off"
+(in red) when it cannot, for example while Studio is restarting or its key monitor is off. Studio setting the voicing
+itself (`chord-voicing`) does not count as a turn. It is a software stop: Orchid, its USB cable, Orchid Studio and
+orchid-robot must all be running. Keep the arms' power cut-off within reach as the emergency stop.
+
 Instrument references: [Playstyles](https://support.telepathicinstruments.com/hc/en-us/articles/15280843614863-What-s-the-Difference-Between-Playstyles), [chord extensions](https://support.telepathicinstruments.com/hc/en-us/articles/16576229505167-Chord-Extensions-Explained), and [voicing and inversions](https://support.telepathicinstruments.com/hc/en-us/articles/15292199149839-Voicing-Engine-and-Inversions).
 
 ## Recovery and closing

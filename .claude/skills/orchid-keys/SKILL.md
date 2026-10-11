@@ -215,6 +215,8 @@ like the others.
   refused or failed play. Report the printed message instead.
 - If a command prints an error, a fault, or "start pose" / "something may be in the way", stop and tell
   the user; they must look at the arm.
+- "Stopped by Orchid's voicing dial" means a person turned the dial to stop the arms (the operator's stop). Do not
+  retry: tell the user; the operator resumes in the console.
 - With hardware and Orchid Studio running, `play`/`seq` also print what Orchid actually sent
   (`Orchid heard: C ✓ velocity 72, 0.11 s into the 0.80 s press, held 0.49 s`). `CHECK THE ARM` means a
   wrong key, a missed or repeated note: stop and tell the user; do not replay to "fix" it. Chord buttons

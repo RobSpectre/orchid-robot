@@ -1755,3 +1755,6 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .path-test h3 { margin:0 0 6px; font-size:16px; }
 .path-result { display:flex; flex-direction:column; gap:4px; margin:12px 0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:13px; }
 .path-result span { color:var(--muted); }
+
+.dial-stop { align-self: center; font-size: .72rem; opacity: .75; margin-left: .5rem; white-space: nowrap; }
+.dial-stop.off { color: #c0392b; opacity: 1; }
