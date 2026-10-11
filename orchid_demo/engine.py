@@ -15,7 +15,6 @@ from .keyboard import SLOTS as KEY_SLOTS
 from . import kinematics
 from . import motion as m
 from . import music
-from . import dial
 from . import home
 from .controls import CATALOG, group_members
 from .devices import HardwareArm, HardwareLeader, SimulatedArm, validate_calibration
@@ -37,19 +36,13 @@ TEACHING_WORKFLOW_VERSION = "leader-record-replay-v1"
 CALIBRATION_SETUP_PHASES = ("connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review")
 TEACH_SESSION_PHASES = ("teach_hold", "teach_follow", "teach_play")
 WAYPOINT_FORMAT = "leader_waypoints_v1"
-# Neighbouring steps must stay close (a far one means it was captured in the wrong place). The listed joints
-# are expected to change: the jaws open and close on the dial, and the turn is a wrist roll.
-STROKE_PAIRS = {"key": (("hover", "touch", ()), ("touch", "press", ())),
-                "dial": (("hover", "open", ("gripper",)), ("open", "lower", ("gripper",)), ("lower", "grip", ("gripper",)))}
-DIAL_SHARED = ("hover", "open", "lower", "grip")  # one knob: CW and CCW share every taught step
-DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}  # default wrist turn per direction (deg); set per direction
+# Neighbouring steps must stay close (a far one means it was captured in the wrong place).
+STROKE_PAIRS = (("hover", "touch"), ("touch", "press"))
 DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S, "press_hardness": teach_motion.PRESS_HARDNESS,
                           "duration": music.DEFAULT_DURATION}  # duration: the API's note value when a play gives none
 API_ACTIONS = ("teach_play", "teach_sequence", "teach_hold", "teach_go_home", "teach_go_rest",
                "chord_press", "chord_release", "performance_hold")
-STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)",
-              "open": " (jaws open, still above the knob)", "lower": " (lowered around the knob, not touching it)",
-              "grip": " (jaws closed on the knob)"}
+STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)"}
 
 
 def shift_roll(deg, ticks):
@@ -67,10 +60,6 @@ def onset_fit(notes, delay_max):
     denominator = sum(n - ss * ss / sss for n, ss, sss, si, sis in sums.values() if sss)
     delay = min(delay_max, max(0.0, numerator / denominator)) if denominator > 1e-9 else 0.0
     return {k: (sis - delay * ss) / sss for k, (n, ss, sss, si, sis) in sums.items() if sss}, delay
-
-
-def stroke_gap(a, b, ignore=()):
-    return teach_motion.max_gap({k: v for k, v in a.items() if k not in ignore}, {k: v for k, v in b.items() if k not in ignore})
 
 
 class GuardedController(m.Controller):
@@ -180,7 +169,6 @@ class Engine:
         # Where in its touch -> press stroke each key really sounds, learned from Orchid's notes (onset_heard).
         self.onsets = self.repo.get("onsets") or {}
 
-        self.teach_dial_doc = self.repo.get("teach_dial")  # hover/open/lower/grip shared by both dial directions
         self.path_test, self.last_sag = None, float("inf")  # the last hover-to-hover path test (teach_sequence path_test)
         # Each key's motion as it was when a path test last played it through ({key: saved_at}). A key new or re-taught
         # since (new hovers) gets its first path test at PATH_FIRST_SPEED, whatever the Arm speed.
@@ -297,7 +285,6 @@ class Engine:
                          and not self.waypoint_problem(entry))
                 result[name] = {"status": "registered" if valid else "needs_reteach",
                                 "trials": 0, "saved_at": entry.get("saved_at"), "recorded": valid,
-                                **({"turn_degrees": entry["turn_degrees"]} if "turn_degrees" in entry else {}),
                                 **({"press_s": entry["press_s"]} if "press_s" in entry else {})}
                 continue
             valid = bool(entry and entry.get("calibration_sha256") == signature
@@ -319,10 +306,6 @@ class Engine:
     def control(self):
         return CATALOG[self.selected]
 
-    @property
-    def is_dial(self):
-        return self.control["kind"] == "dial"
-
     def save_entry(self, entry):
         if self.selected in m.KEYS:
             self.repo.save_note(self.selected, entry)
@@ -335,15 +318,12 @@ class Engine:
     def ready_message(self):
         if self.teaching_mode == "leader":
             return "Torque OFF. Start at the taught home, support the follower, and establish its hold. Use the leader to teach the approach."
-        if self.is_dial:
-            return "Torque OFF. Start just clear of the large voicing dial; teach a small turn, lift-off, and clear return."
         if self.control["kind"] == "button":
             return f"Torque OFF. Support the arm and start with the pad hovering above {self.control['label']}."
         return f"Torque OFF. Support the arm and start with the pad hovering above {self.selected}."
 
     MOVING_PHASES = ("teach_play", "teach_follow", "home_moving", "home_positioning", "home_arrival",
                      "home_approach", "home_return", "testing", "retreating", "note_hover", "note_pressed", "note_touch",
-                     "dial_approach", "dial_contact", "dial_turned", "dial_lifted",
                      "calibration_midpoint", "calibration_range", "calibration_review")  # hand-moved: not parked either
 
     def parked(self):
@@ -440,10 +420,6 @@ class Engine:
                 "keys": self.key_statuses(), "required_trials": REQUIRED_TRIALS,
                 "controls": self.statuses(self.controls), "catalog": deepcopy(CATALOG),
                 "selected_control": deepcopy(self.control),
-                "dial_reference": (self.draft or self.capture or {}).get("reference"),
-                "dial_expected_effect": (self.draft or self.capture or {}).get("expected_effect"),
-                "dial_return_error": (m.distance(self.capture["path"][0], self.current)
-                                      if self.is_dial and self.capture and self.current else None),
                 "trials": self.trials, "motion_stage": self.stage,
                 "teach_settings": deepcopy(self.teach_settings),
                 "key_check": deepcopy(self.key_check), "key_check_available": self.key_checker is not None,
@@ -593,15 +569,9 @@ class Engine:
             return
         self.arm.require_torque(False)
         target = dict.fromkeys(m.MOTORS, 2047)
-        if self.is_dial:
-            target["shoulder_pan"] -= 240
-            target["wrist_flex"] += 12 if label in ("dial_contact", "dial_turn") else 0
-            if label in ("dial_turn", "dial_lift"):
-                target["wrist_roll"] += 12 if self.control["direction"] == "cw" else -12
-        else:
-            target["shoulder_pan"] += (m.KEYS.index(self.selected) * 20 if self.selected in m.KEYS
-                                       else -80 - group_members(self.selected).index(self.selected) * 20)
-            target["wrist_flex"] += {"pressed": 36, "touch": 24, "clear": 0}[label]
+        target["shoulder_pan"] += (m.KEYS.index(self.selected) * 20 if self.selected in m.KEYS
+                                   else -80 - group_members(self.selected).index(self.selected) * 20)
+        target["wrist_flex"] += {"pressed": 36, "touch": 24, "clear": 0}[label]
         while self.arm.current != target:
             self.guard()
             for name in m.MOTORS:
@@ -625,7 +595,7 @@ class Engine:
             m.require(all(v == 0 for v in torque.values()), "Unexpected enabled motor during manual teaching")
         now = self.clock()
         m.require(now - start <= m.MAX_IO_TIME, "Motor feedback is stale. No new movement will be issued.")
-        recording = self.phase in ("note_hover", "note_touch", "dial_approach", "dial_contact", "dial_turned", "dial_lifted")
+        recording = self.phase in ("note_hover", "note_touch")
         if recording and self.last_read is not None:
             m.require(now - self.last_read <= m.MAX_IO_TIME, "Recording has a gap. Re-teach this control.")
         self.current, self.torque = current, torque
@@ -639,9 +609,6 @@ class Engine:
         if recording:
             self.arm.check_pose(current)
             m.append_capture(self.capture, current, previous_observation=previous)
-            if self.is_dial:
-                # Validate even samples omitted by path decimation.
-                dial.validate({**self.capture, "path": self.capture["path"] + [current]})
         self.publish()
 
     def sample_leader(self):
@@ -683,8 +650,6 @@ class Engine:
         # Recording validation uses measured samples only, never proposed goals.
         candidate = {**self.capture, "path": self.capture["path"] + [self.current, target]}
         m.validate_entry(candidate)
-        if self.is_dial:
-            dial.validate(candidate)
 
     def begin_press_capture(self, current):
         self.capture = m.teaching_entry(self.arm, True, self.fixture["label"], current)
@@ -860,11 +825,8 @@ class Engine:
     def waypoint_problem(entry):
         """A saved key whose hover is not near its touch (or touch near press) would swing through that pose."""
         points = entry["points"]
-        dial = "grip" in points
-        if dial and ("turn" in points or "lower" not in points):
-            return "it was taught with the earlier dial steps; teach hover, open, lower and grip again"
-        for before, point, ignore in STROKE_PAIRS["dial" if dial else "key"]:
-            joint, gap = stroke_gap(points[point]["goal"], points[before]["goal"], ignore)
+        for before, point in STROKE_PAIRS:
+            joint, gap = teach_motion.max_gap(points[point]["goal"], points[before]["goal"])
             if gap > teach_motion.STROKE_LIMIT:
                 return f"its {point} is {gap:.0f}° from its {before} on {joint}, so its {before} was captured in the wrong place"
         return None
@@ -948,22 +910,14 @@ class Engine:
 
     @staticmethod
     def point_names(control):
-        return teach_motion.DIAL_POINTS if control and CATALOG[control]["kind"] == "dial" else teach_motion.POINTS
-
-    def shared_dial_points(self):
-        doc = self.teach_dial_doc
-        if doc and doc.get("calibration_sha256") == m.fingerprint(self.calibration) and doc.get("mode") == self.mode:
-            return doc["points"]
-        return {}
+        return teach_motion.POINTS
 
     def points_for(self, control):
-        """This control's own steps (saved ones if still valid), the dial's shared hover/open/grip, and the arm's home."""
+        """This control's own steps (saved ones if still valid) and the arm's home."""
         if self.teach_points_for != control:
             entry = self.notes.get(control) if control in m.KEYS else self.controls.get(control)
             valid = {**self.key_statuses(), **self.statuses(self.controls)}[control]["recorded"]
             saved = deepcopy(entry["points"]) if entry and entry.get("format") == WAYPOINT_FORMAT and valid else {}
-            if CATALOG[control]["kind"] == "dial":
-                saved.update(deepcopy(self.shared_dial_points()))
             home_point = self.shared_teach_home() or saved.get("home")
             self.teach_points = {**saved, **({"home": home_point} if home_point else {})}
             if not home_point:
@@ -972,8 +926,8 @@ class Engine:
         return self.teach_points
 
     def begin_pass(self):
-        """Following a control that is already taught re-teaches it from the start: hover, touch and press (hover, open,
-        lower and grip for the dial) are captured again in order, as the first time. The working steps start from home
+        """Following a control that is already taught re-teaches it from the start: hover, touch and press are
+        captured again in order, as the first time. The working steps start from home
         only; the saved motion is kept, and still plays, until the last step is captured and saves the new one."""
         control = self.selected
         names = self.point_names(control)
@@ -982,8 +936,8 @@ class Engine:
             return ""  # being taught, or part way through re-teaching: carry on from the next step
         self.teach_points = {"home": points["home"]} if "home" in points else {}
         self.teach_points_for = control
-        # What Cancel re-teach puts back: the dial's shared steps are saved as each is captured; a key's are not.
-        self.reteaching = {"control": control, "dial": deepcopy(self.teach_dial_doc)}
+        # What Cancel re-teach puts back: nothing is saved until the last step is captured.
+        self.reteaching = {"control": control}
         steps = [n for n in names if n != "home"]
         return (f" Re-teaching {CATALOG[control]['name']} from the start: {', '.join(steps[:-1])} and {steps[-1]}, in order. "
                 f"Its saved motion is kept until {steps[-1]} is captured.")
@@ -993,9 +947,6 @@ class Engine:
         reteach = self.reteaching
         m.require(reteach and reteach["control"] == self.selected and self.teach_points_for == self.selected,
                   "Nothing is being re-taught.")
-        if CATALOG[reteach["control"]]["kind"] == "dial":
-            self.teach_dial_doc = reteach["dial"]
-            self.repo.put("teach_dial", reteach["dial"])
         self.reteaching, self.teach_points_for = None, None
         self.points_for(reteach["control"])  # the saved steps, back in the working set the console shows
         return CATALOG[reteach["control"]]["name"]
@@ -1016,19 +967,6 @@ class Engine:
     def save_teach_home(self, captured):
         self.teach_home_doc = self.pose_doc(captured)
         self.repo.put("teach_home", self.teach_home_doc)
-
-    def save_dial_entries(self, points):
-        """Both directions share the taught steps; each keeps its own turn angle."""
-        for control, default in DIAL_DIRECTIONS.items():
-            old = self.controls.get(control) or {}
-            degrees = old.get("turn_degrees", default) if old.get("format") == WAYPOINT_FORMAT else default
-            self.repo.save_control(control, {
-                "format": WAYPOINT_FORMAT, "control_id": control, "points": deepcopy(points), "turn_degrees": degrees,
-                "units": "lerobot_degrees_gripper_0_100", "calibration_sha256": m.fingerprint(self.calibration),
-                "leader_calibration_sha256": m.fingerprint(self.leader_calibration), "fixture_id": self.fixture["id"],
-                "mode": self.mode, "saved_at": m.stamp()})
-        self.controls = self.repo.controls()
-        self.events = self.repo.events()
 
     def save_control_entry(self, control, entry):
         if control in m.KEYS:
@@ -1121,7 +1059,7 @@ class Engine:
                 "chord_release": teach_motion.return_recording(points, chord)["frames"][-1]["t"] / speed}
 
     def control_motion(self, control, args, speed=1.0, after=...):
-        """The full motion for a taught control. A press length or dial angle given here becomes its new default.
+        """The full motion for a taught control. A press length given here becomes its new default.
         sound_s (a musical duration in seconds) sets the press so the note sounds that long at this speed instead.
         A key starts from the hover of `after` (default: the key whose hover the arm waits over now; None: home), and
         stay (args) ends it back up at its own hover, for the next key, instead of at home."""
@@ -1129,41 +1067,32 @@ class Engine:
             after = self.over_key()
         entry = self.recording_entry(control)
         home_point = self.shared_teach_home()
-        dial = CATALOG[control]["kind"] == "dial"
-        points = {**entry["points"], **(self.shared_dial_points() if dial else {}), **({"home": home_point} if home_point else {})}
+        points = {**entry["points"], **({"home": home_point} if home_point else {})}
         points = {name: self.reachable(point) if isinstance(point, dict) and "goal" in point else point for name, point in points.items()}
         changed = {}
         try:
-            if dial:
-                degrees = args.get("turn_degrees", entry.get("turn_degrees", DIAL_DIRECTIONS[control]))
-                m.require(type(degrees) in (int, float), "Enter the turn angle in degrees.")
-                recording = teach_motion.dial_recording(points, float(degrees), control)
-                # keep_default: a turn for one purpose (setting the voicing), not a new default for the direction
-                changed = {"turn_degrees": float(degrees)} if degrees != entry.get("turn_degrees") and not args.get("keep_default") else {}
-                description = f"home → hover → open → lower → grip → turn {degrees:g}° → let go → raise → home"
-            else:
-                press_s = args.get("press_s", entry.get("press_s", self.teach_settings["press_s"]))
-                m.require(type(press_s) in (int, float) and 0 <= press_s <= teach_motion.MAX_PRESS_S,
-                          f"Choose a press length from 0 to {teach_motion.MAX_PRESS_S:g} seconds.")
-                hardness = self.teach_settings["press_hardness"]
-                strike = (self.strike_fraction(control), self.onset_delay(control) * speed)  # fraction; delay in recording time
-                approach, start = self.approach(control, points, after)
-                points = {**points, **start}
-                path = {"approach": approach, "stay": args.get("stay") is True and CATALOG[control]["kind"] == "key"}
-                recording = teach_motion.waypoint_recording(points, control, float(press_s), hardness, *strike, **path)
-                route = {"approach": list(approach), **({"dip_mm": round(self.last_sag, 1) if math.isfinite(self.last_sag) else None}
-                                                        if approach != ("home",) else {})}
-                recording["route"] = route
-                changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
-                if "sound_s" in args:  # a note value: the press is whatever makes it sound that long
-                    sound_s = args["sound_s"]
-                    m.require(type(sound_s) in (int, float) and 0 < sound_s < float("inf"), "A note needs a length.")
-                    press_s = teach_motion.press_for(float(sound_s), recording, speed)
-                    recording = {**teach_motion.waypoint_recording(points, control, press_s, hardness, *strike, **path), "route": route}
-                    changed = {}
-                origin = {("home",): "home", ("from",): f"{after}'s hover", ("from", "home"): f"{after}'s hover → home"}[approach]
-                description = (f"{origin} → hover → touch → press ({hardness:.0%} hardness, held {press_s:.2f} s) → hover"
-                               + ("" if path["stay"] else " → home"))
+            press_s = args.get("press_s", entry.get("press_s", self.teach_settings["press_s"]))
+            m.require(type(press_s) in (int, float) and 0 <= press_s <= teach_motion.MAX_PRESS_S,
+                      f"Choose a press length from 0 to {teach_motion.MAX_PRESS_S:g} seconds.")
+            hardness = self.teach_settings["press_hardness"]
+            strike = (self.strike_fraction(control), self.onset_delay(control) * speed)  # fraction; delay in recording time
+            approach, start = self.approach(control, points, after)
+            points = {**points, **start}
+            path = {"approach": approach, "stay": args.get("stay") is True and CATALOG[control]["kind"] == "key"}
+            recording = teach_motion.waypoint_recording(points, control, float(press_s), hardness, *strike, **path)
+            route = {"approach": list(approach), **({"dip_mm": round(self.last_sag, 1) if math.isfinite(self.last_sag) else None}
+                                                    if approach != ("home",) else {})}
+            recording["route"] = route
+            changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
+            if "sound_s" in args:  # a note value: the press is whatever makes it sound that long
+                sound_s = args["sound_s"]
+                m.require(type(sound_s) in (int, float) and 0 < sound_s < float("inf"), "A note needs a length.")
+                press_s = teach_motion.press_for(float(sound_s), recording, speed)
+                recording = {**teach_motion.waypoint_recording(points, control, press_s, hardness, *strike, **path), "route": route}
+                changed = {}
+            origin = {("home",): "home", ("from",): f"{after}'s hover", ("from", "home"): f"{after}'s hover → home"}[approach]
+            description = (f"{origin} → hover → touch → press ({hardness:.0%} hardness, held {press_s:.2f} s) → hover"
+                           + ("" if path["stay"] else " → home"))
         except ValueError as exc:
             raise m.SafetyError(str(exc)) from exc
         if changed:
@@ -1230,7 +1159,7 @@ class Engine:
 
     @property
     def owns(self):
-        """The controls this follower plays: all of them, unless a second follower takes the chords and dial."""
+        """The controls this follower plays: all of them, unless a second follower takes the chords."""
         if self.fixed_owns:
             return self.fixed_owns
         return self.rig.owned(self.arm_id) if self.rig else tuple(CATALOG)
@@ -1489,7 +1418,7 @@ class Engine:
 
     def tune_check(self, control):
         m.require(isinstance(control, str) and control in CATALOG, "Choose a key to correct.")
-        m.require(CATALOG[control]["kind"] == "key", "Only keyboard keys can be corrected: chord buttons and the dial send no notes to check.")
+        m.require(CATALOG[control]["kind"] == "key", "Only keyboard keys can be corrected: chord buttons send no notes to check.")
         entry = self.recording_entry(control)
         m.require(self.shared_teach_home(), "No home is set. Set home with the leader first.")
         return entry
@@ -1832,10 +1761,9 @@ class Engine:
                 self.teach.hold()
                 self.transition("teach_hold", "Holding here.")
             return self.tune_stop("Correcting stopped; holding here. Nothing was saved for the key being corrected.")
-        if self.teaching_mode == "leader" and (action.startswith("capture_") or action.startswith("dial_capture_")):
+        if self.teaching_mode == "leader" and action.startswith("capture_"):
             m.require(not self.recording_error, self.recording_error)
-        if self.teaching_mode == "leader" and action in ("capture_hover", "capture_pressed", "capture_touch", "retreat_from_press",
-                "dial_capture_start", "dial_capture_contact", "dial_capture_turn", "dial_capture_lift", "dial_capture_return"):
+        if self.teaching_mode == "leader" and action in ("capture_hover", "capture_pressed", "capture_touch", "retreat_from_press"):
             m.require(isinstance(self.controller, LeaderController) and self.controller.enabled,
                       "Establish a follower hold for leader teaching first.")
             m.require(not self.controller.engaged, "Pause following before capturing a waypoint.")
@@ -2178,7 +2106,7 @@ class Engine:
                     self.controller.enabled = False
                 self.reset_note()
                 self.selected = selected
-                self.transition("dial_ready" if self.is_dial else "note_ready", self.ready_message())
+                self.transition("note_ready", self.ready_message())
         elif action == "move_home":
             self.require_phase("home_prepare")
             m.require(self.home_ready and isinstance(self.controller, LeaderController) and self.controller.enabled,
@@ -2226,10 +2154,7 @@ class Engine:
             self.controller.arm.check_clearance(current)
             home.append(self.route_approach, current, self.current, force=True)
             self.controller.set_local(current)
-            if self.is_dial:
-                self.transition("dial_ready", "Approach captured. Teach the local control motion here; pause before every capture.")
-            else:
-                self.begin_press_capture(current)
+            self.begin_press_capture(current)
         elif action == "capture_home_return":
             self.require_phase("home_return")
             m.require(args.get("path_clear") is True, "Confirm the entire return route was clear of the instrument.")
@@ -2264,59 +2189,6 @@ class Engine:
             m.require(0 <= value <= 4095, "Simulated leader is outside its encoder range.")
             # Human input unfolds over multiple worker ticks; no blocking motion command.
             self.simulated_leader_input = (name, delta)
-        elif action == "dial_capture_start":
-            self.require_phase("dial_ready")
-            settings = {field: str(args.get(field, "")).strip() for field in ("reference", "expected_effect")}
-            m.require(all(1 <= len(value) <= 160 for value in settings.values()),
-                      "Describe the reference chord/view and expected voicing change.")
-            m.require(args.get("fixed_pad") is True, "Confirm a fixed padded rim contact; no gripping or squeezing the dial.")
-            self.simulate_pose("dial_start")
-            current = self.stable()
-            self.capture = {**m.teaching_entry(self.arm, True, self.fixture["label"], current), **settings,
-                            "direction": self.control["direction"], "contact_method": "fixed_pad",
-                            "contact_surface": self.fixture.get("tool", "padded_gripper")}
-            self.transition("dial_approach", "Start clearance captured. Gently bring the fixed pad to the dial rim without rotating it.")
-        elif action in ("dial_capture_contact", "dial_capture_turn", "dial_capture_lift"):
-            expected_phase, marker, pose, following, message = {
-                "dial_capture_contact": ("dial_approach", "contact_index", "dial_contact", "dial_contact",
-                                         "Contact captured. Make a small turn in the selected direction, then hold steady."),
-                "dial_capture_turn": ("dial_contact", "turn_index", "dial_turn", "dial_turned",
-                                      "Turn captured. Lift the pad completely away from the rim without turning back."),
-                "dial_capture_lift": ("dial_turned", "release_index", "dial_lift", "dial_lifted",
-                                      "Lift-off captured. Stay clear of the dial and return near the initial clearance; watch the return error."),
-            }[action]
-            self.require_phase(expected_phase)
-            if action == "dial_capture_turn":
-                m.require(args.get("direction_verified") is True, "Confirm the selected direction and intended voicing change.")
-            if action == "dial_capture_lift":
-                m.require(args.get("rim_clear") is True, "Confirm the pad is completely clear of the dial rim.")
-            self.simulate_pose(pose)
-            current = self.stable()
-            m.append_capture(self.capture, current, force=True)
-            prior = 0 if marker == "contact_index" else self.capture["contact_index" if marker == "turn_index" else "turn_index"]
-            m.require(m.distance(self.capture["path"][prior], current) > 0, "Move to the next dial stage before capturing.")
-            candidate = {**self.capture, marker: len(self.capture["path"]) - 1}
-            dial.validate(candidate)
-            self.capture = candidate
-            self.transition(following, message)
-        elif action == "dial_capture_return":
-            self.require_phase("dial_lifted")
-            if self.teaching_mode == "leader":
-                m.require(args.get("hands_clear") is True, "Keep hands clear of the powered follower.")
-            else:
-                self.supported(args)
-            m.require(args.get("rim_clear") is True, "Confirm the entire return path stayed clear of the dial.")
-            self.simulate_pose("dial_start")
-            current = self.stable()
-            m.append_capture(self.capture, current, force=True)
-            draft = {**self.capture, "complete": True, "mode": self.mode, "fixture_id": self.fixture["id"],
-                     "control_id": self.selected, "teaching_mode": "web_dial_forward_loop"}
-            if self.teaching_mode == "leader":
-                draft["teaching_mode"] = "web_leader_dial_forward_loop"
-            if self.teaching_mode == "leader":
-                self.begin_home_return(draft)
-            else:
-                self.establish_hold(draft, dial.plan(draft))
         elif action == "capture_hover":
             self.require_phase("note_ready")
             self.simulate_pose("clear")
@@ -2380,17 +2252,13 @@ class Engine:
         elif action == "test":
             self.require_phase("holding", "saved")
             m.require(args.get("hands_clear") is True, "Confirm hands are clear of the motion path.")
-            if self.is_dial:
-                m.require(args.get("reference_reset") is True, "Restore the reference chord and voicing before each dial trial.")
             self.transition("testing", f"Testing {self.control['name']}: " +
                             ("home → approach → control motion → return home." if self.draft.get("home_motion") else
-                             "one forward nudge, lift-off, and clear return." if self.is_dial else "one press and release, then a hold at hover."))
+                             "one press and release, then a hold at hover."))
             try:
                 if self.draft.get("home_motion"):
                     home.validate(self.draft, self.home, self.controller.arm)
                     home.run(self.controller, self.draft)
-                elif self.is_dial:
-                    dial.run(self.controller, self.draft)
                 else:
                     self.controller.run(.2, already_holding=True)
                 self.controller.started = None
@@ -2400,8 +2268,6 @@ class Engine:
                 raise
         elif action == "pass":
             self.require_phase("result")
-            if self.is_dial:
-                m.require(args.get("effect_verified") is True, "Verify the dial direction, expected effect, and clear return without slip.")
             self.trials += 1
             entry = {**self.draft, "saved_at": m.stamp(), "verification": {
                 "successful_trials": self.trials,
@@ -2433,7 +2299,7 @@ class Engine:
             self.reset_note()
             if missing:
                 self.selected = missing[0]
-                self.transition("home_approach" if self.teaching_mode == "leader" else "dial_ready" if self.is_dial else "note_ready", self.ready_message())
+                self.transition("home_approach" if self.teaching_mode == "leader" else "note_ready", self.ready_message())
             else:
                 self.transition("ready", "This control group is registered. Rest the arm safely or select another group on the instrument.")
         elif action == "forget_connection":
@@ -2629,19 +2495,17 @@ class Engine:
                 self.selected = control
                 self.save_entry(entry)
                 updated += 1
-            for doc_name, attr, field in (("teach_home", "teach_home_doc", "point"), ("teach_rest", "teach_rest_doc", "point"),
-                                          ("teach_dial", "teach_dial_doc", "points")):
+            for doc_name, attr in (("teach_home", "teach_home_doc"), ("teach_rest", "teach_rest_doc")):
                 doc = getattr(self, attr)
                 if doc and doc.get("calibration_sha256") == old_signature:
-                    doc = {**doc, "calibration_sha256": signature,
-                           field: moved_point(doc[field]) if field == "point" else {n: moved_point(pt) for n, pt in doc[field].items()}}
+                    doc = {**doc, "calibration_sha256": signature, "point": moved_point(doc["point"])}
                     self.repo.put(doc_name, doc)
                     setattr(self, attr, doc)
             self.selected, self.teach_points_for = selected, None
             which = "this follower (the shared leader is unchanged)" if shared else "both arms"
             self.event("wrist_roll_recentered", f"Wrist rotation re-centred on {which} ({shifts}); {updated} taught motions updated.",
                        {"shifts": shifts, "updated": updated})
-            self.transition("ready", f"Wrist rotation re-centred on {which}. {updated} taught motions, home, rest and the dial "
+            self.transition("ready", f"Wrist rotation re-centred on {which}. {updated} taught motions, home and rest "
                             "were updated to match, so nothing needs re-teaching. Nothing moved.")
         elif action == "teach_set_rest":
             self.require_phase("teach_hold", "teach_follow")
@@ -2664,17 +2528,17 @@ class Engine:
             name = self.teach_control(args)
             points = self.points_for(self.selected)
             names = self.point_names(self.selected)
-            final = names[-1]  # press for a key, turn for the dial
+            final = names[-1]  # press
             point = args.get("point")
             expected = next((n for n in names if n not in points), None)
             m.require(point in names and (point == expected or point in points),
                       f"Capture {expected} next." if expected else "All steps are captured; select one to retrain it, or Play.")
             captured = self.capture_pose()
             # Retraining one step replaces only that step; the other steps are kept.
-            for a, b, ignore in STROKE_PAIRS["dial" if self.is_dial else "key"]:
+            for a, b in STROKE_PAIRS:
                 if point in (a, b) and (b if point == a else a) in points:
                     other = b if point == a else a
-                    joint, gap = stroke_gap(captured["goal"], points[other]["goal"], ignore)
+                    joint, gap = teach_motion.max_gap(captured["goal"], points[other]["goal"])
                     m.require(gap <= teach_motion.STROKE_LIMIT,
                               f"{point.title()} would be {gap:.0f}° from {other} on {joint}; neighbouring steps should be close "
                               f"(hover just above, then a short move down). Nothing was saved. Guide the arm to the right "
@@ -2683,36 +2547,24 @@ class Engine:
             points[point] = captured
             if point == "home":
                 self.save_teach_home(captured)
-            if self.is_dial and point in DIAL_SHARED:
-                shared = {**self.shared_dial_points(), point: captured}
-                self.teach_dial_doc = {**self.pose_doc(None), "points": shared}
-                self.teach_dial_doc.pop("point")
-                self.repo.put("teach_dial", self.teach_dial_doc)
             complete = all(n in points for n in names)
             if point == "home" and expected != "home":
                 self.transition(self.phase, "Home moved here. Every key now starts and ends at this home.")
             elif point == final or (complete and point != "home"):
                 self.reteaching = None  # the new motion is saved: nothing left to cancel
-                if self.is_dial:
-                    self.save_dial_entries(points)
-                else:
-                    self.save_entry({"format": WAYPOINT_FORMAT, "control_id": self.selected, "points": deepcopy(points),
-                                     "units": "lerobot_degrees_gripper_0_100",
-                                     "calibration_sha256": m.fingerprint(self.calibration),
-                                     "leader_calibration_sha256": m.fingerprint(self.leader_calibration),
-                                     "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp()})
+                self.save_entry({"format": WAYPOINT_FORMAT, "control_id": self.selected, "points": deepcopy(points),
+                                 "units": "lerobot_degrees_gripper_0_100",
+                                 "calibration_sha256": m.fingerprint(self.calibration),
+                                 "leader_calibration_sha256": m.fingerprint(self.leader_calibration),
+                                 "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp()})
                 if point == final:
                     self.teach_played, self.teach_returning = None, True
-                    back = teach_motion.dial_return_recording if self.is_dial else teach_motion.return_recording
-                    self.teach.play(back(points, self.selected), 1.0, force=True, settle_s=teach_motion.RETURN_SETTLE_S)
-                    self.transition("teach_play", (
-                        "Grip captured. The follower lets go, raises to the open pose, then goes to hover and home on its own. "
-                        "Set the turn angle for each direction and Play." if self.is_dial else
-                        "Press captured. The follower returns on its own: press → touch → hover → home.")
-                        + " Keep hands off the follower; you can leave the leader where it is.")
+                    self.teach.play(teach_motion.return_recording(points, self.selected), 1.0, force=True,
+                                    settle_s=teach_motion.RETURN_SETTLE_S)
+                    self.transition("teach_play", "Press captured. The follower returns on its own: press → touch → hover → home."
+                                    " Keep hands off the follower; you can leave the leader where it is.")
                 else:
-                    shared_note = " (shared by both dial directions)" if self.is_dial else ""
-                    self.transition(self.phase, f"{point.title()} re-captured for {name}{shared_note} and saved.")
+                    self.transition(self.phase, f"{point.title()} re-captured for {name} and saved.")
             else:
                 upcoming = next((n for n in names if n not in points), None)
                 self.transition(self.phase, f"{point.title()} {'re-captured' if retrained else 'captured'} for {name}. "
@@ -2857,7 +2709,7 @@ class Engine:
                 self.transition("disconnected", "Follower disconnected after supported torque release. Saved registrations are retained.")
             else:
                 retry = action == "retry" and self.calibrated and self.teaching_mode != "leader"
-                self.transition(("home_approach" if self.teaching_mode == "leader" else "dial_ready" if self.is_dial else "note_ready") if retry else "connected",
+                self.transition(("home_approach" if self.teaching_mode == "leader" else "note_ready") if retry else "connected",
                                 self.ready_message() if retry else "Torque OFF. Rest the arm safely or continue setup.")
         else:
             raise m.SafetyError("Unknown action")

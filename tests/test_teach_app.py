@@ -190,12 +190,11 @@ def test_playback_goes_home_hover_touch_press_and_back(engine):
     assert sent[-1] == pytest.approx(points["home"]["goal"])  # ends where it started
 
 
-def test_points_are_captured_in_order_and_dial_turns_are_not_reversed(engine):
+def test_points_are_captured_in_order(engine):
     following(engine)  # Teach saved home where the arm was
     assert "hover next" in reject(engine, "teach_capture", point="press", control="C")["message"]
     capture(engine, "hover")
     assert "touch next" in reject(engine, "teach_capture", point="press", control="C")["message"]
-    assert "hover next" in reject(engine, "teach_capture", point="turn", control="voicing.cw")["message"]
 
 
 def test_re_teaching_a_key_goes_through_every_step_again_and_keeps_the_old_motion_until_press(engine):
@@ -270,9 +269,9 @@ def test_one_teach_press_saves_home_and_starts_following(engine):
     assert engine.public["teach"]["points"] == ["home", "hover"]
 
 
-def test_dial_teach_saves_home_too(engine):
+def test_chord_button_teach_saves_home_too(engine):
     ready(engine)
-    command(engine, "teach_begin", control="voicing.cw", follow=True)
+    command(engine, "teach_begin", control="chord.maj", follow=True)
     assert engine.repo.get("teach_home") is not None and engine.phase == "teach_follow"
     assert engine.public["teach"]["points"] == ["home"]
 
@@ -495,72 +494,8 @@ def test_recentering_needs_both_arms_resting(engine):
     assert "not available" in reject(engine, "recenter_wrist_roll", supported=True)["message"]
 
 
-# --- voicing dial: hover, open, lower, grip are taught; the turn is an exact wrist rotation -------------
-
-
-def teach_dial(e, control="voicing.cw"):
-    move_leader(e, "shoulder_lift", 60)
-    capture(e, "hover", control)
-    for _ in range(3):
-        move_leader(e, "gripper", 96)  # jaws open, still above the knob
-    capture(e, "open", control)
-    move_leader(e, "wrist_flex", 24)  # lowered around the knob
-    capture(e, "lower", control)
-    for _ in range(2):
-        move_leader(e, "gripper", -96)  # jaws closed on it
-    capture(e, "grip", control)
-
-
-def test_dial_is_taught_as_hover_open_lower_grip_and_lets_go_after_the_grip(engine):
-    following(engine, "voicing.cw")
-    teach_dial(engine)
-    assert engine.phase == "teach_play" and engine.teach_returning
-    sent = spy(engine)
-    run(engine, 15, until=lambda: engine.phase == "teach_hold")
-    pts = engine.controls["voicing.cw"]["points"]
-    assert list(pts) == ["home", "hover", "open", "lower", "grip"]
-    assert sent[0]["gripper"] == pytest.approx(pts["grip"]["goal"]["gripper"], abs=1)  # starts gripping...
-    opened = next(g for g in sent if g["gripper"] == pytest.approx(pts["open"]["goal"]["gripper"], abs=0.01))
-    assert opened["wrist_flex"] == pytest.approx(pts["grip"]["goal"]["wrist_flex"])  # ...opens before raising
-    assert sent[-1] == pytest.approx(pts["home"]["goal"])
-    for control, degrees in (("voicing.cw", 20.0), ("voicing.ccw", -20.0)):  # both directions taught at once
-        assert engine.controls[control]["turn_degrees"] == degrees
-        assert engine.public["controls"][control]["status"] == "registered"
-
-
-def test_dial_playback_turns_only_the_wrist_and_lets_go_before_raising(engine):
-    following(engine, "voicing.cw")
-    teach_dial(engine)
-    run(engine, 15, until=lambda: engine.phase == "teach_hold")
-    pts = engine.controls["voicing.cw"]["points"]
-    grip = pts["grip"]["goal"]
-    for control, sign in (("voicing.cw", 1), ("voicing.ccw", -1)):
-        command(engine, "teach_play", control=control)
-        sent = spy(engine)
-        run(engine, 40, until=lambda: engine.phase == "teach_hold")
-        turned = max(sent, key=lambda g: sign * (g["wrist_roll"] - grip["wrist_roll"]))
-        assert turned["wrist_roll"] - grip["wrist_roll"] == pytest.approx(20 * sign, abs=0.01)
-        assert {k: v for k, v in turned.items() if k != "wrist_roll"} == pytest.approx(
-            {k: v for k, v in grip.items() if k != "wrist_roll"})  # nothing but the wrist moved
-        back = [b for a, b in zip(sent, sent[1:]) if sign * (b["wrist_roll"] - a["wrist_roll"]) < -1e-9]
-        assert all(g["wrist_flex"] == pytest.approx(pts["open"]["goal"]["wrist_flex"], abs=0.01) or
-                   g["gripper"] > pts["grip"]["goal"]["gripper"] + 5 for g in back)  # never un-turns while gripping
-        assert sent[-1] == pytest.approx(pts["home"]["goal"]) and engine.teach_played == control
-
-
-def test_turn_angle_is_set_per_direction_from_the_page(engine):
-    following(engine, "voicing.cw")
-    teach_dial(engine)
-    run(engine, 15, until=lambda: engine.phase == "teach_hold")
-    command(engine, "teach_play", control="voicing.cw", turn_degrees=35)
-    assert engine.controls["voicing.cw"]["turn_degrees"] == 35 and engine.controls["voicing.ccw"]["turn_degrees"] == -20
-    run(engine, 40, until=lambda: engine.phase == "teach_hold")
-    assert "between 1 and 90" in reject(engine, "teach_play", control="voicing.cw", turn_degrees=120)["message"]
-    assert "between 1 and 90" in reject(engine, "teach_play", control="voicing.cw", turn_degrees=0)["message"]
-
-
-def test_the_wrist_rotates_with_the_leader_for_keys_and_the_dial(engine):
-    for control in ("C", "voicing.cw"):
+def test_the_wrist_rotates_with_the_leader_for_keys_and_chord_buttons(engine):
+    for control in ("C", "chord.maj"):
         following(engine, control) if control == "C" else command(engine, "teach_follow", control=control)
         run(engine, 3, until=lambda: engine.teach.mode == "following")
         roll = engine.arm.current["wrist_roll"]
@@ -595,18 +530,6 @@ def test_the_wrist_follows_through_the_leaders_wrap_and_waits_at_its_own_end(eng
     engine.leader.current["wrist_roll"] = 1000  # a glitch: 92 deg in one tick is not a real turn
     run(engine, teach.PERIOD)
     assert engine.arm.current["wrist_roll"] == pytest.approx(3700, abs=3)
-
-
-def test_dial_steps_from_the_earlier_design_must_be_retaught(engine):
-    following(engine, "voicing.cw")
-    teach_dial(engine)
-    run(engine, 15, until=lambda: engine.phase == "teach_hold")
-    old = engine.controls["voicing.cw"]
-    engine.repo.save_control("voicing.cw", {**old, "points": {n: p for n, p in old["points"].items() if n != "lower"}})
-    engine.controls = engine.repo.controls()
-    engine.publish()
-    assert engine.public["controls"]["voicing.cw"]["status"] == "needs_reteach"
-
 
 
 # --- press length, speed, sequences, API --------------------------------------------------------------
@@ -858,7 +781,7 @@ def test_a_pose_the_wrist_could_not_turn_to_is_refused_and_an_old_one_is_held_wh
 
 
 
-def test_cancelling_a_re_teach_keeps_the_saved_motion_and_the_dials_shared_steps(engine):
+def test_cancelling_a_re_teach_keeps_the_saved_motion(engine):
     following(engine)
     teach_points(engine, "C")
     run(engine, 10, until=lambda: engine.phase == "teach_hold")
@@ -880,20 +803,6 @@ def test_cancelling_a_re_teach_keeps_the_saved_motion_and_the_dials_shared_steps
     run(engine, teach.PERIOD)
     assert engine.public["teach"]["points"] == ["home"]
     command(engine, "teach_cancel_reteach")
-    # The dial's shared steps are saved as each is captured; cancelling puts them back.
-    command(engine, "teach_hold")
-    command(engine, "teach_follow", control="voicing.cw")
-    run(engine, 3, until=lambda: engine.teach.mode == "following")
-    teach_dial(engine)
-    run(engine, 15, until=lambda: engine.phase == "teach_hold")
-    shared = deepcopy(engine.repo.get("teach_dial"))
-    command(engine, "teach_follow", control="voicing.cw")
-    run(engine, 3, until=lambda: engine.teach.mode == "following")
-    move_leader(engine, "shoulder_lift", 30)
-    capture(engine, "hover", "voicing.cw")
-    assert engine.repo.get("teach_dial") != shared
-    command(engine, "teach_cancel_reteach")
-    assert engine.repo.get("teach_dial") == shared
 
 
 def test_the_path_test_plays_every_key_hover_to_hover_and_reports_each_move(engine, monkeypatch):

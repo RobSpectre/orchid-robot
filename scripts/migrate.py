@@ -6,8 +6,8 @@
     python3 scripts/migrate.py inspect orchid-state-....tar.gz
     python3 scripts/migrate.py import orchid-state-....tar.gz [--force]
 
-The bundle holds what git does not: the hardware console database (taught keys, home/rest poses,
-dial steps, speed and press settings, motor calibrations), its backups and incident reports, the
+The bundle holds what git does not: the hardware console database (taught keys and chord buttons,
+home/rest poses, speed and press settings, motor calibrations), its backups and incident reports, the
 LeRobot calibration files used by teach_key.py, and any teach_key.py recordings (keys/*.json).
 Standard library only. Export works while the console runs (SQLite online backup); import refuses
 while a console owns the data directory and never overwrites without --force (then the current

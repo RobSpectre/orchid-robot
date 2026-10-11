@@ -32,9 +32,6 @@ SETTLE_S = 1.0
 MIN_RECORDING_S = 0.5
 MAX_STEP_DT = 0.25  # a stalled loop must not turn into one large ramp step
 POINTS = ("home", "hover", "touch", "press")
-DIAL_POINTS = ("home", "hover", "open", "lower", "grip")  # all shared by CW and CCW; the turn is computed
-TURN_LIMIT = 90.0  # deg: largest wrist turn a dial direction may use
-GRIP_DWELL_S = 0.2
 TRAVEL_SPEED = 45.0  # peak deg/s between home and hover
 STROKE_SPEED = 20.0  # peak deg/s between hover, touch and press
 MIN_SEGMENT_S = 0.4
@@ -147,43 +144,6 @@ def press_for(sound_s: float, recording: dict, speed: float) -> float:
     marks = recording["marks"]
     strokes = (marks["press"] - marks["strike"]) + (marks["release"] - marks["lift"])
     return max(0.0, sound_s * speed - strokes)
-
-
-def _turned(points: dict, degrees: float) -> dict:
-    """The turn is the grip pose with only the wrist rotated; then let go in place and raise to the open pose."""
-    grip, opened = points["grip"], points["open"]
-    roll, width = grip["goal"]["wrist_roll"] + degrees, opened["goal"]["gripper"]
-    return {**points,
-            "turn": {"goal": {**grip["goal"], "wrist_roll": roll}, "measured": grip["measured"]},
-            "release": {"goal": {**grip["goal"], "wrist_roll": roll, "gripper": width}, "measured": grip["measured"]},
-            "raise": {"goal": {**opened["goal"], "wrist_roll": roll}, "measured": opened["measured"]}}
-
-
-def check_turn(points: dict, degrees: float) -> None:
-    if not 0 < abs(degrees) <= TURN_LIMIT:
-        raise ValueError(f"Choose a turn between 1 and {TURN_LIMIT:.0f} degrees (negative turns the other way).")
-    if abs(points["grip"]["goal"]["wrist_roll"] + degrees) >= 179:
-        raise ValueError("That turn would cross the wrist sensor's -180/+180 edge. Re-centre wrist rotation, or use a smaller turn.")
-
-
-def dial_recording(points: dict, degrees: float, key: str = "") -> dict:
-    """home -> hover -> open -> lower -> grip -> turn -> let go -> raise -> hover -> home. Never turns back while gripping."""
-    missing = [name for name in DIAL_POINTS if name not in points]
-    if missing:
-        raise ValueError("Capture " + ", ".join(missing) + " first.")
-    check_turn(points, degrees)
-    return {"key": key, "frames": _frames(_turned(points, degrees), [
-        ("home", "hover", TRAVEL_SPEED), ("hover", "open", STROKE_SPEED), ("open", "lower", STROKE_SPEED),
-        ("lower", "grip", STROKE_SPEED), ("grip", "grip", GRIP_DWELL_S), ("grip", "turn", STROKE_SPEED),
-        ("turn", "release", STROKE_SPEED), ("release", "release", GRIP_DWELL_S), ("release", "raise", STROKE_SPEED),
-        ("raise", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)])}
-
-
-def dial_return_recording(points: dict, key: str = "") -> dict:
-    """Right after capturing the grip (no turn while teaching): let go, raise to open, hover, home."""
-    return {"key": key, "frames": _frames(_turned(points, 0.0), [
-        ("grip", "release", STROKE_SPEED), ("release", "release", GRIP_DWELL_S), ("release", "raise", STROKE_SPEED),
-        ("raise", "hover", STROKE_SPEED), ("hover", "home", TRAVEL_SPEED)])}
 
 
 def sequence_recording(recordings: list, key: str = "sequence") -> dict:

@@ -5,8 +5,7 @@ from . import motion as m
 from .home import HomeArm, TRAVEL_PHASES
 
 FOLLOW_LEASE = 1.2  # Browser permission lease, not a motor tuning parameter.
-TEACH_PHASES = ("home_positioning", "home_arrival", "note_ready", "note_hover", "note_pressed", "note_touch", "dial_ready", "dial_approach",
-               "dial_contact", "dial_turned", "dial_lifted", *TRAVEL_PHASES)
+TEACH_PHASES = ("home_positioning", "home_arrival", "note_ready", "note_hover", "note_pressed", "note_touch", *TRAVEL_PHASES)
 
 
 class LeaderController(m.Controller):

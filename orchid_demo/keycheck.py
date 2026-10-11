@@ -6,9 +6,8 @@ check reads those events for the play's time window and compares them with what 
 
 * keys        the right note name sounded once, and only once in the play's time for that key; velocity, when in the press stroke, how long it held
 * key + chord (the other arm holding a chord button) the press sounded several notes, the key among them, and the
-              chord's tones: pitch classes above the key, so the voicing dial's inversions and octaves do not matter
+              chord's tones: pitch classes above the key, so Orchid's voicing (inversions and octaves) does not matter
 * chord       buttons send no MIDI on their own, so none is expected (a note would be a stray press)
-* dial        voicing-dial clicks (CC115 positions) moved during the turn
 
 Read-only: never changes motion, and a missing or stopped Studio only marks the check unavailable.
 """
@@ -100,12 +99,6 @@ def check_step(step, started, speed, events, window=None):
               # what Orchid sent for this press (its first), whatever it was: a looped score keeps this pass's notes
               "midi": sorted(presses[0].get("notes") or []) if presses else [],
               "velocity": presses[0].get("velocity") if presses else None}
-    if item["kind"] == "dial":
-        clicks = [e for e in inside if e["type"] == "voicing"]
-        moved = sum(e["delta"] or 0 for e in clicks)
-        status = "ok" if clicks else "missed"
-        text = f"{item['label']} turned the dial {moved:+d} clicks" if clicks else f"{item['label']}: the dial did not click"
-        return {**result, "status": status, "clicks": moved, "value": clicks[-1].get("value") if clicks else None, "text": text}
     if item["kind"] == "button":
         if presses:
             return {**result, "status": "stray", "text": f"{item['name']}: a key sounded ({', '.join(result['notes'])})"}

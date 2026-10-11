@@ -26,8 +26,8 @@ Colour beyond the four buttons comes from Orchid Studio (see SKILL.md for the sc
   `pulse`, `offbeat`, `backbeat`, `tresillo`, `shuffle`, …), `harp`, and Studio's generative modes (`bloom`, `orbit`,
   `drift`, `spark`, …), which add their own melodic motion. Tune `step_beats` and `gate`.
 - `fx`: reverb and delay; sweep them over a section.
-- `voicing` (the dial, if taught): a new inversion and register. Each move costs the Chord Arm seconds, so change it
-  at section changes only.
+- Voicing (a new inversion and register) is not played by the arms: Orchid Studio's `chord-voicing` command sets it in
+  software. The voicing dial is the operator's stop control.
 - Four **loop layers**. `loop_slot` puts the pass in one layer; `loop_layers` (see SKILL.md) hands one pass to several,
   each with its own `octave`, `hold` (`legato` sustains each chord to the next), `merge` (overdub onto what the layer
   already plays), `sound`, `fx` and `perform`. Think in layers: pad, motion, bass, colour.

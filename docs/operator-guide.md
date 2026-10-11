@@ -90,16 +90,16 @@ Leader teaching records the motion you make with the leader and replays it, usin
 3. **Teach C** (or select another key or chord button first). The follower's goal is set to its measured pose, LeRobot's `SOFollower.configure` applies its motor settings, and torque holds it there. The first time, that pose becomes the arm's **home**, used by every key. Then the follower ramps to the leader's pose at up to 30°/s and mirrors it 1:1. Keep hands off the follower and hold the leader roughly where the follower is. If the follower was already powered, the page first asks you to support it: torque blinks off for a moment while the settings are written.
 4. **Hover, touch, press.** Guide the follower just above the key and press Space (hover); lower until the tip just touches without pressing, Space (touch); press only until it sounds, Space (press). A beep confirms each capture. Tapping ✓ Touch or ✓ Hover re-captures it before you go on. Tapping ✓ Home moves the arm's one home: every key, including keys already taught, then starts and ends there, and no key's hover/touch/press is cleared. Each point stores the commanded goal, so the press replays the depth you taught even where the key stopped the arm.
 5. After the press is captured the follower returns on its own: press → touch → hover → home, then holds at home, and the key counts as taught. Put the leader back at rest before following again (following always ramps to wherever the leader is).
-6. **Play.** The follower ramps to home (up to 30°/s, faster at higher speeds), waits until it has settled there, then goes home → hover → touch → press, holds the press for the key's **Press length** (default 0.3 s, 0–60 s), and returns the same way, with smooth joint moves (45°/s peak between home and hover, 20°/s for the strokes, at 1×). **Arm speed** is one global slider in the top bar (0.25–3×, where 3× is the maximum). Letting go of it saves it, and it applies from the next play to every key, chord button, dial turn and the API; try a new key at 1× first. **Press hardness** (top bar, 10–100%, default 50%) slows only the final touch → press stroke of every key and chord button, as a share of the other strokes: lower is gentler, 100% is as fast as the strokes. It applies from the next play; it does not change the press depth, and the release is not slowed. A press length typed next to Play is saved for that key when you play it. If the arm did not reach home (more than 8° off), it holds and offers **Play anyway**.
+6. **Play.** The follower ramps to home (up to 30°/s, faster at higher speeds), waits until it has settled there, then goes home → hover → touch → press, holds the press for the key's **Press length** (default 0.3 s, 0–60 s), and returns the same way, with smooth joint moves (45°/s peak between home and hover, 20°/s for the strokes, at 1×). **Arm speed** is one global slider in the top bar (0.25–3×, where 3× is the maximum). Letting go of it saves it, and it applies from the next play to every key, chord button and the API; try a new key at 1× first. **Press hardness** (top bar, 10–100%, default 50%) slows only the final touch → press stroke of every key and chord button, as a share of the other strokes: lower is gentler, 100% is as fast as the strokes. It applies from the next play; it does not change the press depth, and the release is not slowed. A press length typed next to Play is saved for that key when you play it. If the arm did not reach home (more than 8° off), it holds and offers **Play anyway**.
 7. **Rest.** Click **☾ Rest** on the map, follow the leader to where the arm should wait, and press **Set rest here**. **Go to rest** moves the arm there (up to 30°/s) when you want it parked. Playback always ends at home, where the arm waits between key presses; a Play from rest first moves up to home. Home and rest are held for minutes. A joint held against its end of travel keeps its motor pushing, and the arm shivers. So the arm holds home and rest about 4° (45 encoder steps) inside each joint's travel, wrist rotation excepted. You can set them folded against a stop. The follower's wrist rotation reaches about ±168°. Its wrist follows the leader's as one continuous turn, even when the leader's reading wraps from +180° to −180°. When the leader is turned further than the follower's wrist can go, the follower's wrist waits at its end, and the training page says so. It follows again as soon as you turn the leader back within reach. A pose captured there is saved where the follower's wrist actually is. Capturing any pose (home, rest or a taught step) is refused when the follower's wrist is more than 4° short of the leader's. A pose saved like that earlier is played and held at the rotation the wrist reached.
 8. Select another key on the map, press **Follow the leader**, and capture its hover, touch and press.
-   **Re-teaching** a key, chord button or the dial goes through every step again, in order, as the first time. Following a
-   taught control starts from hover (hover, open, lower and grip for the dial). Its saved motion is kept, and still
+   **Re-teaching** a key or chord button goes through every step again, in order, as the first time. Following a
+   taught control starts from hover. Its saved motion is kept, and still
    plays, until the last step is captured. **✕ Cancel re-teach** drops the steps captured so far and keeps the saved
-   motion exactly as it was, including the dial's shared steps; the arm keeps following or holding. Following again part
+   motion exactly as it was; the arm keeps following or holding. Following again part
    way carries on from the next step. Release torque from **Release or disconnect** with the arm supported or resting.
 
-Moves between points are straight lines in joint space, not obstacle-avoiding paths. If the move from home to hover passes too close to Orchid, capture hover higher or choose a home closer to the keys. **Voicing dial.** Select **↻ CW** or **↺ CCW** and teach, with the leader, **hover** (above the knob), **open** (jaws open, still above it), **lower** (lowered around the knob, not touching) and **grip** (jaws closed on it). These four steps are shared by both directions. Capturing the grip lets go, raises to the open pose, then goes to hover and home on its own. The turn is not taught with the leader: each direction has an angle (default +20° CW, −20° CCW; flip the sign if it turns the wrong way, up to ±90°), and playback rotates only the wrist by it. Playback: home → hover → open → lower → grip → turn → let go in place → raise to the open pose → hover → home; it never turns back while gripping. While following, the follower's wrist rotates with the leader's on either arm, and a taught point keeps the rotation it had when captured. Wrist rotation's reading wraps at ±180°. The follower's wrist follows the leader's as one continuous turn, waits at its own end (about ±168°) when the leader is turned further (the console says so), and follows again once the leader is turned back within reach. A dial direction's turn is still the computed wrist rotation from the grip.
+Moves between points are straight lines in joint space, not obstacle-avoiding paths. If the move from home to hover passes too close to Orchid, capture hover higher or choose a home closer to the keys. While following, the follower's wrist rotates with the leader's on either arm, and a taught point keeps the rotation it had when captured. Wrist rotation's reading wraps at ±180°. The follower's wrist follows the leader's as one continuous turn, waits at its own end (about ±168°) when the leader is turned further (the console says so), and follows again once the leader is turned back within reach.
 
 Following and playback clip each goal to 15° from the measured pose (LeRobot's `max_relative_target` rule): a lagging or blocked joint is limited, never faulted. There are no tracking, settle, stall, home or route checks. **Stop motion** (Esc) holds the follower at its measured pose and stays in the teaching session. Losing the operator page for five seconds stops with a hold. A recording stays valid until the follower calibration changes. This is joint position control, without collision or force sensing; keep the physical power stop within reach.
 
@@ -118,9 +118,8 @@ the check off). After a play the console shows **Orchid heard: C ✓ velocity 72
 press, held 0.31 s**, or **Check the arm: C: wrong key, B sounded**, a missed note or a repeated one. The
 API and `scripts/orchid.py` report the same as `key_check`, and each result is saved in the session log.
 
-Keys are compared by note name, because the voicing dial can move the octave. Chord buttons send no MIDI
-on their own, so they are reported as unchecked unless a key sounds. Dial turns report the voicing-dial
-clicks they produced. The check never changes or repeats a motion; if Studio is not running, it is marked
+Keys are compared by note name, because Orchid's voicing can move the octave. Chord buttons send no MIDI
+on their own, so they are reported as unchecked unless a key sounds. The check never changes or repeats a motion; if Studio is not running, it is marked
 unavailable and the play is unaffected.
 
 ### Correct keys with Orchid
@@ -178,7 +177,7 @@ the model's zero points are estimated, not its geometry. The finger keeps its an
 passes. The leader-taught hover, touch and press are kept, and correcting again always starts from them, so
 corrections cannot creep. Gripper opening and wrist roll are never changed. **Stop motion**, **Stop correcting**,
 release and disconnect end it, including the rest of the list. Correcting runs from the console only, not the API,
-and only for keyboard keys, since chord buttons and the dial send no notes. Correct the keys again after moving the
+and only for keyboard keys, since chord buttons send no notes. Correct the keys again after moving the
 arm or Orchid, or after changing Arm speed or Press hardness a lot.
 
 The key check after every play also reports two keys struck together ("C and C# sounded together"): the finger landed
@@ -193,7 +192,7 @@ shows **Keys Arm** and **Chord Arm**; with one follower the console looks as it 
 is recognised by the calibration stored in its motors' position limits (read-only), so the connect page preselects the
 right port and refuses to connect the Keys Arm's hardware as the Chord Arm, which would overwrite its calibration. A scan never probes a
 port the other arm has open. Each arm is only ever taught and plays its own controls: the Keys Arm the twelve keys, the Chord Arm the
-chord buttons and voicing dial, whether or not the other arm is connected. The Chord Arm keeps its own data in `DATA_DIR/arm-b` (calibration,
+chord buttons, whether or not the other arm is connected. The Chord Arm keeps its own data in `DATA_DIR/arm-b` (calibration,
 home, taught controls); The Keys Arm's data is unchanged. The console shows the chosen arm's connection, calibration, training
 and key correction, and greys out the other arm's controls. **Stop motion** and Esc stop both arms.
 
@@ -211,8 +210,7 @@ arm being taught with the leader, as long as it holds still: you guide that arm 
 home, Go to rest, the API) still wait until both arms have somewhere to park.
 
 **Guided training.** On **03 Train controls**, each arm shows the steps it needs taught, in order, with a progress bar:
-home, rest, then its controls (the Keys Arm's 12 keys; the Chord Arm's Dim, Min, Maj and Sus buttons and the voicing
-dial, one step for both directions). The extension buttons (6, m7, M7, 9) are left out of the guide for now; they can
+home, rest, then its controls (the Keys Arm's 12 keys; the Chord Arm's Dim, Min, Maj and Sus buttons). The extension buttons (6, m7, M7, 9) are left out of the guide for now; they can
 still be taught by selecting them on the map. The next untrained step is highlighted. When the step in hand is trained, the console moves on to the
 next one by itself once the arm is still, so you can work through them one by one; **Go to step N** jumps back to the
 next untrained step after you look at another. Tap any step to re-teach or play it. The counter at the top shows the
@@ -248,7 +246,7 @@ gap: the links are about 45 mm wide and the model can be 2 cm off, so teach chor
 any other move on either arm is refused until both are parked again. **Stop motion** during a chord holds both arms
 where they are, the chord button possibly still down. **Hold & keep playing**, then send the Chord Arm home. If the Keys Arm's
 key is refused or does not start, the Chord Arm lets go and returns home. With Orchid Studio, the key check confirms the chord by
-its tones above the key (so the voicing dial's inversions do not matter). It reports a press that sounded only the key
+its tones above the key (so Orchid's voicing, its inversions and octaves, does not matter). It reports a press that sounded only the key
 as "the chord button was not held".
 
 The 3D view's **Plate** button shows the registration plate, Orchid in its pocket and both arms on their mounts with
@@ -259,7 +257,7 @@ can be about 2 cm off: use it to see where the arms are, not to judge clearance 
 
 ## Play from scripts or Claude (API)
 
-While the console is open, connected and holding (Play, Teach or Follow any control once; playing needs only the follower), taught controls can be played from `scripts/orchid.py`, the `orchid-keys` Claude skill or any program, through the **performance API**. Programs can play music, send the arms home or to rest, and Stop. orchid-robot carries out every move itself, in a safe order, through its own checks. Everything else is the console's alone, and programs are refused it (HTTP 403): holding, arm speed, press hardness, dial angles, connecting, and every console command. The console page is recognised by the `Origin` its browser sends. orchid-robot plays **one performance at a time**, refusing a second caller while one runs, so two programs can never drive the arms at once. A performance that finds an arm connected but not holding (after a restart, say) takes the hold itself, where the arm is, only when that needs no torque gap: the motors unpowered, or powered with every setting LeRobot writes already in place (read back register by register, nothing written). Otherwise it is refused with what to do: hold it from the console with a hand on the arm. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply. The console's operator id is never published.
+While the console is open, connected and holding (Play, Teach or Follow any control once; playing needs only the follower), taught controls can be played from `scripts/orchid.py`, the `orchid-keys` Claude skill or any program, through the **performance API**. Programs can play music, send the arms home or to rest, and Stop. orchid-robot carries out every move itself, in a safe order, through its own checks. Everything else is the console's alone, and programs are refused it (HTTP 403): holding, arm speed, press hardness, connecting, and every console command. The console page is recognised by the `Origin` its browser sends. orchid-robot plays **one performance at a time**, refusing a second caller while one runs, so two programs can never drive the arms at once. A performance that finds an arm connected but not holding (after a restart, say) takes the hold itself, where the arm is, only when that needs no torque gap: the motors unpowered, or powered with every setting LeRobot writes already in place (read back register by register, nothing written). Otherwise it is refused with what to do: hold it from the console with a hand on the arm. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply. The console's operator id is never published.
 
 ```bash
 python3 scripts/orchid.py status                 # controls, speed, default note value, readiness
@@ -304,10 +302,8 @@ each in its own octave (whatever octave Orchid is set to), held as written or le
 plays (`merge`), with its own level, sound, fx and Perform settings: so short, on-time arm notes become sustained pads, a
 bass and an arpeggio. All of these need
 Orchid Studio (`--studio-port`), and effects need its native audio host rebuilt once (`orchid-studio build-host`).
-`voicing` (0–127, at the start or in `changes`) sets Orchid's own voicing dial. The Chord Arm turns it and checks
-Orchid's reported position, sizing each turn from how far the last one moved it and remembering that in
-`DATA_DIR/voicing.json`. A change between notes delays the next note by the turns it takes, and the plan counts that.
-It needs both dial directions taught and Studio's key monitor on.
+A score does not set Orchid's voicing: the arms never turn the voicing dial. Set it in software with Orchid Studio's
+`chord-voicing` command.
 
 **Timing is learned.** Every note Orchid reports tells orchid-robot when that key sounded in its press. That is split
 into where in the stroke each key triggers and one delay for the whole rig (servo lag and MIDI, about 0.1 s), so the
@@ -323,23 +319,9 @@ Select a button on the left of the instrument map. The upper row is **Dim, Min, 
 
 Set up a reference chord and keep Orchid's playstyle consistent. A chord button is not necessarily a standalone note trigger: extensions require a chord, and chord-type behavior depends on playstyle. Review the display and musical response as well as the clean physical release. The app records individual button motions; it does not coordinate simultaneous key/button combinations. **Continue at home** advances within the chord group during leader teaching; manual teaching uses **Release & continue**. After the group is complete, select another group on the map.
 
-## Register the large voicing dial
+## Orchid's voicing dial
 
-Train **CW** and **CCW** separately. This first workflow uses a fixed rubber-covered or padded tip to nudge the rim. It does not squeeze, clamp, or press down on the dial. If the tips cannot reliably move the rim without slipping, reject the attempt and revise the contact setup before powered testing.
-
-Before capture, describe the **reference chord and starting voicing** (the instrument's Geek Out view can help) and the **expected change** from this small gesture. This dial controls relative voicing changes; the number of clicks per inversion depends on the chord. Do not assume a gesture reaches an absolute setting or always changes one inversion.
-
-| Step | Operator action |
-| --- | --- |
-| Start | Support the arm with torque off, set the reference voicing, and capture a position just clear of the rim. |
-| Contact | Bring the fixed tip into light rim contact without turning or pressing down. Capture. |
-| Turn | Make a small turn in the selected direction. Observe the expected change, confirm it, and capture. |
-| Lift off | Lift completely clear without reversing the turn or dragging the rim. Confirm clearance and capture. |
-| Return | Stay clear of the instrument and return near the initial clearance. Watch the live return error (target ≤ 6 encoder ticks). Confirm the whole return was clear, support the arm, and capture to establish a hold. |
-| Test | With the tip held clear, manually restore the reference chord/voicing. Confirm that reset and hands clear, then test one gesture. |
-| Review | Accept only the intended direction and expected effect, with no slipping, downward press, or reverse turn during return. Reset the reference and repeat until three trials pass. |
-
-The powered trial follows the recorded loop forward, including the lift-off and separate clear return. It does not replay the turning stroke backward as it does for a key release. Clearance and musical effect remain operator observations: encoder checks cannot detect rim contact or count dial detents. Teaching the two directions adds two motions to the twelve keys and eight chord buttons, for **22 registered motions** total.
+The arms do not play Orchid's large voicing dial, and there is nothing to teach for it: the instrument has **20 registered motions** (twelve keys, eight chord buttons). Voicing is set in software instead, with Orchid Studio's `chord-voicing` command. The dial is reserved as the operator's stop control.
 
 Instrument references: [Playstyles](https://support.telepathicinstruments.com/hc/en-us/articles/15280843614863-What-s-the-Difference-Between-Playstyles), [chord extensions](https://support.telepathicinstruments.com/hc/en-us/articles/16576229505167-Chord-Extensions-Explained), and [voicing and inversions](https://support.telepathicinstruments.com/hc/en-us/articles/15292199149839-Voicing-Engine-and-Inversions).
 
@@ -376,7 +358,7 @@ This new web workflow has not yet been validated on the repaired physical arm. B
 3. Complete the full calibration and restart/reconnect once to verify saved calibration matches motor readback.
 4. Teach C with minimal contact depth. Watch the handover hold, each of the three test presses, and release. Confirm the intended note, full key release, repeatability, and no excessive pressure.
 5. Test software stop and browser-loss behavior while holding at a safe clearance. Verify supported recovery and the independently accessible physical stop. Do not test failures with the pad pressing the key.
-6. Repeat registration for the other 11 notes and eight chord buttons. Commission one small dial direction before attempting the other; verify tip grip, actual voicing change, lift-off clearance, and repeatability from the same reference. The dial workflow also needs physical validation.
+6. Repeat registration for the other 11 notes and eight chord buttons.
 7. Save fixture marks, glove/pad details, date, and the exported session. Re-teach after contact-tool, glove-fit, opening, hardware, or placement changes.
 
 Encoder position and tracking checks cannot measure force, detect every collision, or guarantee safety after mechanical slippage. Automatic performances, travel between keys, force sensing, and velocity-sensitive playing are future work.

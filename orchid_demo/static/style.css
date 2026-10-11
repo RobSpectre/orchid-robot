@@ -1281,7 +1281,6 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .form-field input,.form-field select { background: #1c1d1a; }
 .note-title .note-symbol { font-size: 37px; color: #f1ce84; }
 .note-title .eyebrow { margin-bottom: 8px; font-size: 8px; }
-.dial-symbol { font-family: ui-sans-serif,system-ui,sans-serif!important; }
 .countdown button { color: var(--ink); }
 .motor .torque { color: #d4b978; }
 .instrument-shell { margin-bottom: 26px; border: 1px solid #e0bd7a; border-radius: 16px; background: #ad884f; padding: 0 9px 9px; box-shadow: 0 12px 30px #0003, inset 0 -4px 0 #6f5532; }
@@ -1291,7 +1290,7 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .instrument-face { border-radius: 9px; border: 1px solid #151714; padding: 23px 24px 16px; background: linear-gradient(160deg,#292a26,#1e201c 78%); box-shadow: inset 0 1px 1px #77705a; }
 .instrument-topline { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 26px; font-size: 8px; letter-spacing: 1px; color: #bcb09b; }
 .lamp { display: inline-block; width: 6px; height: 6px; background: #f88942; border-radius: 50%; margin-right: 7px; box-shadow: 0 0 7px #f588423d; }
-.instrument-controls { display: grid; grid-template-columns: minmax(160px,1.15fr) minmax(115px,.65fr) minmax(270px,2fr); gap: 27px; align-items: start; }
+.instrument-controls { display: grid; grid-template-columns: minmax(160px,1.15fr) minmax(270px,2fr); gap: 27px; align-items: start; }
 .instrument-controls .section-line { margin-bottom: 17px; }
 .instrument-controls h2 { font-size: 11px; letter-spacing: .1px; color: #e3d8c1; font-weight: 500; }
 .instrument-controls .subtle { font-size: 9px; font-variant-numeric: tabular-nums; }
@@ -1301,18 +1300,10 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .chord-button strong { display: block; font-size: 12px; font-weight: 500; }
 .chord-button small { display: block; font-size: 6px; margin-top: 5px; letter-spacing: .2px; }
 .chord-button:hover:enabled { background: #5e5948; }
-.chord-button:disabled,.direction-button:disabled { opacity: 1; }
-.chord-button.selected,.direction-button.selected { outline: 1px solid #edba55; outline-offset: 2px; }
-.chord-button.registered,.direction-button.registered { color: #f8d992; border-color: #bb934d; }
-.chord-button.testing,.chord-button.needs_reteach,.direction-button.testing,.direction-button.needs_reteach { border-color: #e77944; }
-.voicing-bank { padding: 0 2px; }
-.voicing-knob { width: 78px; height: 78px; margin: 0 auto 10px; border-radius: 50%; padding: 7px; background: repeating-conic-gradient(#4f5047 0deg 3deg,#141612 3deg 7deg); box-shadow: 1px 7px 4px #0008; }
-.voicing-knob span { display: block; width: 100%; height: 100%; border-radius: 50%; border: 1px solid #54554b; background: radial-gradient(ellipse at 30% 20%,#41443c,#20231d 80%); box-shadow: 0 1px 3px #0006; }
-.dial-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-.direction-button { padding: 6px 2px; min-height: 35px; background: #282a24; border: 1px solid #595743; color: #e0be7d; border-radius: 4px; }
-.direction-button strong { font-size: 10px; font-weight: 600; }
-.direction-button small { display: block; font-size: 6px; margin-top: 3px; }
-.direction-button:hover:enabled { background: #524732; }
+.chord-button:disabled { opacity: 1; }
+.chord-button.selected { outline: 1px solid #edba55; outline-offset: 2px; }
+.chord-button.registered { color: #f8d992; border-color: #bb934d; }
+.chord-button.testing,.chord-button.needs_reteach { border-color: #e77944; }
 .surface-caption { font-size: 6px; letter-spacing: 1.3px; color: #a19985; margin: 15px 0 0; }
 .instrument-face > .subtle { border-top: 1px solid #49493b; padding-top: 12px; margin: 16px 0 0; font-size: 9px; }
 .keyboard { gap: 4px; }
@@ -1327,22 +1318,18 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .reference-card > span { font-size: 8px; letter-spacing: 1.3px; color: #c6ab6e; }
 .reference-card p { font-size: 12px; margin: 5px 0 14px; overflow-wrap: anywhere; }
 .reference-card p:last-child { margin-bottom: 0; }
-.return-meter { padding: 15px; border: 1px solid #655738; color: #cab98c; border-radius: 6px; font-size: 12px; }
-.return-meter strong { color: #ffe2a3; margin-left: 12px; font-variant-numeric: tabular-nums; }
-.return-meter span { display: block; margin-top: 7px; font-size: 10px; }
 @media(max-width:1200px) {
-  .instrument-controls { grid-template-columns: minmax(175px,1.1fr) minmax(120px,.6fr) minmax(230px,1.6fr); gap: 18px; }
+  .instrument-controls { grid-template-columns: minmax(175px,1.1fr) minmax(230px,1.6fr); gap: 18px; }
   .instrument-face { padding: 20px 18px 15px; }
   .instrument-topline { gap: 10px; font-size: 7px; }
   .chord-button strong { font-size: 11px; }
   .instrument-topline .legend { gap: 7px; font-size: 7px; }
 }
 @media(max-width:1080px) {
-  .instrument-controls { grid-template-columns: 1.7fr 1fr; gap: 22px; }
+  .instrument-controls { grid-template-columns: 1fr; gap: 22px; }
   .note-bank { grid-column: 1 / -1; }
   .chord-button { height: 52px; }
   .instrument-topline { flex-wrap: wrap; gap: 12px; }
-  .voicing-knob { width: 67px; height: 67px; }
   .instrument-controls .note-bank .key { height: 108px; }
   .instrument-controls .note-bank .key.sharp { height: 65px; }
   .surface-caption { margin-top: 12px; }
@@ -1352,7 +1339,7 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
   .instrument-rail { min-height: 29px; padding: 3px 9px; font-size: 7px; }
   .instrument-rail small,.rail-slots { display: none; }
   .instrument-face { padding: 17px 13px 12px; }
-  .instrument-controls { gap: 18px; grid-template-columns: minmax(0,1.5fr) minmax(95px,1fr); }
+  .instrument-controls { gap: 18px; grid-template-columns: minmax(0,1fr); }
   .instrument-controls .section-line { gap: 5px; margin-bottom: 13px; }
   .instrument-controls h2 { font-size: 10px; }
   .instrument-controls .subtle { font-size: 8px; }
@@ -1680,7 +1667,7 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
   color:var(--red);
 }
 
-.key.other-arm:disabled, .chord-button.other-arm:disabled, .direction-button.other-arm:disabled {
+.key.other-arm:disabled, .chord-button.other-arm:disabled {
   opacity:.3;
 }
 

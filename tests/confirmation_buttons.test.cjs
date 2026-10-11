@@ -434,27 +434,25 @@ test('the global arm speed slider shows the saved speed and saves when released'
   assert.match(page,/id="arm-speed" type="range" min="0.25" max="3"/);
 });
 
-test('the dial is taught as hover, open, lower and grip, with a turn angle per direction',()=>{
+test('a chord button is taught as hover, touch and press, with a press length and no dial turn',()=>{
   const ui=consoleHarness();
   const render=(phase,teach,status='empty',extra={})=>{
-    vm.runInContext(`state.teaching_mode="leader";state.phase=${JSON.stringify(phase)};state.message="m";state.selected="voicing.cw";
-      state.catalog={"voicing.cw":{id:"voicing.cw",label:"Clockwise",kind:"dial",direction:"cw",name:"Voicing · clockwise"}};
-      state.selected_control=state.catalog["voicing.cw"];state.keys={};
-      state.controls={"voicing.cw":{status:${JSON.stringify(status)},recorded:${status!=='empty'},...${JSON.stringify(extra)}}};
-      state.teach=${JSON.stringify({points_for:'voicing.cw', ...teach})};selectedNote=null;targetPoint=null;`,ui.context);
+    vm.runInContext(`state.teaching_mode="leader";state.phase=${JSON.stringify(phase)};state.message="m";state.selected="chord.maj";
+      state.catalog={"chord.maj":{id:"chord.maj",label:"Maj",kind:"button",group:"chords",name:"Major"}};
+      state.selected_control=state.catalog["chord.maj"];state.keys={};
+      state.controls={"chord.maj":{status:${JSON.stringify(status)},recorded:${status!=='empty'},...${JSON.stringify(extra)}}};
+      state.teach=${JSON.stringify({points_for:'chord.maj', ...teach})};selectedNote=null;targetPoint=null;`,ui.context);
     return vm.runInContext('teachWorkflow(state)',ui.context);
   };
   const primary=html=>(html.match(/<div class="actions"><button data-action="([a-z_]+)" class="primary"(?: data-point="(\w+)")?/)||[]).slice(1).join(':');
   const html=render('teach_follow',{mode:'following',points:['home']});
-  for (const step of ['hover','open','lower','grip']) assert.match(html,new RegExp(`data-target-point="${step}"`));
-  assert.doesNotMatch(html,/data-target-point="(touch|press|turn)"|teach_record|turn-degrees/);
+  for (const step of ['hover','touch','press']) assert.match(html,new RegExp(`data-target-point="${step}"`));
+  assert.doesNotMatch(html,/data-target-point="(open|lower|grip|turn)"|turn-degrees/);
   assert.equal(primary(html),'teach_capture:hover');
-  const gripping=render('teach_follow',{mode:'following',points:['home','hover','open','lower']});
-  assert.equal(primary(gripping),'teach_capture:grip');
-  assert.match(gripping,/Capture grip &amp; let go|Capture grip & let go/);
-  const taught=render('teach_hold',{mode:'holding',points:['home','hover','open','lower','grip']},'registered',{turn_degrees:35});
+  const taught=render('teach_hold',{mode:'holding',points:['home','hover','touch','press']},'registered',{press_s:0.4});
   assert.equal(primary(taught),'teach_play:');
-  assert.match(taught,/id="turn-degrees"[^>]*value="35"/);
+  assert.match(taught,/id="press-seconds"[^>]*value="0.4"/);
+  assert.doesNotMatch(taught,/turn-degrees/);
 });
 
 test('saving a leader-positioned home requires its positioning phase and a paused hold',()=>{

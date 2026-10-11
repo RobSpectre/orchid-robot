@@ -281,36 +281,15 @@ def test_the_conductor_fires_each_change_on_its_bar_line_and_moves_it_with_its_n
     assert conductor.due(later[0], {0: 100.0}) == pytest.approx(100.0 + 4.0 + 2.0)
 
 
-def test_the_voicing_dial_is_turned_until_orchid_reports_the_target(tmp_path):
-    from orchid_demo import voicing
-    dial = {"value": 40, "reported": False}
-
-    def turn(control, degrees):  # this dial: clockwise lowers it, 0.25 clicks a degree; its first report has no delta
-        clicks = round(abs(degrees) * 0.25) * (-1 if control == "voicing.cw" else 1)
-        dial["value"] += clicks
-        first, dial["reported"] = not dial["reported"], True
-        return (0 if first else clicks), dial["value"]
-    learned = voicing.load(tmp_path / "v.json")
-    report = voicing.set_voicing(52, None, turn, learned)
-    assert report["ok"] and report["reached"] == 52 and len(report["turns"]) <= voicing.MAX_TURNS
-    assert learned["up"] == "voicing.ccw" and learned["clicks_per_degree"] == pytest.approx(0.25, abs=0.08)
-    voicing.save(tmp_path / "v.json", learned)
-    again = voicing.set_voicing(45, 52, turn, voicing.load(tmp_path / "v.json"))
-    assert again["ok"] and again["turns"][0]["control"] == "voicing.cw"  # down, the learned way, first time
-    stuck = voicing.set_voicing(10, 45, lambda control, degrees: (0, None), dict(voicing.DEFAULTS))
-    assert not stuck["ok"] and len(stuck["turns"]) == 2 and "not catching it" in stuck["reason"]
-
-
-def test_a_voicing_change_between_notes_is_planned_as_time_before_the_note():
+def test_the_next_key_is_planned_from_the_last_keys_hover():
     from orchid_demo import score
     placed = score.steps([{"bar": 1, "beat": 1, "key": "C", "duration": "1"}, {"bar": 2, "beat": 1, "key": "E"}], "1")
 
     def timing(step, after=None):
         return {"lead": 0.5 if after else 0.8, "rise": 0.9, "lift": 0.4, "chord_press": 0.6, "chord_release": 0.7}
-    without = score.plan(placed, 0.5, timing)["moves"][0]["to_bar"]  # C held its bar: E already moves
+    plan = score.plan(placed, 0.5, timing)  # C held its bar: E already moves
     assert placed[0]["needs_s"] == pytest.approx(2.0 + 0.8 + 0.5)  # up to C's hover, straight to E's, down to E
-    plan = score.plan(placed, 0.5, timing, before={1: 6.0})  # and 6 s of turning the dial before E, from home
-    assert placed[0]["needs_s"] == pytest.approx(2.0 + 1.3 + 0.8 + 6.0) and (without, plan["moves"][0]["to_bar"]) == (3, 7)
+    assert plan["moves"][0]["to_bar"] == 3
 
 
 def test_a_note_a_hair_late_is_played_now_not_a_bar_later():

@@ -1,7 +1,7 @@
 """A taught home, measured approach/return routes, and bounded supervised playback."""
 from copy import deepcopy
 
-from . import motion as m, dial
+from . import motion as m
 
 MAX_TRAVEL_SAMPLES = 1024
 MAX_ROUTE_TIME = 600.0
@@ -86,8 +86,8 @@ def _validate_path(path, arm):
 
 def plan(entry):
     travel = entry["home_motion"]
-    local = dial.plan(entry) if entry.get("direction") else m.plan(entry)
-    stroke = local if entry.get("direction") else local + list(reversed(local[:-1]))
+    local = m.plan(entry)
+    stroke = local + list(reversed(local[:-1]))
     # Joins are short, explicitly verified clearance poses; never a transit shortcut.
     result = travel["approach"] + stroke + travel["return"]
     grip = travel["approach"][0]["gripper"]
@@ -106,10 +106,7 @@ def validate(entry, reference, arm):
     travel = entry.get("home_motion")
     m.require(isinstance(travel, dict) and travel.get("home_id") == reference["id"],
               "This route belongs to a different home. Teach it again from the current home.")
-    if entry.get("direction"):
-        dial.validate(entry, complete=True)
-    else:
-        m.validate_entry(entry, complete=True)
+    m.validate_entry(entry, complete=True)
     for path in (travel.get("approach"), travel.get("return")):
         _validate_path(path, arm)
     for p in entry["path"]:

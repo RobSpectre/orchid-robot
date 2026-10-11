@@ -51,7 +51,7 @@ def a_teaches_c_then_hands_over_the_leader(a, b):
 
 def test_each_arm_plays_only_its_own_controls(rig):
     r, a, b = rig
-    assert Rig.control_arm("C") == "a" and Rig.control_arm("chord.maj") == "b" and Rig.control_arm("voicing.cw") == "b"
+    assert Rig.control_arm("C") == "a" and Rig.control_arm("chord.maj") == "b" and Rig.control_arm("chord.9") == "b"
     with pytest.raises(SafetyError, match="played by the other arm"):
         a.teach_control({"control": "chord.maj"})
     with pytest.raises(SafetyError, match="played by the other arm"):
@@ -151,7 +151,7 @@ def test_each_arm_is_only_ever_taught_its_own_controls(dynamic):
     assert a.owns == ROLES["a"] and b.owns == ROLES["b"]  # with or without the other arm connected
     connect(a)
     assert a.public["selected"] in ROLES["a"]
-    for action, args in (("teach_begin", {"control": "chord.maj", "follow": True}), ("control_start", {"control": "voicing.cw"}),
+    for action, args in (("teach_begin", {"control": "chord.maj", "follow": True}), ("control_start", {"control": "chord.sus"}),
                          ("teach_sequence", {"steps": [{"control": "C"}, {"control": "chord.min"}]}),
                          ("tune_start", {"controls": ["C", "chord.dim"], "beside_arm": True})):
         assert "played by the other arm" in reject(a, action, **args)["message"], action
