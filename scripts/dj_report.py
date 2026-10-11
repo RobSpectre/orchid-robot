@@ -138,7 +138,7 @@ def main():
             fixes.append((0, f"Studio's key monitor is {monitor.get('status')} ({monitor.get('error')}): nothing is being checked. Tell the operator."))
         if not looper.get("running"):
             fixes.append((1, "The loops are stopped: the groove has stopped. Start them (loop-start) or tell the operator."))
-        layers = [l for l in looper.get("layers") or [] if l.get("notes")]
+        layers = [entry for entry in looper.get("layers") or [] if entry.get("notes")]
         loop_beats = bars * 4
         for layer in layers:
             slot = layer["slot"]
@@ -162,9 +162,9 @@ def main():
             if vels and st.median(vels) < QUIET and not layer.get("muted"):
                 fixes.append((2, f"Layer {slot} was recorded at velocity {st.median(vels)}: replace it with a louder take."))
         # Rhythm: where in the bar notes start, across the playing layers (a Perform mode's restrikes count, as heard).
-        live = [l for l in layers if not l.get("muted")]
+        live = [entry for entry in layers if not entry.get("muted")]
         if live:
-            onsets = sorted({round(n["beat"] * 4) / 4 for l in live for n in l["notes"]})  # to the 16th
+            onsets = sorted({round(n["beat"] * 4) / 4 for entry in live for n in entry["notes"]})  # to the 16th
             in_bar = {round(t % 4, 2) for t in onsets}
             off_beat = [t for t in onsets if t % 1]
             on_one = [t for t in onsets if t % 4 == 0]
@@ -182,7 +182,7 @@ def main():
             clash, steps = [], 0
             for i in range(int(loop_beats * 2)):
                 t = i / 2
-                pcs = {n["note"] % 12 for l in live for n in l["notes"] if n["beat"] <= t < n["beat"] + n.get("duration", 1)}
+                pcs = {n["note"] % 12 for entry in live for n in entry["notes"] if n["beat"] <= t < n["beat"] + n.get("duration", 1)}
                 if not pcs:
                     continue
                 steps += 1

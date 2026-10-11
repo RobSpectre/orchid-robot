@@ -6,7 +6,7 @@ from pathlib import Path
 import secrets
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -89,6 +89,27 @@ class ScoreChange(StudioSettings):
     beat: float = Field(default=1, ge=1, lt=5)
 
 
+class LoopLayer(StudioSettings):
+    """One Studio loop layer that keeps this pass: what Orchid sent, on the written beats, shaped for the layer's part.
+    sound and fx (when given) go to this layer's voice only; perform is the layer's Perform settings."""
+    slot: StrictInt = Field(ge=1, le=4)
+    # The part's register, whatever octave Orchid is set to: each chord moves by whole octaves until its lowest note is
+    # in this octave (MIDI's, C4 = 60: 2 for a bass, 3 for pads, 5 for a line above them). Then transpose moves it by
+    # semitones. Notes moved outside MIDI 0-127 are left out.
+    octave: StrictInt | None = Field(default=None, ge=0, le=8)
+    transpose: StrictInt = Field(default=0, ge=-36, le=36)
+    # How long each chord sounds in the layer: "written" (its written length), "legato" (until the next chord in the
+    # layer, the last one to the loop's end) or a number of beats (cut short at the next chord). With "legato" the arms
+    # can play short, on-time notes while the loop holds the harmony.
+    hold: Literal["written", "legato"] | float = "written"
+    # Overdub: add this pass to what the layer already plays (a note at the same beat is replaced) instead of replacing
+    # the layer, so a part too dense for the arms in one pass can be built over several.
+    merge: bool = False
+    # The layer's velocity (1-127) instead of the one Orchid reported for each press.
+    velocity: StrictInt | None = Field(default=None, ge=1, le=127)
+    voicing: None = None  # the dial is Orchid's, set on the score
+
+
 class ScoreRequest(StudioSettings):
     events: list[ScoreEvent] = Field(min_length=1, max_length=512)
     changes: list[ScoreChange] = Field(default_factory=list, max_length=64)  # sound, perform and fx at chosen bars
@@ -98,6 +119,9 @@ class ScoreRequest(StudioSettings):
     # The loop layer's velocity (1-127) instead of the one Orchid reported for each press: Orchid's notes and voicing,
     # at a level that sits in the mix. Without it the layer keeps the press velocity (often 15-40).
     loop_velocity: StrictInt | None = Field(default=None, ge=1, le=127)
+    # Instead of loop_slot: several layers that each keep this pass, each with its own register, hold, overdub, level,
+    # sound, fx and Perform settings (one arm pass can feed a pad and an arpeggio, say).
+    loop_layers: list[LoopLayer] = Field(default_factory=list, max_length=4)
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
     plan_only: bool = False
 
@@ -651,7 +675,12 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                     raise HTTPException(404, f"Unknown control {step['chord']!r}.")
         start = {k: v for k, v in (("sound", body.sound), ("perform", body.perform), ("fx", body.fx)) if v}
         dial = [body.voicing] + [c.voicing for c in body.changes]
-        if (start or body.changes or body.loop_slot or body.voicing is not None) and studio is None:
+        if body.loop_slot and body.loop_layers:
+            raise HTTPException(422, "Give loop_slot (one layer) or loop_layers (several), not both.")
+        layers = list(body.loop_layers) or ([LoopLayer(slot=body.loop_slot, velocity=body.loop_velocity)] if body.loop_slot else [])
+        if len({layer.slot for layer in layers}) != len(layers):
+            raise HTTPException(422, "Each loop layer can keep a pass once: give every slot one entry.")
+        if (start or body.changes or layers or body.voicing is not None) and studio is None:
             raise HTTPException(409, "Sound, perform, fx, voicing and looping need Orchid Studio (voicing is checked by its "
                                      "key monitor): start the app with Orchid Studio (--studio-port), or leave them out.")
         if any(v is not None for v in dial):
@@ -662,7 +691,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                     raise HTTPException(409, f"{CATALOG[control]['name']} is not taught on the Chord Arm: teach the dial to set "
                                              "the voicing.")
         loop = None
-        if body.loop_slot:
+        if layers:
             try:
                 looper = studio("status").get("looper") or {}
             except SafetyError as exc:
@@ -670,7 +699,14 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             if not looper.get("running"):
                 raise HTTPException(409, "Studio's loops are not playing. Start them (loop-start) so the composition has a loop to "
                                          "land in, then send the score again.")
-            loop = {"slot": body.loop_slot, "bars": looper["settings"]["bars"]}
+            if len(layers) > 1 and "pending_composes" not in looper:
+                raise HTTPException(409, "This Orchid Studio keeps one waiting composition at a time, so a pass cannot land in "
+                                         "several layers: update Studio, or send one loop layer.")
+            loop = {"slot": layers[0].slot, "bars": looper["settings"]["bars"]}
+            if len(layers) > 1:
+                loop["slots"] = [layer.slot for layer in layers]
+        # The score's sound and fx go to the live voice and to every layer that has none of its own.
+        voices = (score.STUDIO_VOICE,) + tuple(layer.slot for layer in layers if layer.sound is None and layer.fx is None)
         speed = engine.snapshot()["teach_settings"]["speed"]  # the console's: never a caller's
         timing = score_timing(speed)
         learned = score.load(timing_file)
@@ -702,9 +738,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             return {"status": "planned", "plan": planned, "message": plan_note(planned)}
         perform_running = bool(studio and (start or later) and (studio("status").get("performance")))
 
-        def apply(settings):
+        def apply(settings, voices=voices):
             done = []
-            voices = (score.STUDIO_VOICE, body.loop_slot) if body.loop_slot else (score.STUDIO_VOICE,)
             for command, fields, text in score.setting_steps(settings, perform_running, voices):
                 studio(command, **fields)
                 done.append(text)
@@ -727,6 +762,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             return report
         try:  # the starting settings, and any change before the first note, are in place before anything plays
             applied_start = apply(start) if start else []
+            for layer in layers:  # a layer with a sound or fx of its own: on its voice only
+                own = {k: v for k, v in (("sound", layer.sound), ("fx", layer.fx)) if v}
+                applied_start += apply(own, voices=(layer.slot,)) if own else []
             for change in [c for c in later if c["event"] == 0]:
                 applied_start += apply(change)
             for target, bar in [(body.voicing, placed[0]["bar"])] + [(c["voicing"], c["bar"]) for c in later if c["event"] == 0]:
@@ -770,7 +808,11 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if len(strikes) == len(placed) and not result.get("error"):  # a whole performance: learn how long changes took
             score.save(timing_file, score.learn(learned, placed, strikes, timing, before))
         if loop:  # what the arms played on this pass, each chord on its written beat, for Studio's loop to repeat
-            loop.update(keep_pass(placed, result, loop, body.perform, body.loop_velocity))
+            kept = [{"slot": layer.slot, **keep_pass(placed, result, layer, loop["bars"] * music.BEATS_PER_BAR,
+                                                    layer.perform or body.perform)} for layer in layers]
+            loop.update({k: v for k, v in kept[0].items() if k != "slot"})
+            if len(kept) > 1:
+                loop["layers"] = kept
         studio_report = {"start": applied_start, **fired, **({"loop": loop} if loop else {}), **({"voicing": voiced} if voiced else {})}
         note = plan_note(planned, played)
         if fired["errors"] or fired["missed"]:
@@ -778,18 +820,28 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 [f"bar {e['bar']}: {e['error']}" for e in fired["errors"]] + [f"bar {m_['bar']} (after the last note)" for m_ in fired["missed"]]) + "."
         return {**result, "plan": planned, "played": played, "studio": studio_report, "message": note}
 
-    def keep_pass(placed, result, loop, perform=None, velocity=None):
-        """Hand Studio's loop this pass: what Orchid sent for each note, placed on its written beat (score.take). It
-        takes over at the next loop boundary."""
+    def keep_pass(placed, result, layer, loop_beats, perform=None):
+        """Hand a Studio loop layer this pass: what Orchid sent for each note, placed on its written beat (score.take),
+        in the layer's register, held as the layer asks and, for an overdub, added to what the layer plays. It takes
+        over at the next loop boundary."""
         check = result.get("key_check") or {}
         heard = result.get("heard") or check.get("steps") or []  # step by step: one per note, in place; one motion: in order
         if not any(h.get("midi") for h in heard):
             reason = ("nothing sounded on this pass" if check and check.get("status") != "unavailable" else
                       "the note check did not hear this pass (is Orchid Studio's key monitor on?)")
             return {"kept": False, "reason": reason + ": the loop layer is unchanged"}
-        chords, missed = score.take(placed, heard, velocity)
-        try:  # the layer plays through the score's own Perform settings (Studio fills in the rest from its defaults)
-            reply = studio("loop-compose", slot=loop["slot"], chords=chords, **({"settings": perform} if perform else {}))
+        chords, missed = score.take(placed, heard, layer.velocity, layer.transpose, layer.octave)
+        if not chords:
+            return {"kept": False, "reason": "no note of this pass fits MIDI's range in this register: the loop layer is "
+                                             "unchanged", "missed": missed}
+        try:
+            if layer.merge:  # what the layer plays now (a composition still waiting for its boundary is not counted)
+                document = studio("loop-export").get("document") or {}
+                current = next((entry for entry in document.get("layers") or [] if entry.get("slot") == layer.slot), {})
+                chords = score.merge(current.get("chords") or [], chords)
+            chords = score.hold(chords, layer.hold, loop_beats)
+            # the layer plays through its Perform settings (Studio fills in the rest from its defaults)
+            reply = studio("loop-compose", slot=layer.slot, chords=chords, **({"settings": perform} if perform else {}))
         except SafetyError as exc:
             return {"kept": False, "reason": str(exc), "missed": missed}
         return {"kept": True, "chords": len(chords), "missed": missed,

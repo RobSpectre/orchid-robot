@@ -228,16 +228,53 @@ def fits(placed: list, loop_beats: float) -> None:
                   f"{loop_beats / music.BEATS_PER_BAR:g}-bar loop: lengthen the loop (loop-configure) or shorten the score.")
 
 
-def take(placed: list, heard: list, velocity=None) -> tuple:
+def register(notes: list, octave=None, transpose=0) -> list:
+    """A chord's notes in a layer's register: octave (MIDI's, C4 = 60) moves the chord by whole octaves until its lowest
+    note is in that octave, whatever octave Orchid itself is set to; then transpose moves it by semitones. Notes off
+    MIDI's 0-127 are left out."""
+    shift = transpose + (12 * ((octave + 1) - min(notes) // 12) if octave is not None and notes else 0)
+    return [n + shift for n in notes if 0 <= n + shift <= 127]
+
+
+def take(placed: list, heard: list, velocity=None, transpose=0, octave=None) -> tuple:
     """This pass as Studio loop chords: what Orchid sent for each note (its notes, voicing and velocity), placed on the
     note's written beat for its written length, however early or late it was. heard: the key check's steps, one per
     note in order. A note nothing sounded for is left out. velocity: the layer's level instead of each press's.
-    Returns (chords, the notes left out)."""
+    octave, transpose: the layer's register (register()). Returns (chords, the notes left out)."""
     chords, missed = [], []
     for step, note in zip(placed, list(heard) + [{}] * (len(placed) - len(heard))):
-        if not note.get("midi"):
+        notes = register(list(note.get("midi") or ()), octave, transpose)
+        if not notes:
             missed.append({"bar": step["bar"], "beat": step["beat"], "key": step["control"], "chord": step.get("chord")})
             continue
-        chords.append({"beat": step["offset"], "duration": max(0.125, step["beats"]), "notes": list(note["midi"]),
+        chords.append({"beat": step["offset"], "duration": max(0.125, step["beats"]), "notes": notes,
                        "velocity": velocity or note.get("velocity") or 80})
     return chords, missed
+
+
+def merge(existing: list, chords: list) -> list:
+    """Overdub: this pass's chords added to what a layer already plays. A chord at the same beat as one of this pass's
+    is replaced by it. existing: the layer's chords as Studio exports them (one entry per note: beat, duration, note,
+    velocity) or as chords (notes)."""
+    grouped = {}
+    for entry in existing:
+        chord = grouped.setdefault(round(float(entry["beat"]), 4), {"beat": float(entry["beat"]), "duration": 0.125,
+                                                                    "notes": [], "velocity": 1})
+        chord["notes"] += entry["notes"] if "notes" in entry else [entry["note"]]
+        chord["duration"] = max(chord["duration"], float(entry["duration"]))
+        chord["velocity"] = max(chord["velocity"], int(entry.get("velocity") or 80))
+    for chord in chords:
+        grouped[round(chord["beat"], 4)] = dict(chord)
+    return [{**c, "notes": sorted(set(c["notes"]))} for _, c in sorted(grouped.items())]
+
+
+def hold(chords: list, how, loop_beats: float) -> list:
+    """How long each chord sounds in the loop layer: "written" (as written), "legato" (until the next chord, the last
+    one to the loop's end) or a number of beats, cut short at the next chord."""
+    chords = sorted((dict(c) for c in chords), key=lambda c: c["beat"])
+    if how == "written":
+        return chords
+    for chord, nxt in zip(chords, chords[1:] + [None]):
+        room = (nxt["beat"] if nxt else loop_beats) - chord["beat"]
+        chord["duration"] = max(0.125, room if how == "legato" else min(float(how), room))
+    return chords

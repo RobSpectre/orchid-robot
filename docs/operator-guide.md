@@ -301,7 +301,10 @@ step, gate), and its effects (`fx`: reverb and delay). It can set them at the st
 (`changes`). Changes land on their bar line, and move with it when the music before it moved later. With
 `loop_slot` and Studio's loops playing, the score starts on the loop's next pass. The arms play it once. Then Studio's
 loop layer gets what Orchid sent on that pass, each chord on its written beat for its written length, and repeats it
-from the next loop boundary. A chord nothing sounded for is left out. All of these need
+from the next loop boundary. A chord nothing sounded for is left out. `loop_layers` hands one pass to several layers,
+each in its own octave (whatever octave Orchid is set to), held as written or legato, overdubbed onto what the layer
+plays (`merge`), with its own level, sound, fx and Perform settings: so short, on-time arm notes become sustained pads, a
+bass and an arpeggio. All of these need
 Orchid Studio (`--studio-port`), and effects need its native audio host rebuilt once (`orchid-studio build-host`).
 `voicing` (0–127, at the start or in `changes`) sets Orchid's own voicing dial. The Chord Arm turns it and checks
 Orchid's reported position, sizing each turn from how far the last one moved it and remembering that in

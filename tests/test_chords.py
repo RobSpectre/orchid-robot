@@ -22,15 +22,17 @@ def plate(tmp_path, monkeypatch):
     slow = lambda s: time.sleep(min(s, 0.005))  # noqa: E731  real clock, fast simulated sweeps
     a = Engine(tmp_path, sleep=slow, owns=ROLES["a"])
     b = Engine(tmp_path / "arm-b", sleep=slow, owns=ROLES["b"], leader_store=LeaderStore(a.repo))
-    calls = []
+    calls, looper, exported = [], {"running": True, "settings": {"bars": 4}}, []
 
     def studio(command, **fields):  # a stand-in for Orchid Studio: what was sent, and when
         calls.append((command, fields, time.monotonic()))
         if command == "status":
-            return {"status": "ok", "performance": None, "looper": {"running": True, "settings": {"bars": 4}}}
+            return {"status": "ok", "performance": None, "looper": looper}
+        if command == "loop-export":
+            return {"status": "ok", "document": {"layers": exported}}
         return {"status": "ok", **({"composed": {"applies_at_beat": 16}} if command == "loop-compose" else {})}
     with TestClient(create_app(tmp_path, engines={"a": a, "b": b}, studio=studio), base_url="http://127.0.0.1") as client:
-        client.studio_calls = calls
+        client.studio_calls, client.looper, client.exported = calls, looper, exported
         token = client.get("/api/session").json()["token"]
         headers = {"x-orchid-token": token, "x-orchid-operator": str(uuid4()), "origin": "http://127.0.0.1"}
 
@@ -299,6 +301,67 @@ def test_a_looped_score_hands_studio_this_pass_with_each_chord_on_its_written_be
                                                "plan_only": True}, headers=auth)
     assert too_long.status_code == 409 and "past the end of Studio's 4-bar loop" in too_long.json()["detail"]
 
+
+
+def test_one_pass_feeds_several_loop_layers_each_in_its_register_hold_and_sound(plate):
+    """Short, on-time arm notes; the pad layer holds each chord to the next (legato), the bass layer is the same pass two
+    octaves down, an overdub adds to what the layer already plays, and each layer gets its own sound."""
+    from orchid_demo.keycheck import KeyChecker
+    client, a, b, command, auth = plate
+    sent = {"C": ([60, 64, 67], 40), "D": ([62], 40)}
+    a.key_checker = KeyChecker(lambda: [{"type": "press", "t": a.play_steps[0]["due"], "name": a.play_steps[0]["key"],
+                                         "notes": sent[a.play_steps[0]["key"]][0], "velocity": 40}], settle_s=0, background=False)
+    events = [{"bar": 1, "beat": 1, "key": "C", "chord": "chord.maj", "duration": "1/4"},
+              {"bar": 3, "beat": 1, "key": "D", "duration": "1/4"}]
+    client.exported[:] = [{"slot": 1, "chords": [{"beat": 4.0, "duration": 2.0, "note": 55, "velocity": 70},
+                                                 {"beat": 4.0, "duration": 2.0, "note": 59, "velocity": 70},
+                                                 {"beat": 8.0, "duration": 1.0, "note": 50, "velocity": 70}]}]
+    client.looper["pending_composes"] = []
+    calls = client.studio_calls
+    body = {"events": events, "sound": 52, "loop_layers": [
+        {"slot": 1, "hold": "legato", "merge": True, "velocity": 72, "perform": {"mode": "off"}},
+        {"slot": 3, "transpose": -24, "hold": 2, "sound": 45, "fx": {"reverb": {"mix": 8}}}]}
+    played = client.post("/api/score", json=body, headers=auth)
+    assert played.status_code == 200, played.text
+    composed = {f["slot"]: f for c, f, _ in calls if c == "loop-compose"}
+    # the pad: the overdub keeps the layer's chord at beat 4, the pass replaces the one at beat 8, all held legato
+    assert composed[1]["chords"] == [{"beat": 0.0, "duration": 4.0, "notes": [60, 64, 67], "velocity": 72},
+                                     {"beat": 4.0, "duration": 4.0, "notes": [55, 59], "velocity": 70},
+                                     {"beat": 8.0, "duration": 8.0, "notes": [62], "velocity": 72}]
+    assert composed[1]["settings"] == {"mode": "off"}
+    # the bass: two octaves down, each note held two beats, at the press velocity
+    assert composed[3]["chords"] == [{"beat": 0.0, "duration": 2.0, "notes": [36, 40, 43], "velocity": 40},
+                                     {"beat": 8.0, "duration": 2.0, "notes": [38], "velocity": 40}]
+    sent_settings = [(c, f) for c, f, _ in calls]
+    assert ("layer-preset", {"slot": 3, "preset": 45}) in sent_settings and ("layer-preset", {"slot": 1, "preset": 52}) in sent_settings
+    assert ("layer-preset", {"slot": 3, "preset": 52}) not in sent_settings  # the bass has its own sound
+    loop = played.json()["studio"]["loop"]
+    assert loop["kept"] and loop["slots"] == [1, 3] and [entry["slot"] for entry in loop["layers"]] == [1, 3]
+    del client.looper["pending_composes"]  # an older Studio drops all but the last composition waiting for a boundary
+    refused = client.post("/api/score", json=body, headers=auth)
+    assert refused.status_code == 409 and "one waiting composition" in refused.json()["detail"]
+    one = client.post("/api/score", json={**body, "loop_layers": body["loop_layers"][:1]}, headers=auth)
+    assert one.status_code == 200, one.text
+    both = client.post("/api/score", json={**body, "loop_slot": 2}, headers=auth)
+    assert both.status_code == 422
+
+
+def test_loop_layer_hold_and_merge_shape_the_chords():
+    from orchid_demo import score
+    chords = [{"beat": 8.0, "duration": 1.0, "notes": [62], "velocity": 80}, {"beat": 0.0, "duration": 0.5, "notes": [60], "velocity": 80}]
+    assert [c["duration"] for c in score.hold(chords, "legato", 32)] == [8.0, 24.0]
+    assert [c["duration"] for c in score.hold(chords, 12, 32)] == [8.0, 12.0]
+    assert [c["duration"] for c in score.hold(chords, "written", 32)] == [0.5, 1.0]
+    assert score.merge([{"beat": 4, "duration": 2, "note": 67, "velocity": 50}, {"beat": 4, "duration": 2, "note": 64, "velocity": 60}],
+                       chords) == [{"beat": 0.0, "duration": 0.5, "notes": [60], "velocity": 80},
+                                   {"beat": 4.0, "duration": 2.0, "notes": [64, 67], "velocity": 60},
+                                   {"beat": 8.0, "duration": 1.0, "notes": [62], "velocity": 80}]
+    placed = [{"bar": 1, "beat": 1, "control": "C", "offset": 0.0, "beats": 1.0}]
+    assert score.take(placed, [{"midi": [10, 60]}], transpose=-24) == ([{"beat": 0.0, "duration": 1.0, "notes": [36], "velocity": 80}], [])
+    assert score.take(placed, [{"midi": [10]}], transpose=-24)[1][0]["key"] == "C"  # off MIDI's range: left out
+    assert score.register([26, 29, 33], octave=3) == [50, 53, 57]  # Orchid set low: the pad still sits in octave 3
+    assert score.register([62, 65, 69], octave=3) == [50, 53, 57] and score.register([62], octave=2) == [38]
+    assert score.register([57, 60, 64], octave=5, transpose=-12) == [69, 72, 76]
 
 
 def test_a_score_needs_the_dial_taught_to_set_the_voicing(plate):

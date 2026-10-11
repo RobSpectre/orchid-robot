@@ -128,6 +128,24 @@ velocity, placed exactly on its written beat for its written length. So it repea
 their timing slips, from the next loop boundary. A chord nothing sounded for is left out, and the reply lists it. The
 score must fit inside Studio's loop (1–16 bars), so set the loop length first, and keep the arms' plan inside it.
 
+**Loop layers: one pass, several parts, written so the arms stay on time.** Instead of `loop_slot`, `loop_layers` lists
+the layers that keep the pass, each shaped for its part:
+`{"slot": 1-4, "octave"?: 0-8, "transpose"?: semitones, "hold"?: "written"|"legato"|beats, "merge"?: bool,
+"velocity"?: 1-127, "sound"?, "fx"?, "perform"?}`.
+
+- `octave` puts each chord's lowest note in that octave (C4 = 60) whatever octave Orchid is set to: 2 for a bass, 3 for
+  pads, 4–5 above them. Orchid's own octave changes, so set it on every layer.
+- `hold: "legato"` holds each chord in the layer until the next one (the last to the loop's end). Write the arms' notes
+  **short and on time** (`1/2`) and let the layer sustain them, rather than writing long holds that push changes bars
+  late. A number holds each chord that many beats, cut at the next.
+- `merge: true` overdubs: the pass is added to what the layer plays (a chord at the same beat is replaced). The arms can
+  change chord about every 4 bars and key about every 6 beats, so build a denser part over two passes: chords 1 and 3,
+  then chords 2 and 4.
+- A layer's own `sound`/`fx` go to its voice only; `perform` is its Perform setting (add `velocity_limit: 127`, or
+  Studio caps velocities at 80). The score's `sound`/`fx` go to the live voice and the layers without their own.
+- Several layers from one pass need an Orchid Studio that keeps a waiting composition per layer
+  (`status.looper.pending_composes`); an older one is refused with a 409.
+
 ## Long notes and sweeping chords
 
 A note can be held for **any number of bars**: there is no upper limit. Use it for long, sweeping chords and pads.
@@ -224,7 +242,7 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 | `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
 | `POST /api/controls/{id}/play` | `{duration? ("1/4", "2bars", "1bar+1/2"), wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?}], wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |
-| `POST /api/score` | `{events:[{bar, beat, key, chord?, duration?}], sound?, perform?, fx?, voicing?, changes?:[{bar, beat?, sound?, perform?, fx?, voicing?}], loop_slot?, plan_only?}` | `{status, message, plan:{bpm, on_studio_beat, moves:[{bar, beat, to_bar, bars, needs_s, has_s, text}], moved_bars, length_bars}, played:[{bar, beat, key, chord, slipped_beats, late_ms, heard}], key_check?}` |
+| `POST /api/score` | `{events:[{bar, beat, key, chord?, duration?}], sound?, perform?, fx?, voicing?, changes?:[{bar, beat?, sound?, perform?, fx?, voicing?}], loop_slot?, loop_velocity?, loop_layers?:[{slot, octave?, transpose?, hold?, merge?, velocity?, sound?, fx?, perform?}], plan_only?}` | `{status, message, plan:{bpm, on_studio_beat, moves:[{bar, beat, to_bar, bars, needs_s, has_s, text}], moved_bars, length_bars}, played:[{bar, beat, key, chord, slipped_beats, late_ms, heard}], key_check?}` |
 | `POST /api/chords/play` | `{key, chord, duration?}` (`chord` is a button id, e.g. `chord.maj`) | `{…, key, chord, clearance_mm, duration, rhythm, key_check?}` once both arms are home |
 | `POST /api/home`, `POST /api/rest` (`?arm=a\|b` for one) | `{}` | both arms home, or to rest by way of home: orchid-robot orders the moves and checks each; refused while a performance runs |
 | `POST /api/stop` | `{}` | emergency only: holds both arms where they are |
