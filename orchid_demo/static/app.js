@@ -508,7 +508,7 @@ function workflow() {
       actions(button("find_connect_all", sim ? "Connect practice arms →" : "Find and connect all arms →")) +
       `<p class="hint">Each follower is recognised by the calibration in its motors, so it always goes back to its own arm; a new follower takes the empty slot. The leader joins the Keys Arm${arms?.b?.available ? ", or the arm being connected; hand it over from Calibrate motors → Leader" : ""}.</p>`;
   } else if (connectionView) {
-    html = intro("Return to connections.", "Support both connected arms before releasing torque and disconnecting. You can then refresh ports or change teaching mode. Saved calibrations and registered motions stay saved; an unfinished teaching attempt ends.") +
+    html = intro("Return to connections.", "Support both connected arms before releasing torque and disconnecting. You can then connect again with Find and connect all arms. Saved calibrations and registered motions stay saved; an unfinished teaching attempt ends.") +
       (p.startsWith("calibration_") ? '<p class="hint">The unfinished calibration will be canceled and its previous motor settings restored and verified before disconnecting.</p>' : "") +
       (s.leader_following ? '<p class="notice">Pause leader following above before supporting the follower and disconnecting.</p>' : "") +
       '<div id="connection-release">' + support() + actions(button("disconnect", "Release & return to connections →", false, 'data-connection="true"') +
