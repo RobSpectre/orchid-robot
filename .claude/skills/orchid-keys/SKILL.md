@@ -1,6 +1,6 @@
 ---
 name: orchid-keys
-description: Play and compose music (jams that evolve: see JAMMING.md; DJ sets: DJ.md) on the taught Orchid synth controls (12 keys, chord buttons, voicing dial) through orchid-robot's performance API, including chords (a key played with a chord button held, using both arms) and whole scores on Orchid Studio's beat. Use when the user asks to play a key, a chord, a melody, a rhythm, a chord progression or a set, to send the arms home or to rest, or to stop them. How the arms move (holding, speed, hardness, the order of moves, safety) is orchid-robot's and the operator console's, never this skill's.
+description: Play and compose music (jams that evolve: see JAMMING.md) on the taught Orchid synth controls (12 keys, chord buttons, voicing dial) through orchid-robot's performance API, including chords (a key played with a chord button held, using both arms) and whole scores on Orchid Studio's beat. Use when the user asks to play a key, a chord, a melody, a rhythm, a chord progression or a set, to send the arms home or to rest, or to stop them. How the arms move (holding, speed, hardness, the order of moves, safety) is orchid-robot's and the operator console's, never this skill's.
 ---
 
 # Orchid keys
@@ -52,7 +52,9 @@ faster`. That is not a fault: suggest longer note values, rests, or a slower tem
 
 ## Scores: whole pieces on the beat
 
-**DJing a set (a heartbeat loop)? Follow [DJ.md](DJ.md) every beat.** **Jamming? Read [JAMMING.md](JAMMING.md) first.** It covers composing diverse, evolving music on this rig: the chord
+Live sets are the Hermes skill's (`~/.hermes/skills/orchid/orchid-robot-jam`).
+
+**Jamming? Read [JAMMING.md](JAMMING.md) first.** It covers composing diverse, evolving music on this rig: the chord
 colours, key changes, layer roles, Studio's Perform modes and the rules that keep a jam from settling into one key.
 
 For anything with timing, a progression, a riff or a song, send the whole piece as **one score**. orchid-robot plans
