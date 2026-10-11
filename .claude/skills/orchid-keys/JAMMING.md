@@ -34,8 +34,8 @@ Colour beyond the four buttons comes from Orchid Studio (see SKILL.md for the sc
 
 ## Physical limits (write with them, not against them)
 
-- **Space the changes.** At 112–132 BPM, give each chord about **16 beats** (4 bars) before the next change in one
-  pass, and each single key about **8 beats**. Write closer than that and orchid-robot moves the later notes bars
+- **Space the changes.** At 2.4× arm speed, give each chord about **7 s** before the next change in one pass (16
+  beats at 132 BPM, 8 at 70) and each single key about **2.7 s**. Write closer than that and orchid-robot moves the later notes bars
   later. For a denser part, write short on-time notes and let `hold: "legato"` sustain them, or build it over two
   passes with `merge: true` (chords 1 and 3, then 2 and 4).
 - **Plan every score** (`plan_only` / `--plan`). If the plan lists moves, rewrite: fewer changes, longer spacing.

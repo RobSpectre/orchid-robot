@@ -140,9 +140,9 @@ the layers that keep the pass, each shaped for its part:
 - `hold: "legato"` holds each chord in the layer until the next one (the last to the loop's end). Write the arms' notes
   **short and on time** (`1/2`) and let the layer sustain them, rather than writing long holds that push changes bars
   late. A number holds each chord that many beats, cut at the next.
-- `merge: true` overdubs: the pass is added to what the layer plays (a chord at the same beat is replaced). The arms can
-  change chord about every 4 bars and key about every 6 beats, so build a denser part over two passes: chords 1 and 3,
-  then chords 2 and 4.
+- `merge: true` overdubs: the pass is added to what the layer plays (a chord at the same beat is replaced). At 2.4× arm
+  speed the arms need about 7 s between chord changes and 2.7 s between keys in one pass (whatever the tempo; plan
+  first), so build a denser part over passes: chords 1 and 3, then chords 2 and 4.
 - A layer's own `sound`/`fx` go to its voice only; `perform` is its Perform setting (add `velocity_limit: 127`, or
   Studio caps velocities at 80). The score's `sound`/`fx` go to the live voice and the layers without their own.
 - **Make the live pass sound like the layer.** While the arms play, the room hears Studio's live voice, at Orchid's own
