@@ -36,7 +36,7 @@ const targetControl = () => selectedNote && !POSES[selectedNote] ? selectedNote 
 const allStatuses = () => ({...state.keys, ...state.controls});
 const statusText = value => value.status === "registered" ? "✓ REGISTERED" : value.status === "needs_reteach" ? "RE-TEACH" : value.recorded ? "RECORDED" : value.trials ? `${value.trials}/3 TRIALS` : "—";
 const confirmationTitles = {supported: "Arm this step", hands_clear: "Arm test", prepared: "Arm connection",
-  fixture_unchanged: "Keep saved placement", range_complete: "Confirm joint travel", fixed_pad: "Confirm fixed tips",
+  range_complete: "Confirm joint travel", fixed_pad: "Confirm fixed tips",
   direction_verified: "Confirm dial direction", rim_clear: "Confirm rim is clear", reference_reset: "Confirm reference reset",
   effect_verified: "Confirm expected effect", calibration_unchanged: "Confirm same arm & joints", path_clear: "Confirm clear route"};
 const confirmed = b => b?.getAttribute("aria-pressed") === "true";
@@ -47,9 +47,7 @@ function setConfirmation(b, enabled) {
   b.querySelector(".confirmation-state").textContent = enabled ? "Confirmed · tap again to cancel" : "Tap to confirm · no motor command";
 }
 function clearConfirmations(scope = document) {
-  scope.querySelectorAll("[data-confirm]").forEach(b => {
-    if (b.dataset.confirm !== "fixture_unchanged") setConfirmation(b, false);
-  });
+  scope.querySelectorAll("[data-confirm]").forEach(b => setConfirmation(b, false));
 }
 const button = (action, text, secondary = false, attrs = "") => `<button data-action="${action}" class="${secondary ? "secondary" : "primary"}" ${attrs}>${text}</button>`;
 const leaderMode = () => state?.teaching_mode === "leader";
@@ -146,10 +144,10 @@ function renderPorts() {
   const leaders = ports.filter(p => p.leader_connectable);
   leaderSelect.innerHTML = leaders.length ? leaders.map(p => `<option value="${esc(p.path)}">Leader · ${esc(p.path)} · ${volts(p)} · Motors ${esc(p.motor_ids.join(", "))}</option>`).join("") : '<option value="">No ready leader found · refresh connections</option>';
   leaderSelect.value = leaders.some(p => p.path === previousLeader) ? previousLeader : leaders[0]?.path || "";
-  $("arm-discovery").innerHTML = ports.map(p => `<article class="discovered-arm ${p.connectable || p.leader_connectable ? "ready-arm" : ""}"><div class="arm-identity"><strong>${esc(role(p))}</strong><span>${esc(p.path)}</span></div><strong class="arm-voltage">${volts(p)}</strong><div class="discovered-motors"><span>Motor IDs</span>${p.motor_ids.map(id => `<b>${esc(id)}</b>`).join("")}</div><p>${isSim() ? "Simulated readings · no USB connection" : p.leader_connectable ? "Ready for leader input · select Use leader to teach" : esc(p.problem || "Six motors detected · ready to connect")}</p></article>`).join("");
+  $("arm-discovery").innerHTML = ports.map(p => `<article class="discovered-arm ${p.connectable || p.leader_connectable ? "ready-arm" : ""}"><div class="arm-identity"><strong>${esc(role(p))}</strong><span>${esc(p.path)}</span></div><strong class="arm-voltage">${volts(p)}</strong><div class="discovered-motors"><span>Motor IDs</span>${p.motor_ids.map(id => `<b>${esc(id)}</b>`).join("")}</div><p>${isSim() ? "Simulated readings · no USB connection" : p.leader_connectable ? "Ready for leader input" : esc(p.problem || "Six motors detected · ready to connect")}</p></article>`).join("");
   const status = scanning ? "Scanning USB adapters for Feetech motors…" : scanError ? `Scan failed: ${scanError}` : isSim() ? "Practice arm available. No physical devices are scanned." : scannedAt ?
     `${ports.length} robot arm${ports.length === 1 ? "" : "s"} found · scanned ${new Date(scannedAt * 1000).toLocaleTimeString()}. Voltage is a scan-time reading from each arm’s first responding motor. ${ports.length ? "Leader / follower is inferred from voltage." : "Check USB and arm power, then refresh."}` :
-    "Refresh connections to find powered robot arms. Only adapters with responding Feetech motors appear here.";
+    "Press Find leader to scan for powered robot arms. Only adapters with responding Feetech motors appear here.";
   $("discovery-status").textContent = status;
   $("discovery-warnings").textContent = warnings.join("\n");
   $("discovery-warnings").hidden = !warnings.length;
@@ -564,7 +562,7 @@ function workflow() {
         '<button type="button" class="secondary" data-view="calibration">Back to calibration</button>');
     if (complete) html += '<p class="hint"><a href="/api/export" data-export download>Download the session record →</a></p>';
     if (leaderMode()) html += homeReadiness() + '<p class="hint">Teach establishes a hold here without releasing torque. If needed, the next step moves to saved home after a clearance countdown. Then bring the leader close and engage following to record the approach.</p>';
-    else html += '<p class="notice" role="status">Hand-guide mode: the leader arm is not connected, so moving it does nothing. To teach with the leader, open <b>Calibrate motors → Leader → Find leader → Connect leader</b> (the follower stays connected), or disconnect and reconnect with <b>Use leader to teach</b>.</p>' +
+    else html += '<p class="notice" role="status">Hand-guide mode: the leader arm is not connected, so moving it does nothing. To teach with the leader, open <b>Calibrate motors → Leader → Find leader → Connect leader</b> (the follower stays connected).</p>' +
       '<p class="hint">Support the full weight before releasing torque. Gear resistance can remain with all six motors OFF.</p>';
   } else if (p === "calibration_midpoint") {
     html = intro("Center the six joints.", "Keep the arm supported and clear of the instrument. Place each joint near the middle of its mechanical travel; half-open the gripper. Do not force a joint against a stop.") + support() + actions(button("calibration_center", "Capture midpoint →")) + '<p class="hint">The app checks a steady pose and reads back the new motor references. It does not drive to the midpoint.</p>';
@@ -810,7 +808,7 @@ function updateButtons() {
   for (const id of Object.keys(topSliders)) if ($(id)) $(id).disabled = !online || !owns || state?.worker_alive === false;
   document.querySelectorAll("[data-action]").forEach(b => {
     const scope = actionScope(b);
-    let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.dataset.confirm !== "fixture_unchanged" && c.closest?.("[hidden]")?.hidden !== true).every(confirmed);
+    let valid = [...scope.querySelectorAll("[data-confirm]")].filter(c => c.closest?.("[hidden]")?.hidden !== true).every(confirmed);
     if (b.dataset.recovery) valid = confirmed($("recovery-supported"));
     if (b.dataset.connection) valid = valid && state.connected && !state.leader_following;
     if (b.dataset.unavailable) valid = valid && state.connected && state.phase === "fault";

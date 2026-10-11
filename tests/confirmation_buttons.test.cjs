@@ -16,7 +16,6 @@ function consoleHarness() {
   const recovery = button('recovery-supported', {confirm:'supported'});
   const action = button('calibrate', {action:'calibrate'});
   const disconnect = button('disconnect', {action:'disconnect', recovery:'true'});
-  const optional = button('placement', {confirm:'fixture_unchanged'});
   const calibrationSupport = button('calibration-support', {confirm:'supported'});
   const unchanged = button('unchanged', {confirm:'calibration_unchanged'});
   const reset = button('reset', {action:'calibration_reset', calibration:'true'});
@@ -41,7 +40,7 @@ function consoleHarness() {
   const trainingNav = button('nav-notes', {view:'notes'});
   const leaderChoice = button('choose-leader', {calibrationTarget:'leader'});
   Object.assign(elements, {
-    'workflow':{querySelectorAll:()=>[consent, optional]},
+    'workflow':{querySelectorAll:()=>[consent]},
     'connection-release':{querySelectorAll:()=>[consent]},
     'unavailable-tools':{querySelectorAll:()=>[unavailableSupport,powerDisconnected]},
     'recovery':{querySelectorAll:()=>[recovery]},
@@ -55,7 +54,7 @@ function consoleHarness() {
   const document = {
     getElementById:id=>elements[id], addEventListener:(event,fn)=>listeners[event]=fn,
     querySelectorAll:selector=>selector === '[data-action]' ? [action,disconnect,reset,reload,resume,pause,capture,connectionDisconnect,forget,homeCapture,homeStart,leaderHomeCapture,teachControl,homeHold,homeReturn]
-      : selector === '[data-confirm]' ? [consent,optional,recovery,calibrationSupport,unchanged,leaderClear,unavailableSupport,powerDisconnected]
+      : selector === '[data-confirm]' ? [consent,recovery,calibrationSupport,unchanged,leaderClear,unavailableSupport,powerDisconnected]
       : selector === '[data-view]' ? [connectionNav,calibrationNav,trainingNav,stay]
       : selector === '[data-calibration-target]' ? [leaderChoice] : []
   };
@@ -72,7 +71,7 @@ function consoleHarness() {
   vm.runInContext(readFileSync('orchid_demo/static/app.js','utf8'),context);
   vm.runInContext(`state={phase:'connected',connected:true,calibrated:false,worker_alive:true,revision:1,pending:false};
     token='test-token';online=true;owns=true;updateButtons();`,context);
-  return {consent,optional,recovery,action,disconnect,calibrationSupport,unchanged,reset,reload,leaderClear,resume,pause,capture,homeCapture,homeStart,leaderHomeCapture,teachControl,homeHold,homeReturn,connectionNav,connectionDisconnect,unavailableSupport,powerDisconnected,forget,stay,calibrationNav,trainingNav,leaderChoice,elements,commands,context,listeners,
+  return {consent,recovery,action,disconnect,calibrationSupport,unchanged,reset,reload,leaderClear,resume,pause,capture,homeCapture,homeStart,leaderHomeCapture,teachControl,homeHold,homeReturn,connectionNav,connectionDisconnect,unavailableSupport,powerDisconnected,forget,stay,calibrationNav,trainingNav,leaderChoice,elements,commands,context,listeners,
     tick:()=>interval?.(), fail:()=>{fail=true;}, click:b=>listeners.click({target:b})};
 }
 
