@@ -12,7 +12,7 @@ let arm = (() => { try { return localStorage.getItem("orchid.arm") === "b" ? "b"
 let arms = null, connectPlan = null;
 const instances = {};
 const selectedArm = () => arm;  // for functions with their own local "arm"
-const ARM_NAMES = {a: "Keys Arm · 12 keys", b: "Chord Arm · chords & dial"};
+const ARM_NAMES = {a: "Keys Arm · 12 keys", b: "Chord Arm · chord buttons"};
 const ARM_SHORT = {a: "Keys Arm", b: "Chord Arm"};
 const armStatus = a => !a.connected ? "not connected" : a.tuning ? "correcting keys" : a.parked ? `parked ${a.parked_reason}` : a.parked_reason;
 function renderArms() {
@@ -36,9 +36,7 @@ const targetControl = () => selectedNote && !POSES[selectedNote] ? selectedNote 
 const allStatuses = () => ({...state.keys, ...state.controls});
 const statusText = value => value.status === "registered" ? "✓ REGISTERED" : value.status === "needs_reteach" ? "RE-TEACH" : value.recorded ? "RECORDED" : value.trials ? `${value.trials}/3 TRIALS` : "—";
 const confirmationTitles = {supported: "Arm this step", hands_clear: "Arm test", prepared: "Arm connection",
-  range_complete: "Confirm joint travel", fixed_pad: "Confirm fixed tips",
-  direction_verified: "Confirm dial direction", rim_clear: "Confirm rim is clear", reference_reset: "Confirm reference reset",
-  effect_verified: "Confirm expected effect", calibration_unchanged: "Confirm same arm & joints", path_clear: "Confirm clear route"};
+  range_complete: "Confirm joint travel", calibration_unchanged: "Confirm same arm & joints", path_clear: "Confirm clear route"};
 const confirmed = b => b?.getAttribute("aria-pressed") === "true";
 const confirm = (name, text, title = confirmationTitles[name] || "Confirm this step") => `<button type="button" class="confirmation" data-confirm="${name}" aria-pressed="false"><span class="confirmation-icon" aria-hidden="true">○</span><span class="confirmation-copy"><strong>${title}</strong><span>${text}</span><small class="confirmation-state">Tap to confirm · no motor command</small></span></button>`;
 function setConfirmation(b, enabled) {
@@ -59,7 +57,7 @@ const workflowSection = () => state.phase === "disconnected" || connectionView ?
   tuneView && !state.phase.startsWith("calibration_") && referencesReady() ? "tune" : calibrationView || state.phase.startsWith("calibration_") || (!referencesReady() && ["connected","ready","fault"].includes(state.phase)) ? "calibration" : "notes";
 const teachSessionPhases = ["teach_hold", "teach_follow", "teach_play"];
 const powered = (s = state) => Object.values(s?.torque || {}).some(v => v === 1);
-const teachingPhases = ["home_positioning","home_arrival","home_approach","home_return","note_ready","note_hover","note_pressed","note_touch","dial_ready","dial_approach","dial_contact","dial_turned","dial_lifted"];
+const teachingPhases = ["home_positioning","home_arrival","home_approach","home_return","note_ready","note_hover","note_pressed","note_touch"];
 const support = () => confirm("supported", leaderMode() ? "Both arms are supported or resting securely; it is safe to release torque or establish the follower hold." : "I am supporting the arm’s weight; it is safe to release or hold here.");
 const calibrationPhases = ["connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review"];
 const actionScope = b => b.dataset.unavailable ? $("unavailable-tools") : b.dataset.connection ? $("connection-release") : b.dataset.recovery ? $("recovery") : b.dataset.home ? $("home-tools") : b.dataset.calibration ? $("calibration-tools") : b.dataset.leader ? $("leader-teaching") : $("workflow");
@@ -85,7 +83,7 @@ function calibrationTools() {
         '<div class="calibration-reload"><p class="hint"><b>Re-centre wrist rotation</b> ' + (arms ?
           'moves this follower’s wrist-roll zero by half a turn, so its wrist works mid-range instead of at the end of its rotation (about ±168°). The shared leader is not changed: its wrist reading is turned by the same half turn for this follower. ' :
           'moves both arms’ wrist-roll zero by half a turn, so the wrist works mid-range instead of at the sensor’s −180°/+180° wrap. ') +
-        'Saved home, rest, dial and keys are updated to match: nothing moves and nothing needs re-teaching. Do it once.</p>' +
+        'Saved home, rest, keys and chord buttons are updated to match: nothing moves and nothing needs re-teaching. Do it once.</p>' +
         actions(button("recenter_wrist_roll", "Re-centre wrist rotation", true, 'data-calibration="true"')) + '</div>' : "")) +
     '<p class="hint">Both actions keep torque off. Reloading does not restore an earlier arm position. Motions still need the same calibration, fixture and contact tips.</p>';
 }
@@ -223,47 +221,9 @@ function noteSteps() {
 function trials() {
   return `<div class="trials">${[1,2,3].map(i => `<span class="${state.trials >= i ? "done" : ""}">${state.trials >= i ? "✓" : "○"} Trial ${i}</span>`).join("")}</div>`;
 }
-function dialWorkflow(s) {
-  const p = s.phase, direction = s.selected_control.label.toLowerCase();
-  const messages = {
-    dial_ready: ["Begin clear of the rim.", "Support the arm with torque off. Place the fixed pad just clear of the large voicing dial. Describe a repeatable reference chord and the small change this gesture should produce."],
-    dial_approach: ["Touch the rim gently.", "Bring the fixed pad into light contact with the rim without rotating or pressing down on the dial. Hold steady for capture."],
-    dial_contact: [`Nudge ${direction}.`, "Make one small, deliberate turn. Watch Orchid’s voicing display or listen to the reference chord. Keep the gripper opening fixed; stop if the pad slips."],
-    dial_turned: ["Lift completely off the dial.", "Lift clear without dragging the rim or turning it back. Capture the lift-off before moving back toward your starting position."],
-    dial_lifted: ["Return through clear space.", "Stay clear of the dial and return close to the starting clearance. The app records this return separately. Keep supporting: the next capture enables a hold."],
-    arming: ["Keep supporting the arm.", "Checking a hold at the completed clear return. Wait for confirmation before removing your hands."],
-    holding: ["Test the complete dial gesture.", "One approach, a small turn in the taught direction, lift-off, and a return through clear space. Restore the instrument reference while the pad is clear, then take your hands away."],
-    testing: ["Turn, lift, return clear.", "Keep hands clear. The arm follows the recorded loop once, including the captured lift-off and clear return. Watch for slipping or unintended contact."],
-    result: ["Did the voicing change as expected?", isSim() ? "The simulated gesture finished. Confirm the requested direction and practice reviewing its effect; no physical dial has been verified." : "Accept only the intended direction and described change, with no slipping, downward press, or reverse turn during lift-off and return."],
-    saved: [s.trials >= 3 ? "Direction registered." : "Trial accepted. Restore the reference.", s.trials >= 3 ? "Three accepted trials for this direction. Support and release the arm before teaching the other direction or selecting another control." : "The dial’s state has changed. Restore the same reference chord and voicing while the pad is clear before repeating this gesture."]
-  };
-  const text = messages[p] || ["Waiting for the arm…", s.message];
-  const phases = ["dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted"];
-  const stage = phases.includes(p) ? phases.indexOf(p) : 5;
-  let html = `<div class="note-title"><span class="note-symbol dial-symbol">${s.selected_control.direction === "cw" ? "↻" : "↺"}</span><div><div class="eyebrow">VOICING / ${esc(direction.toUpperCase())}</div><h3>${text[0]}</h3></div></div>` +
-    `<div class="stages">${["Start", "Contact", "Turn", "Lift off", "Return", "Test"].map((label,i) => `<span class="${i < stage ? "done" : i === stage ? "current" : ""}">${label}</span>`).join("")}</div><p class="description">${text[1]}</p>`;
-  if (p === "dial_ready") html +=
-    '<label class="form-field">Reference chord & starting voicing<input id="dial-reference" maxlength="160" placeholder="C major · Geek Out view · C–E–G"></label>' +
-    '<label class="form-field">Expected change for this nudge<input id="dial-effect" maxlength="160" placeholder="Describe the small change you can repeat and observe"></label>' +
-    confirm("fixed_pad", "The rubber-covered or padded tips stay fixed and nudge the rim; they do not grip, squeeze, or press the dial.") + actions(button("dial_capture_start", "Capture start clearance →"));
-  if (p === "dial_approach") html += actions(button("dial_capture_contact", "Capture rim contact →"));
-  if (p === "dial_contact") html += confirm("direction_verified", `The dial turned ${esc(direction)} and produced the intended change.`) + actions(button("dial_capture_turn", "Capture turned position →"));
-  if (p === "dial_turned") html += confirm("rim_clear", "The pad is completely clear of the dial rim.") + actions(button("dial_capture_lift", "Capture lift-off →"));
-  if (p === "dial_lifted") html += '<div class="return-meter">Return error <strong id="dial-return-error">—</strong><span>target ≤ 6 ticks · same clear start area</span></div>' + confirm("rim_clear", "The entire return path stayed clear of the dial.") + (leaderMode() ? hands() : support()) + actions(button("dial_capture_return", leaderMode() ? "Capture dial clearance →" : "Capture return & hold →"));
-  const reference = () => `<div class="reference-card"><span>REFERENCE</span><p>${esc(s.dial_reference)}</p><span>EXPECTED EFFECT</span><p>${esc(s.dial_expected_effect)}</p></div>`;
-  const reset = () => confirm("reference_reset", "I restored the reference chord and starting voicing while the pad was clear.");
-  if (["holding", "saved", "result"].includes(p)) html += reference();
-  if (p === "holding") html += reset() + hands() + actions(button("test", "Test dial gesture →"));
-  if (p === "result") html += trials() + confirm("effect_verified", "Requested direction and expected effect, with no slip or reverse turn on the clear return.") + actions(button("pass", isSim() ? "Accept simulated trial ✓" : "Accept dial trial ✓") + button("fail", "Reject & re-teach", true));
-  if (p === "saved") html += trials() + (s.trials >= 3 ? teachSupport() + actions(button("next", leaderMode() ? "Continue at home →" : "Release & continue →")) : reset() + hands() + actions(button("test", "Test again →")));
-  html += '<p class="hint">This is a relative gesture, not an absolute dial setting. The musical change depends on the chord. Clockwise and counterclockwise are taught separately.</p>';
-  return html;
-}
 const teachPoints = ["home", "hover", "touch", "press"];
-const dialPoints = ["home", "hover", "open", "lower", "grip"];  // shared by CW and CCW; the turn is an exact wrist angle
-const stepsFor = id => state?.catalog?.[id]?.kind === "dial" ? dialPoints : teachPoints;
-const pointLabels = {home: "Home", hover: "Hover", touch: "Touch", press: "Press", open: "Open", lower: "Lower", grip: "Grip"};
-const pointsFor = (s, id) => s.teach?.points_for === id ? s.teach.points : allStatuses()[id]?.recorded ? stepsFor(id) : s.teach?.home_saved ? ["home"] : [];
+const pointLabels = {home: "Home", hover: "Hover", touch: "Touch", press: "Press"};
+const pointsFor = (s, id) => s.teach?.points_for === id ? s.teach.points : allStatuses()[id]?.recorded ? teachPoints : s.teach?.home_saved ? ["home"] : [];
 const canCapture = (s = state) => (s.phase === "teach_hold" && s.teach?.mode === "holding") || (s.phase === "teach_follow" && s.teach?.mode === "following");
 function poseWorkflow(s, pose) {
   const p = s.phase, t = s.teach || {}, following = p === "teach_follow" && t.mode === "following";
@@ -381,32 +341,27 @@ function teachWorkflow(s) {
   const got = pointsFor(s, chosen.id);
   // A step chosen for retraining (tap its box) comes first; otherwise the first step not yet taught.
   const retrain = targetPoint?.control === chosen.id && got.includes(targetPoint.point) ? targetPoint.point : null;
-  const dial = chosen.kind === "dial", steps = stepsFor(chosen.id);
-  const next = retrain || steps.find(n => !got.includes(n));
+  const next = retrain || teachPoints.find(n => !got.includes(n));
   const title = p === "teach_play" ? (t.returning ? "Returning to home…" : t.going_rest ? "Returning to rest…" : `Playing ${name}…`) :
     p === "teach_follow" && t.mode !== "following" ? "Matching the leader…" :
     !lead ? (heard ? `Played ${name}.` : recorded ? `Ready to play ${name}.` : `${name} is not taught yet.`) :
     retrain ? `Retrain ${pointLabels[retrain].toLowerCase()}: ${p === "teach_hold" ? "follow the leader, then" : ""} guide to it, then Space.` :
     next ? (p === "teach_hold" && next !== "home" ? `Holding · ready to teach ${name}.` : `Guide to ${pointLabels[next].toLowerCase()}, then Space.`) :
     heard ? `Played ${name}.` : `${name} is taught.`;
-  let html = `<div class="note-title"><span class="note-symbol${dial ? " dial-symbol" : ""}">${dial ? (chosen.direction === "cw" ? "↻" : "↺") : esc(chosen.label)}</span><h3>${title}</h3></div>` +
-    `<div class="teach-points" role="group" aria-label="Taught points">${`<span class="teach-point ${got.includes("home") ? "done" : ""}"><strong>${got.includes("home") ? "✓" : "○"} Home</strong><small>${got.includes("home") ? "the arm’s home" : "set with ⌂ Home"}</small></span>`}${steps.filter(n => n !== "home").map(n => {
+  let html = `<div class="note-title"><span class="note-symbol">${esc(chosen.label)}</span><h3>${title}</h3></div>` +
+    `<div class="teach-points" role="group" aria-label="Taught points">${`<span class="teach-point ${got.includes("home") ? "done" : ""}"><strong>${got.includes("home") ? "✓" : "○"} Home</strong><small>${got.includes("home") ? "the arm’s home" : "set with ⌂ Home"}</small></span>`}${teachPoints.filter(n => n !== "home").map(n => {
       const done = got.includes(n), current = n === next, just = flashing(n, chosen.id);
       const classes = ["teach-point", current ? "current" : done ? "done" : "", just ? "flash" : ""].filter(Boolean).join(" ");
-      const shared = dial ? " · both directions" : "";
-      const note = (just ? "captured ✓" : current && done ? "retraining · Space" : current ? "next" : done ? (lead ? "tap to retrain" : "taught") : "") + (just ? "" : shared);
+      const note = just ? "captured ✓" : current && done ? "retraining · Space" : current ? "next" : done ? (lead ? "tap to retrain" : "taught") : "";
       return `<button type="button" data-target-point="${n}" class="${classes}" aria-pressed="${current}" ${(done || current) && lead ? "" : 'data-locked="true"'}><strong>${done && !current ? "✓" : current ? "●" : "○"} ${pointLabels[n]}</strong><small>${note}</small></button>`;
-    }).join("")}<span class="teach-point-return">${dial ? "Play: … grip → turn the wrist → let go → raise → hover → home" : "↩ back the same way"}</span></div>` + description;
+    }).join("")}<span class="teach-point-return">↩ back the same way</span></div>` + description;
   const capture = next === "home" ? button("teach_set_home", "Set home here") :
     next ? button("teach_capture", next === "press" ? `${retrain ? "Recapture" : "Capture"} press & return home ↩` :
-      next === "grip" && dial ? `${retrain ? "Recapture" : "Capture"} grip & let go ↩` : `${retrain ? "Recapture" : "Capture"} ${pointLabels[next].toLowerCase()}`, false, `data-point="${next}"`) : "";
-  // The dial's turn is not taught with the leader: it is the grip pose with only the wrist rotated by this angle.
-  const degrees = allStatuses()[chosen.id]?.turn_degrees ?? (chosen.direction === "cw" ? 20 : -20);
-  const turnField = dial && !next ? `<label class="form-field turn-field">Turn ${chosen.direction === "cw" ? "↻" : "↺"} <input id="turn-degrees" type="number" min="-90" max="90" step="1" value="${esc(turnInput[chosen.id] ?? degrees)}"> degrees of wrist rotation <small>If it turns the wrong way, flip the sign.</small></label>` : "";
+      `${retrain ? "Recapture" : "Capture"} ${pointLabels[next].toLowerCase()}`, false, `data-point="${next}"`) : "";
   const settings = s.teach_settings || {speed: 1, press_s: 0.3};
   const press = allStatuses()[chosen.id]?.press_s ?? settings.press_s;
-  const pressField = !dial && !next ? `<label class="form-field turn-field">Press length <input id="press-seconds" type="number" min="0" max="60" step="0.1" value="${esc(pressInput[chosen.id] ?? press)}"> seconds held down <small>Saved for ${name} when you Play.</small></label>` : "";
-  html += turnField + pressField;
+  const pressField = !next ? `<label class="form-field turn-field">Press length <input id="press-seconds" type="number" min="0" max="60" step="0.1" value="${esc(pressInput[chosen.id] ?? press)}"> seconds held down <small>Saved for ${name} when you Play.</small></label>` : "";
+  html += pressField;
   if (p === "teach_hold" && !lead) {
     // Holding with only the follower: play taught controls; teaching needs the leader.
     if (t.warning) html += actions(button("teach_play", `Play ${name} anyway ▶`, false, 'data-force="true"'));
@@ -425,13 +380,11 @@ function teachWorkflow(s) {
       `<p class="hint">Re-teaching ${name} from the start. Its saved motion is kept, and plays, until the last step is captured. Cancel keeps it as it was.</p>`;
   html += playback;
   if (["teach_hold", "teach_follow"].includes(p) && lead) html += '<p class="hint"><kbd>Space</kbd> presses the highlighted button. Following a taught control re-teaches all its steps in order; tap a step you just captured to take it again. ' +
-    (dial ? "Hover above the knob, open the jaws, lower around it, then grip. Capturing the grip lets go and returns home on its own. Play turns only the wrist by the angle above, lets go, and raises back out; it never turns back while gripping. The steps are shared by CW and CCW; each has its own angle."
-          : "Capturing the press returns to home on its own. Play goes home → hover → touch → press and back.") +
+    "Capturing the press returns to home on its own. Play goes home → hover → touch → press and back." +
     ' Home is set with ⌂ Home on the map.</p>';
   return html;
 }
 // Guided training: everything this arm needs taught, in order (home, rest, then each of its controls), one at a time.
-// The voicing dial is one step: its two directions share the taught points.
 // Not in the guided training for now (they can still be taught from the map): the chord extension buttons.
 const NOT_GUIDED = ["chord.6", "chord.m7", "chord.M7", "chord.9"];
 function trainingSteps(s = state) {
@@ -440,15 +393,12 @@ function trainingSteps(s = state) {
                  {id: "rest", name: "Rest", label: "☾", done: !!s.poses_saved?.rest}];
   for (const id of owned) {
     const c = s.catalog?.[id];
-    if (!c || NOT_GUIDED.includes(id) || (c.kind === "dial" && steps.some(x => x.dial))) continue;
-    const members = c.kind === "dial" ? owned.filter(d => s.catalog[d]?.kind === "dial") : [id];
-    steps.push({id, name: c.kind === "dial" ? "Voicing dial" : c.name, label: c.kind === "dial" ? "↻↺" : c.label, dial: c.kind === "dial",
-                done: members.every(d => statuses[d]?.status === "registered")});
+    if (!c || NOT_GUIDED.includes(id)) continue;
+    steps.push({id, name: c.name, label: c.label, done: statuses[id]?.status === "registered"});
   }
   return steps;
 }
-const stepOf = id => state?.catalog?.[id]?.kind === "dial" ? trainingSteps().find(x => x.dial)?.id : id;
-const currentStep = () => stepOf(selectedNote || state.selected);
+const currentStep = () => selectedNote || state.selected;
 function trainingGuide(s) {
   const steps = trainingSteps(s), done = steps.filter(x => x.done).length, total = steps.length;
   const next = steps.find(x => !x.done), current = currentStep(), name = ARM_SHORT[selectedArm()] || "The arm";
@@ -490,7 +440,6 @@ function guideAdvance(s) {
 }
 function workflow() {
   const s = state, sim = isSim(), p = s.phase;
-  const dialFields = p === "dial_ready" ? [$("dial-reference")?.value, $("dial-effect")?.value] : [];
   const chosen = activeControl();
   const chord = s.selected_control.kind === "button";
   const complete = Object.values(allStatuses()).every(k => k.status === "registered");
@@ -557,7 +506,7 @@ function workflow() {
         '<button type="button" class="secondary" data-view="calibration">Back to calibration</button>') +
       '<p class="hint">To re-teach it, connect the leader: <b>Calibrate motors → Leader → Find leader → Connect leader</b>.</p>';
   } else if (["connected", "ready"].includes(p)) {
-    html = intro(complete ? "The instrument is registered." : canTeach ? `Ready to teach ${esc(chosen.name)}.` : (leaderMode() ? "Calibrate both arms." : "Give the arm its reference points."), complete ? "All 22 motions have three accepted trials. Rest the arm safely and export your session. Changing the fixture or pad requires re-teaching." : canTeach ? (chosen.kind === "dial" ? "Teach a small turn of the large voicing dial, then lift off and return clear. Each direction has its own path and verification trials." : chosen.kind === "button" ? "Teach this chord button’s lightest reliable press and release. Its musical effect depends on Orchid’s playstyle and reference chord; the button may not sound alone." : leaderMode() ? "Choose any key or control above. Use the leader to teach its route from home and back, then test it three times." : "Choose any key or control above. Teach its local motion by hand, then test it three times.") : "With torque off, capture a supported midpoint, then measure each joint’s usable range. Keep the arm clear of Orchid for the whole calibration.") +
+    html = intro(complete ? "The instrument is registered." : canTeach ? `Ready to teach ${esc(chosen.name)}.` : (leaderMode() ? "Calibrate both arms." : "Give the arm its reference points."), complete ? "All 20 motions have three accepted trials. Rest the arm safely and export your session. Changing the fixture or pad requires re-teaching." : canTeach ? (chosen.kind === "button" ? "Teach this chord button’s lightest reliable press and release. Its musical effect depends on Orchid’s playstyle and reference chord; the button may not sound alone." : leaderMode() ? "Choose any key or control above. Use the leader to teach its route from home and back, then test it three times." : "Choose any key or control above. Teach its local motion by hand, then test it three times.") : "With torque off, capture a supported midpoint, then measure each joint’s usable range. Keep the arm clear of Orchid for the whole calibration.") +
       teachSupport() + actions(button("control_start", leaderMode() ? `Teach ${esc(chosen.name)} & hold →` : `Teach ${esc(chosen.name)} →`, false, `data-control="${esc(chosen.id)}"`) +
         '<button type="button" class="secondary" data-view="calibration">Back to calibration</button>');
     if (complete) html += '<p class="hint"><a href="/api/export" data-export download>Download the session record →</a></p>';
@@ -611,13 +560,11 @@ function workflow() {
     html = intro("Establish the hold at home.", "Leave the follower at its taught resting pose and support its weight. The hold starts here, without an alignment move. Then clear your hands and engage the leader to guide the approach.") + homeReadiness() + support() + actions(button("leader_hold", "Establish follower hold →"));
   } else if (p === "home_approach") {
     html = intro(`Guide the approach to ${esc(s.selected_control.name)}.`, "Use the leader to lift from home and follow a clear path to just above the control. The measured approach is recorded. Pause following at clearance before touching the instrument.") +
-      confirm("path_clear", "The entire approach stayed clear of Orchid and other obstacles; the tips are now clear above the selected control.") + actions(button("capture_key_clearance", s.selected_control.kind === "dial" ? "Capture dial clearance →" : "Capture hover →")) +
+      confirm("path_clear", "The entire approach stayed clear of Orchid and other obstacles; the tips are now clear above the selected control.") + actions(button("capture_key_clearance", "Capture hover →")) +
       '<p class="hint">At a resting endpoint, motion farther into that endpoint is blocked. Move away from it. Before re-engaging, bring the leader close to the held follower pose and clear the alignment path.</p>';
   } else if (p === "home_return") {
     html = intro("Teach the return home.", "Use the leader to guide a clear route back to the shared home. Keep clear of Orchid. Pause following at home, then finish the recording. Tests will start and end here.") + homeReadiness() +
       confirm("path_clear", "The entire return route stayed clear of Orchid and other obstacles, and the follower is at home.") + actions(button("capture_home_return", "Capture home & finish route →"));
-  } else if (s.selected_control.kind === "dial") {
-    html = dialWorkflow(s);
   } else {
     const text = {
       note_ready: ["Hover above the control.", `Position the pad just clear above the selected ${chord ? "button" : "key"}. Keep the gripper opening fixed and capture this hover.`],
@@ -643,20 +590,18 @@ function workflow() {
     if (p.startsWith("note_")) html += `<p class="hint">${leaderMode() ? (sim ? "Use Practice leader movement to move the input arm; captures store measured follower positions." : "Move the leader; pause before each capture. The gripper keeps its taught opening.") : sim ? "Simulation places the virtual arm at each capture." : "Move gently. A large jump, changed grip, or stale reading stops capture."}</p>`;
   }
   if (!connectionView && !calibrationView && leaderMode() && s.leader_teaching && teachingPhases.includes(p)) {
-    const cue = {note_ready:"Use the leader to position the pad just above the control. Pause, then capture hover.", note_hover:"Hover is captured. Lower the pad to first contact without pressing the control. Pause, then capture contact.", note_touch:"Press only until the control activates. Pause, then capture the press. The return will use this same path in reverse.", note_pressed:"Keep following paused and clear hands from the follower. Choose Retreat to hover to reverse from this pressed position through contact to hover. The press will not repeat.", dial_ready:"The follower is holding clear of the dial. Keep following paused, enter the reference and capture the start."}[p];
+    const cue = {note_ready:"Use the leader to position the pad just above the control. Pause, then capture hover.", note_hover:"Hover is captured. Lower the pad to first contact without pressing the control. Pause, then capture contact.", note_touch:"Press only until the control activates. Pause, then capture the press. The return will use this same path in reverse.", note_pressed:"Keep following paused and clear hands from the follower. Choose Retreat to hover to reverse from this pressed position through contact to hover. The press will not repeat."}[p];
     if (cue) html = html.replace(/<p class="description">.*?<\/p>/, `<p class="description">${cue}</p>`);
     html += '<p class="leader-capture-hint">Follower torque is ON. Move the leader only; pause following before every capture.</p>';
   }
   if (!connectionView && !calibrationView && s.home_motion && ["holding","testing","result","saved"].includes(p)) {
     html = html.replace(/<p class="description">.*?<\/p>/, '<p class="description">This full route starts at home, follows the taught approach, performs the control motion, and returns home. Accept only a clear, repeatable route and the intended instrument response.</p>');
-    html = html.replaceAll('Test one press →', 'Test full home route →').replaceAll('Test dial gesture →', 'Test full home route →');
+    html = html.replaceAll('Test one press →', 'Test full home route →');
   }
   if (!connectionView && p.startsWith("calibration_")) html = `<p class="calibration-arm-label">CALIBRATING ${s.calibration_target === "leader" ? "LEADER · follower stays torque off" : "FOLLOWER"}</p>` + window.OrchidPanels.calibration(s) + html;
   if (!connectionView && p === "connected" && !s.calibrated) html += '<div class="setup-checklist"><strong>Before starting</strong><ul><li>Secure the base and reseated joints; keep the instrument outside the arm’s reach.</li><li>Support the full arm weight before torque releases.</li><li>Use the delay and optional spoken cues to keep both hands available.</li></ul><p>Calibration stays torque off. OFF flags do not remove gearbox drag.</p></div>';
   if (workflowSection() === "notes") html = leaderStrip() + (referencesReady() ? trainingGuide(s) : "") + html;
   $("workflow").innerHTML = html;
-  if (dialFields[0] !== undefined && $("dial-reference")) $("dial-reference").value = dialFields[0];
-  if (dialFields[1] !== undefined && $("dial-effect")) $("dial-effect").value = dialFields[1];
 }
 function renderConnection() {
   const conflict = operatorError?.status === 409;
@@ -681,7 +626,7 @@ function render() {
   const key = [trained.map(x => x.done ? 1 : 0).join(""), JSON.stringify(guide.moved), JSON.stringify(connectPlan), JSON.stringify(s.discovery), JSON.stringify(Object.values(arms || {}).map(a => [a.connected, a.available, a.leader])), s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following, s.home?.id, s.home_ready, connectionView, calibrationView, calibrationTarget(), s.teach?.mode, s.teach?.warning, s.teach?.played, s.teach?.returning, s.teach?.going_home, s.teach?.home_saved_at, s.teach?.going_rest, s.teach?.rest_saved_at, JSON.stringify(s.teach_settings), JSON.stringify(s.key_check), JSON.stringify(s.tune), JSON.stringify(s.tune_queue), JSON.stringify(s.tune_results), tuneView, JSON.stringify(s.teach?.points), s.teach?.points_for, JSON.stringify(s.teach?.path_test), JSON.stringify(s.teach?.path_untested), s.teach?.sequence, powered(s), JSON.stringify(allStatuses()[selectedNote || s.selected])].join(":");
   if (key !== renderKey) {
     cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools(); homeTools(); leaderPanel();
-    say(["teach_play", "teach_follow", "dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_hover", "note_pressed", "note_touch", "retreating", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
+    say(["teach_play", "teach_follow", "note_ready", "note_hover", "note_pressed", "note_touch", "retreating", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
   }
   renderPorts();
   const receipt = s.last_receipt;
@@ -725,7 +670,7 @@ function render() {
   document.body.classList.toggle("calibrating", section === "calibration");
   document.querySelector(".page-heading h1").textContent = section === "calibration" ? "Give the arm its bearings." : section === "tune" ? "Correct the keys." : "Teach the instrument.";
   document.querySelector(".page-heading p").textContent = section === "calibration" ? "Guided calibration. Six motors. One joint at a time." :
-    section === "tune" ? "Find each trigger point. Set the same approach and pressure. Verify at playing speed." : "Twelve keys. Eight chord buttons. Two voicing gestures.";
+    section === "tune" ? "Find each trigger point. Set the same approach and pressure. Verify at playing speed." : "Twelve keys. Eight chord buttons.";
   for (const name of ["connect", "calibration", "notes", "tune"]) {
     $("nav-" + name).classList.toggle("active", name === section);
     $("nav-" + name).querySelector("b").textContent = name === "connect" && s.connected || name === "calibration" && referencesReady() || name === "notes" && trained.length && count === trained.length ? "✓" : "";
@@ -738,17 +683,16 @@ function render() {
   $("keyboard").innerHTML = notes.map(n => `<button class="key ${n.includes("#") ? "sharp" : ""} ${s.keys[n].status} ${s.selected === n ? "selected" : ""}" data-note="${esc(n)}" aria-label="${esc(n)}: ${s.keys[n].status.replaceAll("_"," ")}, ${s.keys[n].trials} of 3 trials" ${!["ready","connected"].includes(p) || !s.calibrated ? "disabled" : ""}><strong>${esc(n)}</strong><small>${s.keys[n].status === "registered" ? "✓ REGISTERED" : s.keys[n].status === "needs_reteach" ? "RE-TEACH" : s.keys[n].trials ? `${s.keys[n].trials}/3 TRIALS` : "—"}</small></button>`).join("");
     const extraButton = c => {
       const value = s.controls[c.id];
-      return `<button data-note="${esc(c.id)}" class="${c.kind === "dial" ? "direction-button" : "chord-button"} ${value.status} ${(selectedNote || s.selected) === c.id ? "selected" : ""}" aria-label="${esc(c.name)}: ${value.status.replaceAll("_", " ")}, ${value.trials} of 3 trials"><strong>${c.kind === "dial" ? (c.direction === "cw" ? "↻ CW" : "↺ CCW") : esc(c.label)}</strong><small>${statusText(value)}</small></button>`;
+      return `<button data-note="${esc(c.id)}" class="chord-button ${value.status} ${(selectedNote || s.selected) === c.id ? "selected" : ""}" aria-label="${esc(c.name)}: ${value.status.replaceAll("_", " ")}, ${value.trials} of 3 trials"><strong>${esc(c.label)}</strong><small>${statusText(value)}</small></button>`;
     };
     $("chord-buttons").innerHTML = Object.values(s.catalog).filter(c => c.group === "chords").map(extraButton).join("");
-    $("dial-buttons").innerHTML = Object.values(s.catalog).filter(c => c.group === "voicing").map(extraButton).join("");
-    for (const [group, id, total] of [["keys", "key-count", 12], ["chords", "chord-count", 8], ["voicing", "dial-count", 2]]) {
+    for (const [group, id, total] of [["keys", "key-count", 12], ["chords", "chord-count", 8]]) {
       const registered = Object.values(s.catalog).filter(c => c.group === group && allStatuses()[c.id].status === "registered").length;
       $(id).textContent = `${registered} / ${total}`;
     }
   }
   // Clicking a key selects a label only; torque release always needs the supported action.
-  $("keyboard-hint").textContent = leaderMode() && referencesReady() && (setupIdle() || ["teach_hold","teach_follow"].includes(p)) ? "Select a key, chord button, or dial direction, then Teach, Record or Play below." : setupIdle() && referencesReady() ? "Select a key, chord button, or dial direction. Support the arm, then choose Teach below." : "12 keys · 8 chord buttons · 2 voicing directions. Each motion is taught and verified separately.";
+  $("keyboard-hint").textContent = leaderMode() && referencesReady() && (setupIdle() || ["teach_hold","teach_follow"].includes(p)) ? "Select a key or chord button, then Teach, Record or Play below." : setupIdle() && referencesReady() ? "Select a key or chord button. Support the arm, then choose Teach below." : "12 keys · 8 chord buttons. Each motion is taught and verified separately.";
   const leaderView = s.leader?.connected && calibrationTarget() === "leader" && section === "calibration";
   $("arm-guide-title").textContent = leaderView ? "SO101 · leader motor guide" : "SO101 · follower guide";
   // Separate display identities prevent a stale leader pose being shown as the follower after a fault.
@@ -778,7 +722,6 @@ function render() {
     $("range-min").textContent = range?.min ?? "—"; $("range-max").textContent = range?.max ?? "—";
     $("range-progress").value = range ? range.max - range.min : 0;
   }
-  if ($("dial-return-error")) $("dial-return-error").textContent = `${s.dial_return_error ?? "—"} ticks`;
   const activityKey = JSON.stringify(s.events.slice(0,12));
   if ($("events").dataset.snapshot !== activityKey) {
     $("events").dataset.snapshot = activityKey;
@@ -792,7 +735,7 @@ function render() {
   updateButtons();
 }
 let selectedNote = null, autoScanned = false, captureReceipt, flash = null, targetPoint = null;
-const turnInput = {}, pressInput = {};  // values typed but not yet played, kept across page refreshes
+const pressInput = {};  // values typed but not yet played, kept across page refreshes
 const sentCaptures = {};  // command id -> which point it captured
 const flashing = (point, control) => flash && flash.until > Date.now() && flash.point === point && (!control || flash.control === control);
 function beep() {
@@ -834,7 +777,7 @@ function updateButtons() {
     if (["teach_set_home", "teach_set_rest"].includes(b.dataset.action)) valid = valid && canCapture();
     if (b.dataset.action === "teach_go_home") valid = valid && !!state.teach?.home_saved && ["teach_hold", "teach_follow"].includes(state.phase);
     if (b.dataset.action === "teach_go_rest") valid = valid && !!state.teach?.rest_saved && ["teach_hold", "teach_follow"].includes(state.phase);
-    if (leaderMode() && b.dataset.action !== "capture_home" && (b.dataset.action.startsWith("capture_") || b.dataset.action.startsWith("dial_capture_"))) valid = valid && state.leader_teaching && !state.leader_following;
+    if (leaderMode() && b.dataset.action !== "capture_home" && b.dataset.action.startsWith("capture_")) valid = valid && state.leader_teaching && !state.leader_following;
     if (b.dataset.diagnostics) valid = state.connected && ["connected", "ready"].includes(state.phase) && Object.values(state.torque || {}).length === 6 && Object.values(state.torque).every(v => v === 0);
     if (b.dataset.action === "calibration_next") { const range = state.ranges[state.range_motor]; valid = valid && range && range.max - range.min > 32; }
     b.disabled = blocked || !valid || (needsControllerUpdate() && !recoveryAction(b.dataset.action));
@@ -890,7 +833,6 @@ function dispatchButton(b) {
   // Every teaching command names the key selected on the map, so the app never falls back to the previous key.
   if (["teach_begin","teach_follow","teach_hold","teach_play","teach_capture"].includes(action)) args.control = targetControl();
   if (action === "teach_play") { if (b.dataset.speed) args.speed = Number(b.dataset.speed); args.force = b.dataset.force === "true"; }
-  if (action === "teach_play" && $("turn-degrees")) args.turn_degrees = Number($("turn-degrees").value);
   if (action === "teach_play" && $("press-seconds")) args.press_s = Number($("press-seconds").value);
   if (action === "teach_capture") args.point = b.dataset.point;
   if (action === "teach_begin" && b.dataset.follow === "true") args.follow = true;
@@ -904,11 +846,10 @@ function dispatchButton(b) {
   }
   if (action === "move_home") { args.duration = Number($("home-duration").value); args.hands_clear = args.path_clear; }
   if (action === "home_start") args.control = selectedNote || state.selected;
-  if (action === "dial_capture_start") { args.reference = $("dial-reference").value; args.expected_effect = $("dial-effect").value; }
   // Consent is for this attempt only, including canceled countdowns and errors.
   if (!b.dataset.diagnostics && !["refresh_ports","refresh_leader_ports"].includes(action)) clearConfirmations(scope);
   const revision = state.revision;
-  const delayed = ["home_start","capture_home","capture_key_clearance","capture_home_return","leader_hold","calibrate","calibration_reset","calibration_reload","calibration_center","control_start","dial_capture_start","dial_capture_contact","dial_capture_turn","dial_capture_lift","dial_capture_return","capture_hover","capture_pressed","capture_touch","retreat_from_press","next","release","disconnect","retry"].includes(action);
+  const delayed = ["home_start","capture_home","capture_key_clearance","capture_home_return","leader_hold","calibrate","calibration_reset","calibration_reload","calibration_center","control_start","capture_hover","capture_pressed","capture_touch","retreat_from_press","next","release","disconnect","retry"].includes(action);
   const alignment = action === "leader_resume", homing = action === "move_home";
   if (alignment || homing || ($("delay").checked && delayed)) {
     let left = 5;
@@ -951,7 +892,6 @@ document.addEventListener("click", event => {
 });
 document.addEventListener("change", () => updateButtons());
 document.addEventListener("input", event => {
-  if (event.target.id === "turn-degrees") turnInput[targetControl()] = event.target.value;
   if (event.target.id === "press-seconds") pressInput[targetControl()] = event.target.value;
 });
 // Arm speed and press hardness are global settings (top bar): dragging previews, letting go saves (no motion).
