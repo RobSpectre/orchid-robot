@@ -65,12 +65,6 @@ button.secondary:hover:enabled {
   background:#3d392e;
 }
 
-button.danger-button {
-  background:#482d23;
-  color:var(--red);
-  border-color:#78513d;
-}
-
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible {
   outline:3px solid #f88b50;
   outline-offset:3px;
@@ -429,15 +423,10 @@ main {
   color:var(--muted);
 }
 
-.card,.keyboard-card {
+.card {
   background:var(--white);
   border:1px solid var(--line);
   border-radius:12px;
-}
-
-.keyboard-card {
-  padding:24px 28px;
-  margin-bottom:24px;
 }
 
 .section-line {
@@ -567,11 +556,6 @@ main {
 
 .key.needs_reteach,.key.testing {
   border-color:#e97846;
-}
-
-.keyboard-card>p {
-  font-size:10px;
-  margin:13px 0 0;
 }
 
 .subtle {
@@ -718,12 +702,6 @@ input[type=checkbox] {
   color:#ffb89c;
 }
 
-.notice.info {
-  background:#393629;
-  border:1px solid #665a3c;
-  color:#e8c783;
-}
-
 .error-copy-tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:6px 0 16px; }
 .error-copy-tools .copy-error { min-height:44px; padding:10px 16px; }
 .copy-error-status { color:var(--muted); font-size:12px; }
@@ -811,11 +789,6 @@ input[type=checkbox] {
   min-height:39px;
   font-size:11px;
   border-bottom:1px solid #3b3932;
-}
-
-.motor .motor-id {
-  font-size:9px;
-  color:#918878;
 }
 
 .motor .position {
@@ -1220,15 +1193,6 @@ th {
   }
   .progress-number>span {
     font-size:6px;
-  }
-  .keyboard-card {
-    padding:20px 14px;
-  }
-  .keyboard-card .section-line {
-    flex-direction:column;
-    align-items:flex-start;
-    gap:10px;
-    margin-bottom:17px;
   }
   .legend {
     font-size:8px;
