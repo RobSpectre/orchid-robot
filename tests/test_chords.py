@@ -317,6 +317,7 @@ def test_one_pass_feeds_several_loop_layers_each_in_its_register_hold_and_sound(
                                                  {"beat": 4.0, "duration": 2.0, "note": 59, "velocity": 70},
                                                  {"beat": 8.0, "duration": 1.0, "note": 50, "velocity": 70}]}]
     client.looper["pending_composes"] = []
+    client.looper["monitor_slot"] = 5
     calls = client.studio_calls
     body = {"events": events, "sound": 52, "loop_layers": [
         {"slot": 1, "hold": "legato", "merge": True, "velocity": 72, "perform": {"mode": "off"}},
@@ -333,6 +334,7 @@ def test_one_pass_feeds_several_loop_layers_each_in_its_register_hold_and_sound(
     assert composed[3]["chords"] == [{"beat": 0.0, "duration": 2.0, "notes": [36, 40, 43], "velocity": 40},
                                      {"beat": 8.0, "duration": 2.0, "notes": [38], "velocity": 40}]
     sent_settings = [(c, f) for c, f, _ in calls]
+    assert ("loop-monitor", {"slot": 1}) in sent_settings  # the pass is heard through the pad layer's own voice
     assert ("layer-preset", {"slot": 3, "preset": 45}) in sent_settings and ("layer-preset", {"slot": 1, "preset": 52}) in sent_settings
     assert ("layer-preset", {"slot": 3, "preset": 52}) not in sent_settings  # the bass has its own sound
     loop = played.json()["studio"]["loop"]

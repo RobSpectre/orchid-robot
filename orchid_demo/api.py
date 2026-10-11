@@ -680,6 +680,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 raise HTTPException(409, "This Orchid Studio keeps one waiting composition at a time, so a pass cannot land in "
                                          "several layers: update Studio, or send one loop layer.")
             loop = {"slot": layers[0].slot, "bars": looper["settings"]["bars"]}
+            # Studio can play the arms' live notes through the layer's own voice: the part is heard as it will loop.
+            loop["monitor"] = "monitor_slot" in looper
             if len(layers) > 1:
                 loop["slots"] = [layer.slot for layer in layers]
         # The score's sound and fx go to the live voice and to every layer that has none of its own.
@@ -702,7 +704,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 score.fits(placed, align)
             except SafetyError as exc:
                 raise HTTPException(409, str(exc)) from exc
-            planned["loop"] = dict(loop)
+            planned["loop"] = {k: v for k, v in loop.items() if k != "monitor"}
             if planned["length_bars"] > loop["bars"]:
                 # Not a problem for the loop: the layer gets every note on its written beat however long the pass takes.
                 # Only the live pass (voice 5) runs on into the loop's next passes while the arms finish.
@@ -739,6 +741,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             return report
         try:  # the starting settings, and any change before the first note, are in place before anything plays
             applied_start = apply(start) if start else []
+            if loop and loop.pop("monitor"):  # the arms' live notes sound through the first layer's voice from now
+                studio("loop-monitor", slot=layers[0].slot)
+                applied_start.append(f"live notes through layer {layers[0].slot}")
             for layer in layers:  # a layer with a sound or fx of its own: on its voice only
                 own = {k: v for k, v in (("sound", layer.sound), ("fx", layer.fx)) if v}
                 applied_start += apply(own, voices=(layer.slot,)) if own else []
