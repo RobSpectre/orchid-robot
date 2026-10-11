@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Running Orchid</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --panel: #ffffff; --ink: #14172b; --muted: #5a6078; --line: #dde0ec;
+    --accent: #5d52f6; --accent-soft: #ecebff; --lime: #4d6b00; --warn-bg: #fff6e0; --warn-line: #e8b44a;
+    --stop-bg: #ffecec; --stop-line: #e06666; --kbd: #eef0f7; --code: #f0f1f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1424; --panel: #111d33; --ink: #e8ecf8; --muted: #9aa4c2; --line: #233455;
+      --accent: #a9a3ff; --accent-soft: #1d2350; --lime: #daff33; --warn-bg: #2c2410; --warn-line: #a07a22;
+      --stop-bg: #2e1416; --stop-line: #b04444; --kbd: #1b2a47; --code: #172440;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 32px 16px 80px; display: grid; gap: 40px; }
+  @media (min-width: 960px) { .wrap { grid-template-columns: 230px 1fr; } }
+  nav { font-size: 15px; }
+  @media (min-width: 960px) { nav { position: sticky; top: 24px; align-self: start; } }
+  nav ol { list-style: none; padding: 0; margin: 8px 0 0; counter-reset: s; }
+  nav li { counter-increment: s; margin: 2px 0; }
+  nav a { display: block; padding: 5px 10px; border-radius: 8px; color: var(--muted); text-decoration: none; }
+  nav a::before { content: counter(s) ". "; color: var(--accent); font-weight: 600; }
+  nav a:hover { background: var(--accent-soft); color: var(--ink); }
+  nav .title { font-weight: 700; color: var(--ink); padding: 0 10px; }
+  main { min-width: 0; }
+  header { margin-bottom: 8px; }
+  header .flower { font-size: 44px; line-height: 1; }
+  h1 { font-size: 38px; line-height: 1.15; margin: 10px 0 8px; letter-spacing: -0.5px; }
+  .lede { color: var(--muted); font-size: 19px; margin: 0 0 8px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px 28px; margin: 24px 0; }
+  h2 { font-size: 25px; margin: 0 0 12px; display: flex; gap: 12px; align-items: baseline; }
+  h2 .n { color: var(--accent); font-variant-numeric: tabular-nums; }
+  h3 { font-size: 19px; margin: 24px 0 6px; }
+  p, li { max-width: 72ch; }
+  ol.steps { padding-left: 0; list-style: none; counter-reset: st; }
+  ol.steps > li { counter-increment: st; position: relative; padding: 0 0 12px 44px; }
+  ol.steps > li::before { content: counter(st); position: absolute; left: 0; top: 1px; width: 30px; height: 30px;
+    border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; font-size: 15px;
+    display: grid; place-items: center; }
+  @media (prefers-color-scheme: dark) { ol.steps > li::before { color: #0b1424; } }
+  .note, .warn, .stop { border-radius: 12px; padding: 12px 16px; margin: 16px 0; border-left: 5px solid; }
+  .note { background: var(--accent-soft); border-color: var(--accent); }
+  .warn { background: var(--warn-bg); border-color: var(--warn-line); }
+  .stop { background: var(--stop-bg); border-color: var(--stop-line); }
+  .note > :first-child, .warn > :first-child, .stop > :first-child { margin-top: 0; }
+  .note > :last-child, .warn > :last-child, .stop > :last-child { margin-bottom: 0; }
+  kbd { background: var(--kbd); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px;
+        padding: 1px 7px; font: 600 14px ui-monospace, Menlo, monospace; }
+  code { background: var(--code); border-radius: 5px; padding: 1px 6px; font: 15px ui-monospace, Menlo, monospace; }
+  .btn { font-weight: 700; white-space: nowrap; }
+  .btn::before { content: "["; color: var(--muted); font-weight: 400; margin-right: 1px; }
+  .btn::after { content: "]"; color: var(--muted); font-weight: 400; margin-left: 1px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); margin: 16px 0; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 4px; font-size: 17px; }
+  .card p { margin: 0; font-size: 15px; color: var(--muted); }
+  .card .where { display: block; margin-top: 8px; font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; margin: 12px 0; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .table-scroll { overflow-x: auto; }
+  a { color: var(--accent); }
+  .inv-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 12px 0 4px; }
+  #inv-count { font-weight: 700; }
+  #inv-count.done { color: var(--lime); }
+  .inv-bar button { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); cursor: pointer; }
+  ul.inventory { list-style: none; padding: 0; margin: 8px 0; columns: 2 300px; column-gap: 24px; }
+  ul.inventory li { break-inside: avoid; }
+  ul.inventory label { display: flex; gap: 12px; align-items: flex-start; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  ul.inventory input { width: 20px; height: 20px; margin-top: 3px; flex: none; accent-color: var(--accent); }
+  ul.inventory input:checked + span { color: var(--muted); text-decoration: line-through; }
+  .muted { color: var(--muted); font-size: 15px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav aria-label="Contents">
+    <div class="title">Contents</div>
+    <ol>
+      <li><a href="#inventory">Inventory check</a></li>
+      <li><a href="#before">Before you start</a></li>
+      <li><a href="#start">Start everything</a></li>
+      <li><a href="#parts">What's running</a></li>
+      <li><a href="#connect">Connect the arms</a></li>
+      <li><a href="#calibrate">Calibrate (when needed)</a></li>
+      <li><a href="#train">Train keys and chords</a></li>
+      <li><a href="#visualizer">Set up the visualizer</a></li>
+      <li><a href="#jam">Start a jam</a></li>
+      <li><a href="#stopping">Stopping safely</a></li>
+      <li><a href="#trouble">If something goes wrong</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header>
+      <div class="flower" aria-hidden="true">🪻</div>
+      <h1>Running the Orchid installation</h1>
+      <p class="lede">Two robot arms play the Orchid synthesizer, an AI musician (Hermes) writes the music, and a big screen shows it all. This page takes you from a switched-off table to a running jam.</p>
+    </header>
+
+    <div class="stop">
+      <p><strong>Stopping the arms, fast.</strong> Turn the Orchid's big <strong>voicing dial</strong> any amount, or press <kbd>Esc</kbd> or <span class="btn">Stop motion</span> in orchid-robot. The arms freeze where they are. In an emergency, switch off the arms' power supply.</p>
+    </div>
+
+    <section id="inventory">
+      <h2><span class="n">1</span> Inventory check</h2>
+      <p>Before setting up, and again when packing up, count every item on the bill of goods and tick it off.</p>
+      <div class="inv-bar"><span id="inv-count" aria-live="polite"></span><button type="button" id="inv-clear">Clear ticks</button></div>
+      <ul class="inventory">
+        <li><label><input type="checkbox" data-item="0"><span><b>Two (2)</b> <a href="https://github.com/TheRobotStudio/SO-ARM100">SO101 robot arms</a></span></label></li>
+        <li><label><input type="checkbox" data-item="1"><span><b>Two (2)</b> SO101 guiding arms</span></label></li>
+        <li><label><input type="checkbox" data-item="2"><span><b>One (1)</b> <a href="https://telepathicinstruments.com/products/orchid-orc-1">Telepathic Instruments Orchid</a></span></label></li>
+        <li><label><input type="checkbox" data-item="3"><span><b>Two (2)</b> 12-volt DC adapters</span></label></li>
+        <li><label><input type="checkbox" data-item="4"><span><b>Two (2)</b> 5-volt DC adapters</span></label></li>
+        <li><label><input type="checkbox" data-item="5"><span><b>Four (4)</b> SO101 microcontrollers</span></label></li>
+        <li><label><input type="checkbox" data-item="6"><span><b>Four (4)</b> USB-C to USB-C cables, 20 ft</span></label></li>
+        <li><label><input type="checkbox" data-item="7"><span><b>One (1)</b> USB-C charger</span></label></li>
+        <li><label><input type="checkbox" data-item="8"><span><b>One (1)</b> USB-C</span></label></li>
+        <li><label><input type="checkbox" data-item="9"><span><b>Two (2)</b> mounting plates for SO101 arms and Orchid</span></label></li>
+        <li><label><input type="checkbox" data-item="10"><span><b>One (1)</b> demo laptop with demo stack and Pistil installed</span></label></li>
+        <li><label><input type="checkbox" data-item="11"><span><b>One (1)</b> electronics repair kit</span></label></li>
+        <li><label><input type="checkbox" data-item="12"><span><b>Two (2)</b> US power strips</span></label></li>
+        <li><label><input type="checkbox" data-item="13"><span><b>Four (4)</b> EU → US outlet converters</span></label></li>
+        <li><label><input type="checkbox" data-item="14"><span><b>Eight (8)</b> black zinc M5 screws</span></label></li>
+        <li><label><input type="checkbox" data-item="15"><span><b>One (1)</b> robotic component spares kit</span></label></li>
+        <li><label><input type="checkbox" data-item="16"><span><b>One (1)</b> electronics repair kit</span></label></li>
+        <li><label><input type="checkbox" data-item="17"><span><b>Two (2)</b> PLA printed Nebius branded SO101 arm piece sets</span></label></li>
+        <li><label><input type="checkbox" data-item="18"><span><b>Three (3)</b> C clamps</span></label></li>
+      </ul>
+      <p class="muted">Ticks are remembered in this browser until you clear them. Anything missing or damaged: tell the project owner before the demo.</p>
+    </section>
+
+    <section id="before">
+      <h2><span class="n">2</span> Before you start</h2>
+      <ol class="steps">
+        <li>Check that both arms and the Orchid sit on their marks on the plate, and that the arms' rubber fingertips are on firmly.</li>
+        <li>Plug the <strong>Orchid's USB cable</strong> into the laptop and switch the Orchid on.</li>
+        <li>Plug in the <strong>arms' USB-C cables</strong> and switch on the arms' power. The arms stay limp until the software takes hold of them.</li>
+        <li>Plug the <strong>PA</strong> into the laptop's headphone jack.</li>
+        <li>Keep the arms' power switch within reach the whole time the arms are powered.</li>
+      </ol>
+      <div class="note"><p>Plug in <strong>every</strong> cable <strong>before</strong> starting the software, and try not to touch them while it runs. Studio looks for the Orchid only when it starts, and plugging or unplugging a USB-C cable can lose the connection to the arms (see <a href="#lost-arms">Lost the arms?</a>).</p></div>
+    </section>
+
+    <section id="start">
+      <h2><span class="n">3</span> Start everything</h2>
+      <ol class="steps">
+        <li>Double-click <strong>Start Orchid</strong> on the desktop. A Terminal window opens.</li>
+        <li>It checks the Orchid, the arms and the PA. If one is missing it tells you what to plug in: plug it in and press <kbd>Return</kbd>.</li>
+        <li>It starts the programs and ticks each one off. Then three windows open: the <strong>visualizer</strong>, <strong>Orchid Studio</strong> and <strong>orchid-robot</strong>.</li>
+        <li>Leave the Terminal window open (you can move it aside). Closing it stops everything.</li>
+      </ol>
+      <div class="warn">
+        <p><strong>Keep the orchid-robot window open.</strong> The arms only move while it's open. If it closes, they stop and hold where they are within five seconds.</p>
+      </div>
+      <p>The Terminal window also shows the PA's volume. The keyboard's volume keys don't work with this output, so set the level on the PA itself.</p>
+    </section>
+
+    <section id="parts">
+      <h2><span class="n">4</span> What's running</h2>
+      <p>Four programs work together. You'll mostly use orchid-robot and the Hermes chat.</p>
+      <div class="grid">
+        <div class="card">
+          <h3>orchid-robot</h3>
+          <p>Drives the two arms: connecting, calibrating, teaching them where each key is, and playing. It checks every move for safety.</p>
+          <span class="where"><a href="http://127.0.0.1:8081/">127.0.0.1:8081</a></span>
+        </div>
+        <div class="card">
+          <h3>Orchid Studio</h3>
+          <p>The sound. It turns the Orchid's notes into music with drums, four loop layers and effects, keeps the tempo, and tells orchid-robot which key actually sounded.</p>
+          <span class="where"><a href="http://127.0.0.1:8765/">127.0.0.1:8765</a></span>
+        </div>
+        <div class="card">
+          <h3>Orchid Signal <small>(visualizer)</small></h3>
+          <p>The big-screen show: the beat, the loops, a 3D twin of the arms, Hermes' thinking and how fast the AI model answers. It also plays your videos.</p>
+          <span class="where"><a href="http://127.0.0.1:4747/">127.0.0.1:4747</a> · <a href="http://127.0.0.1:4747/status">status</a></span>
+        </div>
+        <div class="card">
+          <h3>Hermes Agent</h3>
+          <p>The AI musician, running on Nebius Token Factory. Ask it for a set and it writes the music, sends it to the arms and Studio, and learns from what you say.</p>
+          <span class="where">Desktop: <strong>Jam with Hermes</strong></span>
+        </div>
+      </div>
+      <p>The hardware: the <strong>Keys Arm</strong> plays the Orchid's 12 keys, the <strong>Chord Arm</strong> presses its chord buttons, and the small <strong>leader arm</strong> is what you move by hand to teach them.</p>
+    </section>
+
+    <section id="connect">
+      <h2><span class="n">5</span> Connect the arms</h2>
+      <ol class="steps">
+        <li>In orchid-robot, press <span class="btn">Find and connect all arms</span>. It finds both arms and the leader by itself. Connecting only reads the motors: nothing moves.</li>
+        <li>The sidebar now shows <strong>Keys Arm</strong> and <strong>Chord Arm</strong>. Click one to work with it. The sidebar steps (<strong>01 Connect</strong>, <strong>02 Calibrate motors</strong>, <strong>03 Train controls</strong>, <strong>04 Correct keys</strong>) apply to the selected arm.</li>
+        <li>If an arm shows as calibrated and its keys as taught, you can skip to <a href="#visualizer">the visualizer</a> or <a href="#jam">a jam</a>.</li>
+      </ol>
+      <div class="note"><p>Many buttons that release or move the arms ask you to confirm first (<span class="btn">Arm this step</span>), and some count down five seconds so you can get both hands on the arm. Confirming alone never moves anything.</p></div>
+      <h3 id="lost-arms">Lost the arms? Restart orchid-robot</h3>
+      <p>Whenever a USB-C cable is plugged in or unplugged, orchid-robot can lose its connection to the arms: they show as disconnected, or <span class="btn">Find and connect all arms</span> doesn't find them. <strong>This happens from time to time</strong>, and the fix is to restart orchid-robot and connect again:</p>
+      <ol class="steps">
+        <li>Make sure both arms are resting or supported. Powered arms keep holding where they are while orchid-robot restarts.</li>
+        <li>Check every USB-C cable is plugged in firmly at both ends.</li>
+        <li>Click the <strong>Start Orchid</strong> Terminal window and press <kbd>R</kbd>. It restarts only orchid-robot; Studio and the visualizer keep running.</li>
+        <li>When it says orchid-robot is running, click the orchid-robot window and press <kbd>⌘</kbd> <kbd>R</kbd> to reload it.</li>
+        <li>Press <span class="btn">Find and connect all arms</span>.</li>
+      </ol>
+    </section>
+
+    <section id="calibrate">
+      <h2><span class="n">6</span> Calibrate (only when needed)</h2>
+      <p>Calibration teaches the software where each joint's middle and limits are. The arms keep their calibration, so you only need this for a <strong>new or repaired arm</strong>, or when orchid-robot asks for it. Calibrating means re-teaching that arm's keys afterwards.</p>
+      <ol class="steps">
+        <li>Select the arm in the sidebar, open <strong>02 Calibrate motors</strong> and pick <strong>Follower</strong> (the arm that plays) or <strong>Leader</strong> (the arm you move by hand).</li>
+        <li>Rest the arm clear of the Orchid and <strong>hold its weight</strong>: its motors are about to go limp. Confirm and begin.</li>
+        <li><strong>Midpoint:</strong> put every joint roughly in the middle of its travel, gripper half open, and hold still while it captures.</li>
+        <li><strong>Ranges:</strong> the 3D view highlights one joint at a time (base, shoulder, elbow, wrist bend, gripper). Move that joint gently to both ends of its comfortable travel, without forcing it, then press <span class="btn">Save range &amp; continue</span>.</li>
+        <li>Review and save. Then do the other arm if it also needs it.</li>
+      </ol>
+      <p>Changed your mind half-way? <strong>Reset or reload calibration</strong> below the step starts again or puts back the last saved calibration.</p>
+    </section>
+
+    <section id="train">
+      <h2><span class="n">7</span> Train keys and chords</h2>
+      <p>Each arm learns a <strong>home</strong> (where it waits between notes), a <strong>rest</strong> (where it parks), and then one motion per control: the Keys Arm's 12 keys, and the Chord Arm's <strong>Dim, Min, Maj, Sus</strong> buttons. You teach by moving the <strong>leader arm</strong>; the robot arm copies it live.</p>
+      <div class="warn"><p><strong>Always teach Home and Rest first</strong>, on each arm, before any key or chord button. Every key starts and ends at home, and an arm may only move while the other one is parked at its home or rest. Without them, nothing has a safe place to return to.</p></div>
+      <ol class="steps">
+        <li>Select the arm in the sidebar and open <strong>03 Train controls</strong>. A checklist shows what this arm still needs, with the next step highlighted: <strong>Home</strong>, then <strong>Rest</strong>, then the keys.</li>
+        <li>Hold the leader roughly in the same pose as the arm, then press the highlighted button. The arm stiffens and starts following the leader. Hands off the arm itself from here.</li>
+        <li><strong>Home first:</strong> guide the arm to where it should wait between notes: above the Orchid but clear of it, and out of the other arm's way. Press <span class="btn">⌂ Home</span> on the instrument map (or the highlighted Home step).</li>
+        <li><strong>Rest next:</strong> guide the arm to where it should park when it isn't playing, clear of the Orchid and the other arm. Press <span class="btn">☾ Rest</span>, then <span class="btn">Set rest here</span>.</li>
+        <li><strong>Only now, the keys. Each key or button takes three captures</strong>, each with <kbd>Space</kbd>, so one hand can stay on the leader:
+          <ul>
+            <li><strong>Hover:</strong> well above the key. Keep it high: in a song the arm glides from one key's hover to the next.</li>
+            <li><strong>Touch:</strong> fingertip just touching the key, not pressing.</li>
+            <li><strong>Press:</strong> press only until the Orchid sounds.</li>
+          </ul>
+          A beep confirms each capture. After the press, the arm returns home by itself and the key is taught.
+        </li>
+        <li>Press <span class="btn">Play</span> to try it. With Studio running, orchid-robot shows what the Orchid heard, for example <em>Orchid heard: C ✓</em>, or <em>Check the arm</em> if it hit the wrong key or missed.</li>
+        <li>orchid-robot moves to the next step on its own. Put the leader back near rest between keys, and keep going through the list.</li>
+        <li>For the chord buttons, click <strong>Chord Arm</strong> in the sidebar. The leader switches over to it. Teach its <strong>home and rest first</strong>, then its buttons, the same way.</li>
+      </ol>
+      <h3>After teaching</h3>
+      <ul>
+        <li><strong>04 Correct keys → Test the path between keys</strong> plays every key in turn to check the arm clears the Orchid between them. The first run after re-teaching is deliberately very slow so you can stop it in time.</li>
+        <li><strong>Arm speed</strong> and <strong>Press hardness</strong> in the top bar apply to every key. Try new keys at 1× speed first.</li>
+        <li>A key that keeps missing: select it and teach it again. Your old motion keeps working until the new press is captured, and <span class="btn">✕ Cancel re-teach</span> keeps the old one.</li>
+      </ul>
+      <div class="warn"><p>If the arms, the Orchid or the plate get moved or bumped, taught keys can miss. Play a few keys at 1× or slower and re-teach any that miss.</p></div>
+    </section>
+
+    <section id="visualizer">
+      <h2><span class="n">8</span> Set up the visualizer</h2>
+      <ol class="steps">
+        <li>Drag the visualizer window onto the big screen, click it, and press <kbd>F</kbd> for full screen.</li>
+        <li>Move the mouse to show the control strip at the bottom: buttons for the four <strong>looks</strong> and four <strong>themes</strong>, and whether they rotate on their own. Keys work too: <kbd>1</kbd>–<kbd>4</kbd> for looks, <kbd>Shift</kbd>+<kbd>1</kbd>–<kbd>4</kbd> for themes, <kbd>D</kbd> for a demo with nothing playing.</li>
+        <li>Press <kbd>S</kbd> (or the cog in the top-right corner) to open <strong>Settings</strong>.</li>
+      </ol>
+      <h3>Showing your own videos</h3>
+      <ol class="steps">
+        <li>In Settings, under <strong>videos</strong>, drop video files onto <strong>Drop video files here</strong> (or click <em>choose files</em>). mp4, mov, webm, m4v, ogv and mkv all work. They're copied into the visualizer's <code>media</code> folder (<code>~/workspace/orchid-visualization/media</code>).</li>
+        <li>For each video, choose how often it plays (<strong>Every … min</strong>), whether it plays whole or only its first seconds, where to start, and its <strong>Sound</strong> level. Videos are silent by default, since the music comes from Studio.</li>
+        <li>Under <strong>video schedule</strong>, switch on <strong>Play videos on their schedule</strong>, pick a transition (<strong>Iris</strong>, <strong>Crossfade</strong> or <strong>Glitch</strong>), and choose when videos may play: any time, only while Studio isn't playing, or only while it is.</li>
+        <li>Press <span class="btn">▶ Play now</span> on a video to show it straight away. <kbd>V</kbd> on the display stops the video on screen.</li>
+      </ol>
+      <p>Changes save immediately and every open visualizer follows them.</p>
+      <h3>Red full-screen alerts</h3>
+      <p>When something disconnects, the screen turns red and says what's lost. Fix it, or, if you're running without that part on purpose, switch it off under <strong>Settings → connectivity alerts</strong>. Switch off <strong>WhatsApp</strong>, which this installation doesn't use. The <a href="http://127.0.0.1:4747/status">status page</a> lists every check with tips.</p>
+    </section>
+
+    <section id="jam">
+      <h2><span class="n">9</span> Start a jam</h2>
+      <ol class="steps">
+        <li><strong>Get both arms holding.</strong> In orchid-robot, select the Keys Arm and <span class="btn">Play</span> any key, then select the Chord Arm and play any chord button. Each arm now holds at home, ready.</li>
+        <li>Check the visualizer's status page says all systems go (the WhatsApp line doesn't matter).</li>
+        <li>Double-click <strong>Jam with Hermes</strong> on the desktop. A chat opens in Terminal.</li>
+        <li>Ask for music in plain words, and press <kbd>Return</kbd>:
+          <ul>
+            <li><code>Play a 20-minute chill set</code></li>
+            <li><code>Play something dark and slow</code></li>
+            <li><code>Play a dnb set at 170 bpm</code></li>
+          </ul>
+          Moods like <em>dark</em>, <em>ambient</em> or <em>dnb</em> set the start; <em>chill</em> and <em>banger</em> slow it down or speed it up; a number of bpm (60–180) sets the tempo.
+        </li>
+        <li>The drums and loops start in Studio, and the arms play on the beat. Hermes improvises a new song in each part of the set.</li>
+        <li>Hermes sometimes asks what you think of what it's trying. Answer in your own words: it learns what this audience likes.</li>
+        <li>Type <code>stop</code> to end the set. The arms go to rest and the music fades out over a few loops.</li>
+      </ol>
+      <div class="note"><p>If Hermes says an arm needs attention (for example <em>check the arm</em> after a wrong key), look at orchid-robot: it says what happened. The music in Studio keeps going while you fix it.</p></div>
+      <div class="warn"><p>After you stop the arms with the voicing dial, Hermes can't move them until you do something in orchid-robot (play a key, or send an arm home). That's on purpose.</p></div>
+    </section>
+
+    <section id="stopping">
+      <h2><span class="n">10</span> Stopping safely</h2>
+      <ol class="steps">
+        <li>In the Hermes chat, type <code>stop</code> and wait for the music to fade. Close the chat window.</li>
+        <li>In orchid-robot, for each arm: <span class="btn">Go to rest</span>.</li>
+        <li>With a hand under the arm, open <span class="btn">Release or disconnect</span>, confirm, and choose <span class="btn">Disconnect</span>. The arm goes limp, so support it as it settles.</li>
+        <li>Close the <strong>Start Orchid</strong> Terminal window and choose <strong>Terminate</strong>. That stops Studio, orchid-robot and the visualizer.</li>
+        <li>Switch off the arms' power, then the Orchid.</li>
+      </ol>
+      <div class="warn"><p>Closing the programs doesn't make the arms go limp: powered arms keep holding where they are. Always disconnect in orchid-robot, or switch off their power, with the arm supported.</p></div>
+    </section>
+
+    <section id="trouble">
+      <h2><span class="n">11</span> If something goes wrong</h2>
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
+        <tbody>
+          <tr><td>No sound</td><td>Is the PA plugged into the headphone jack and turned up? The Start Orchid window should say <em>Sound goes to the PA</em>. If it said the PA wasn't plugged in, close it and start again with the PA connected.</td></tr>
+          <tr><td>Studio doesn't react to the Orchid, or red "The Orchid" alert</td><td>The Orchid was plugged in after Studio started. Close the Start Orchid window (Terminate) and double-click Start Orchid again.</td></tr>
+          <tr><td>Arms disconnected, or not found, after a USB-C cable was plugged or unplugged</td><td>Expected from time to time. Press <kbd>R</kbd> in the Start Orchid window, reload orchid-robot with <kbd>⌘</kbd> <kbd>R</kbd>, and press <span class="btn">Find and connect all arms</span>. See <a href="#lost-arms">Lost the arms?</a></td></tr>
+          <tr><td>Arms stopped: "operator connection lost"</td><td>The orchid-robot window was closed or the Mac slept. Open <a href="http://127.0.0.1:8081/">127.0.0.1:8081</a> again (one window only) and press <span class="btn">Find and connect all arms</span>.</td></tr>
+          <tr><td>orchid-robot says <em>Read-only window</em></td><td>Another orchid-robot window has control. Close the extra one and wait five seconds.</td></tr>
+          <tr><td><em>Check the arm: wrong key</em> or a missed note</td><td>Look at the arm and the key. Play the key once more on its own; if it still misses, re-teach it (section 7).</td></tr>
+          <tr><td>Arm shivers or buzzes while holding</td><td>Send it to rest, or disconnect it with the arm supported. Then re-teach its home or rest a little further from the end of a joint's travel.</td></tr>
+          <tr><td>A program shows ✗ in the Start Orchid window</td><td>It shows the end of that program's log. Close the window and start again; if it fails twice, note the message for the project owner. Full logs are in <code>~/Library/Logs/Orchid</code>.</td></tr>
+          <tr><td>Hermes says the arms or Studio aren't ready</td><td>Do step 1 of <a href="#jam">Start a jam</a> again (play one key and one chord button), and check the status page.</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+  (() => {
+    const KEY = 'orchid-inventory';
+    const boxes = [...document.querySelectorAll('ul.inventory input')];
+    const count = document.getElementById('inv-count');
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch { saved = {}; }
+    const update = () => {
+      const done = boxes.filter(b => b.checked).length;
+      count.textContent = done === boxes.length ? `All ${done} items checked ✓` : `${done} of ${boxes.length} items checked`;
+      count.classList.toggle('done', done === boxes.length);
+      try { localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(boxes.map(b => [b.dataset.item, b.checked])))); } catch {}
+    };
+    boxes.forEach(b => { b.checked = !!saved[b.dataset.item]; b.addEventListener('change', update); });
+    document.getElementById('inv-clear').addEventListener('click', () => { boxes.forEach(b => { b.checked = false; }); update(); });
+    update();
+  })();
+</script>
+</body>
+</html>

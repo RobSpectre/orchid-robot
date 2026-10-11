@@ -65,6 +65,24 @@ The bundle checks every file's checksum. `--logs` adds the large motion logs; `-
 
 The server binds only to `127.0.0.1`. Keep one operator tab open. A second tab can view state but cannot take control while the first tab's lease is active. Do not expose this service with a reverse proxy or remote tunnel.
 
+## Demo account
+
+To hand the installation to someone who hasn't worked on it, make a separate macOS account with one icon that starts everything. From your own account:
+
+```bash
+sudo scripts/demo/setup-demo-user.sh          # or: sudo scripts/demo/setup-demo-user.sh <name>
+```
+
+It creates an administrator account `demo` (asking you for its password), links each project in your `~/workspace` into its `~/workspace` (plus the `orchid` virtualenv, LeRobot's calibration and `~/.hermes`), and gives both accounts read and write access to those files through inherited ACLs, so taught keys, calibration and Studio sessions stay shared. It also puts **Start Orchid**, **Jam with Hermes** and **Read Me First** on the demo account's desktop. Run it again at any time.
+
+**Read Me First** ([scripts/demo/guide.html](scripts/demo/guide.html)) is the operator's guide: starting up, the four programs, connecting, calibrating, training, the visualizer's videos, starting a jam and shutting down safely.
+
+**Start Orchid** opens a Terminal window that checks the Orchid and the arms are plugged in, then starts Orchid Studio (`--sound-input Orchid --chord-channel 3`), orchid-robot with `--enable-hardware --port 8081` and the visualizer. Any of them that is already running is left as it is. It sends the sound to the PA on the headphone jack through **Orchid PA**, a Multi-Output device it creates: BlackHole 2ch first, so Hermes' WhatsApp jams can still record Studio, plus External Headphones. The volume keys don't work on a Multi-Output device, so set the level on the PA. It keeps the Mac awake and opens the three pages in their own Chrome windows, with background throttling off so orchid-robot never misses a heartbeat. Closing that window stops what it started, and pressing **R** in it restarts only orchid-robot: plugging or unplugging a USB-C cable can lose the arms, and restarting orchid-robot and connecting again recovers them. Logs go to `~/Library/Logs/Orchid/`. The launcher is `scripts/demo/start-orchid.command`, and it works from any account.
+
+**Jam with Hermes** opens a Hermes chat with the `orchid-robot-jam` skill loaded (`~/.local/bin/hermes --skills orchid-robot-jam`), so a set is one sentence away. The chat doesn't need Hermes' messaging gateway, which only runs while you are logged in and is only needed for WhatsApp.
+
+Only one account can use the arms and the Orchid at a time, so quit the programs in your account before switching.
+
 ## Operator workflow
 
 The following steps describe guiding the follower by hand. For leader teaching, use the shared-home workflow below.
