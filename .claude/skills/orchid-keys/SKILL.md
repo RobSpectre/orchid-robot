@@ -1,27 +1,28 @@
 ---
 name: orchid-keys
-description: Play and compose music (jams that evolve: see JAMMING.md) on the taught Orchid synth controls (12 keys, chord buttons, voicing dial) through orchid-robot's performance API, including chords (a key played with a chord button held, using both arms) and whole scores on Orchid Studio's beat. Use when the user asks to play a key, a chord, a melody, a rhythm, a chord progression or a set, to send the arms home or to rest, or to stop them. How the arms move (holding, speed, hardness, the order of moves, safety) is orchid-robot's and the operator console's, never this skill's.
+description: Play and compose music (jams that evolve: see JAMMING.md) on the taught Orchid synth controls (12 keys, chord buttons) through orchid-robot's performance API, including chords (a key played with a chord button held, using both arms) and whole scores on Orchid Studio's beat. Use when the user asks to play a key, a chord, a melody, a rhythm, a chord progression or a set, to send the arms home or to rest, or to stop them. How the arms move (holding, speed, hardness, the order of moves, safety) is orchid-robot's and the operator console's, never this skill's.
 ---
 
 # Orchid keys
 
 The SO101 follower plays controls that were taught in the operator console (home → hover → touch → press for
-keys and chord buttons; hover → open → lower → grip plus a turn angle for the dial). This skill sends **music** to
+keys and chord buttons). The arms never play Orchid's voicing dial: voicing is set in software (Orchid Studio's
+`chord-voicing` command), and the dial is reserved as the operator's stop control. This skill sends **music** to
 orchid-robot's performance API with `scripts/orchid.py` (standard library only), and can ask for the arms to go home
 or to rest. orchid-robot owns everything about how the arms move: holding, the order of moves, arm speed, press
-hardness, dial angles, planning, the interlock and every safety check. The operator owns the console. This skill
-never commands an arm directly. The API refuses console commands from programs, refuses motion overrides (`speed`,
-`turn_degrees`), and plays **one performance at a time**:
+hardness, planning, the interlock and every safety check. The operator owns the console. This skill
+never commands an arm directly. The API refuses console commands from programs, refuses motion overrides (`speed`),
+and plays **one performance at a time**:
 while one runs (`status` shows `Performing now`), a second is refused, so wait for the first to return.
 
-With two followers, the Keys Arm plays the 12 keys and the Chord Arm the chord buttons and dial. **A chord is one instruction**: name
+With two followers, the Keys Arm plays the 12 keys and the Chord Arm the chord buttons. **A chord is one instruction**: name
 the key and the chord button, and orchid-robot runs both arms itself. The Chord Arm presses and holds the button, the Keys
 Arm plays the key, and once the key is down the Chord Arm lets go and goes home. Never sequence the arms yourself, for example by playing
 `maj` and then `C`: a chord button pressed on its own only goes down and comes back up, so no chord sounds.
 
 ## Before anything moves
 
-1. Run `python3 scripts/orchid.py status`. It lists every control, its status, turn angle (dial), the default
+1. Run `python3 scripts/orchid.py status`. It lists every control, its status, the default
    speed and note value, and whether the arm is **ready to play**. `clock` shows Orchid Studio's tempo.
 2. Only `registered` controls can be played. `empty` means not taught; `needs_reteach` means it must be
    taught again in the console (do not try to work around it).
@@ -44,8 +45,7 @@ stopped, a phrase keeps its own time at Studio's tempo from its first note. orch
 the notes and their values, never sleeps or delays between commands.
 
 In a phrase each step's note value is how long it sounds and when the next one comes. `r:1/4` is a rest. Between two
-keys the Keys Arm lifts to the key's hover and goes straight to the next key's hover; it goes home only at the end (or
-when something else comes between, such as a voicing turn). A change still takes a second or more. When a note comes
+keys the Keys Arm lifts to the key's hover and goes straight to the next key's hover; it goes home only at the end. A change still takes a second or more. When a note comes
 sooner than the arm can get there, it lands
 late by whole beats and the rest of the phrase moves with it. The reply then says `N beats late, the arm could not move
 faster`. That is not a fault: suggest longer note values, rests, or a slower tempo in Studio (arm speed is the operator's setting).
@@ -103,13 +103,11 @@ A score can set Orchid Studio's sound for Orchid's voice, at the start and at ch
   lists them all.
 - `fx`: `{"reverb": {"mix": 0–100, "room": "hall"}, "delay": {"mix": 0–100, "beats": 0.5, "feedback": 0–95}}`. Rooms
   are small, medium, large, chamber, hall, large-hall, plate and cathedral. A mix of 0 turns an effect off.
-- `voicing`: Orchid's own voicing dial position (0–127, the value Orchid reports). The Chord Arm turns the dial until
-  Orchid reports that position: usually 1–3 turns, each a few seconds. It learns how far a turn moves the dial.
-  The dial must be taught on the Chord Arm.
-- `changes`: `[{"bar": 9, "perform": {"mode": "harp"}}, {"bar": 17, "sound": 40, "voicing": 52, "fx": {...}}]`. Studio
-  settings land on their bar line, and move with it if the music before it moved later. A voicing change turns the
-  dial between the notes, before that bar's note. The plan counts that time, so the note may move a bar or two later.
-  Set the voicing at the start where you can, and change it sparingly.
+- `changes`: `[{"bar": 9, "perform": {"mode": "harp"}}, {"bar": 17, "sound": 40, "fx": {...}}]`. Studio
+  settings land on their bar line, and move with it if the music before it moved later.
+
+A score has no voicing: the arms never turn Orchid's voicing dial (it is the operator's stop control). Orchid Studio's
+`chord-voicing` command sets the voicing in software.
 
 Long chords through a Perform mode such as arp, harp or bloom, with reverb, are where this instrument shines.
 
@@ -202,7 +200,7 @@ python3 scripts/orchid.py stop                        # emergency only: hold bot
 ```
 
 Names: keys `C C# D D# E F F# G G# A A# B` (lowercase ok); chord buttons `dim min maj sus 6 m7 M7 9`
-(`m7` and `M7` differ); dial `cw` / `ccw` (each turns by its taught angle; a score's `voicing` sets the dial).
+(`m7` and `M7` differ).
 Notes can be any length. A chord is `KEY+BUTTON[:NOTE]` in a sequence (`C+maj`, `F#+m7:1/2`) or `chord KEY BUTTON`.
 Both the key (Keys Arm) and the chord button (Chord Arm) must be `registered`. Extensions (`6 m7 M7 9`) are buttons
 like the others.
@@ -227,7 +225,7 @@ like the others.
   Orchid's velocity: if replies report velocities under ~20, tell the operator rather than replaying.
 - Chords: a refusal saying the arms "would come within N mm" means that key and button are too close together for
   both arms at once (modelled on the plate). Do not try to get around it (e.g. by playing the button and then the
-  key). Tell the user, and offer another key or voicing. Every refusal of a chord leaves both arms safe. A
+  key). Tell the user, and offer another key or chord button. Every refusal of a chord leaves both arms safe. A
   `CHECK THE ARM` result on a chord says what was heard: `the chord button was not held` (only the key sounded),
   `not a minor chord (heard 1 3 5)`, a wrong key, or a missed note. Stop and tell the user.
 - A sequence with chords or with both arms' controls plays one step at a time and always waits (`--no-wait` does not
@@ -248,11 +246,11 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 
 | Method & path | Body | Result |
 |---|---|---|
-| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, performing:{what, since}\|null, controls:[{id,name,kind,group,arm,status,turn_degrees?}]}`; with two arms `ready_to_play` is `{a, b}` |
+| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, performing:{what, since}\|null, controls:[{id,name,kind,group,arm,status,press_s?}]}`; with two arms `ready_to_play` is `{a, b}` |
 | `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
 | `POST /api/controls/{id}/play` | `{duration? ("1/4", "2bars", "1bar+1/2"), wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?}], wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |
-| `POST /api/score` | `{events:[{bar, beat, key, chord?, duration?}], sound?, perform?, fx?, voicing?, changes?:[{bar, beat?, sound?, perform?, fx?, voicing?}], loop_slot?, loop_velocity?, loop_layers?:[{slot, octave?, transpose?, hold?, merge?, velocity?, sound?, fx?, perform?}], plan_only?}` | `{status, message, plan:{bpm, on_studio_beat, moves:[{bar, beat, to_bar, bars, needs_s, has_s, text}], moved_bars, length_bars}, played:[{bar, beat, key, chord, slipped_beats, late_ms, heard}], key_check?}` |
+| `POST /api/score` | `{events:[{bar, beat, key, chord?, duration?}], sound?, perform?, fx?, changes?:[{bar, beat?, sound?, perform?, fx?}], loop_slot?, loop_velocity?, loop_layers?:[{slot, octave?, transpose?, hold?, merge?, velocity?, sound?, fx?, perform?}], plan_only?}` | `{status, message, plan:{bpm, on_studio_beat, moves:[{bar, beat, to_bar, bars, needs_s, has_s, text}], moved_bars, length_bars}, played:[{bar, beat, key, chord, slipped_beats, late_ms, heard}], key_check?}` |
 | `POST /api/chords/play` | `{key, chord, duration?}` (`chord` is a button id, e.g. `chord.maj`) | `{…, key, chord, clearance_mm, duration, rhythm, key_check?}` once both arms are home |
 | `POST /api/home`, `POST /api/rest` (`?arm=a\|b` for one) | `{}` | both arms home, or to rest by way of home: orchid-robot orders the moves and checks each; refused while a performance runs |
 | `POST /api/stop` | `{}` | emergency only: holds both arms where they are |
@@ -261,6 +259,6 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 in the API. Long durations are fine: the request blocks until the note has been held and both arms are home, so give
 your HTTP client no timeout or one longer than the music (`duration.seconds` in the reply says how long the note was).
 `POST /api/stop` from another request ends it early.
-Refusals come back as HTTP 409 (state/safety, or another performance running) or 422 (a bad value, or a `speed` /
-`turn_degrees`: those are orchid-robot's) with `detail`. Console commands (`/api/commands` (settings among them),
+Refusals come back as HTTP 409 (state/safety, or another performance running) or 422 (a bad value, or a `speed`:
+that is orchid-robot's) with `detail`. Console commands (`/api/commands` (settings among them),
 `/api/heartbeat`, connecting) answer 403 to programs: they belong to the console.

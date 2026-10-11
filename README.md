@@ -1,8 +1,8 @@
 # Orchid robot instrument
 
-A Python app with a local web interface for calibrating an SO101 follower arm and registering Orchid's **12 notes, eight chord buttons, and two voicing-dial directions**. Run the source with `python app.py`; there is no application installer, frontend build, or cloud service.
+A Python app with a local web interface for calibrating an SO101 follower arm and registering Orchid's **12 notes and eight chord buttons**. Run the source with `python app.py`; there is no application installer, frontend build, or cloud service.
 
-The console mirrors the instrument's charcoal surface, gold case, chord bank, voicing dial, and single-octave keyboard. It walks an operator through connection, motor calibration, teaching a local motion, and three observed trials. Simulation works without LeRobot, a serial connection, or the instrument.
+The console mirrors the instrument's charcoal surface, gold case, chord bank, and single-octave keyboard. It walks an operator through connection, motor calibration, teaching a local motion, and three observed trials. Simulation works without LeRobot, a serial connection, or the instrument.
 
 **Status:** the complete workflow is covered by simulated/fake motor tests and browser checks. The new web hardware adapter still needs supervised commissioning on the repaired arm. This is position control without contact-force sensing or collision detection; registration does not establish that arbitrary motion between notes is safe.
 
@@ -53,7 +53,7 @@ python app.py --data-dir /path/to/local/session-data
 
 ## Move to another computer
 
-Git carries the code, but not the operator state: the taught keys, home and rest poses, dial steps, speed and press settings and the motor calibrations live in `data/hardware/` (ignored by Git), and `teach_key.py` uses LeRobot's calibration files. Move them with one bundle (standard library only, works while the console runs):
+Git carries the code, but not the operator state: the taught keys and chord buttons, home and rest poses, speed and press settings and the motor calibrations live in `data/hardware/` (ignored by Git), and `teach_key.py` uses LeRobot's calibration files. Move them with one bundle (standard library only, works while the console runs):
 
 ```bash
 python3 scripts/migrate.py export                       # old computer: orchid-state-<host>-<time>.tar.gz
@@ -78,11 +78,11 @@ The following steps describe guiding the follower by hand. For leader teaching, 
 
 Select the **chord bank** to teach Dim, Min, Maj, Sus, 6, m7, M7, and 9 with the same hover/contact/press workflow. Review the intended button response with a consistent reference chord and playstyle; extensions do not sound alone.
 
-Select **CW or CCW** beside the large voicing dial to teach a separate forward loop: start clear → light rim contact → small turn → lift off → return through clear space. Rubber-covered tips keep a fixed opening and nudge the rim. The app does not close the gripper around the dial. Describe the starting reference and expected change, restore that reference before each test, and accept three observed trials per direction. These are relative gestures, not absolute dial positions. Together the instrument has **22 independently registered motions**.
+Together the instrument has **20 independently registered motions**. The arms do not play Orchid's large voicing dial: voicing is set in software (Orchid Studio's `chord-voicing` command), and the dial is reserved as the operator's stop control.
 
 Enable **5-second delay** to free both hands before capture or torque release. It defaults on in hardware mode. Spoken cues are optional and depend on browser speech support. There is no microphone requirement. Cancel the countdown before it finishes to take no action; Escape also requests a stop when connected.
 
-Taught controls can also be played, sequenced and adjusted (press length, dial turn, the global arm speed, max 3×, also on the top-bar slider) from `python3 scripts/orchid.py` or the `orchid-keys` Claude skill while the console is open and in control; see [Play from scripts or Claude](docs/operator-guide.md#play-from-scripts-or-claude-api).
+Taught controls can also be played, sequenced and adjusted (press length, the global arm speed, max 3×, also on the top-bar slider) from `python3 scripts/orchid.py` or the `orchid-keys` Claude skill while the console is open and in control; see [Play from scripts or Claude](docs/operator-guide.md#play-from-scripts-or-claude-api).
 
 Detailed instructions: [Operator guide](docs/operator-guide.md).
 
@@ -111,7 +111,7 @@ python app.py --enable-hardware
 
 Opening the page does not connect or enable motors. **Find and connect all arms** finds each arm by its motors, since USB names can change. Connection checks all six motor IDs, follower supply voltage, position mode, and saved calibration agreement. A follower alone is taught by hand; a low-voltage leader, connected and calibrated, teaches it instead.
 
-For leader teaching, <kbd>Space</kbd> presses the highlighted button at every step: **Connect arms** (ports are scanned automatically; connecting only reads), **Teach C** (the follower holds where it is, that pose becomes the shared home, and it starts following the leader after a ramp of at most 30°/s), then capture **hover**, **touch** (just touching) and **press** (just sounding). Capturing the press returns press → touch → hover → home on its own, and the key counts as taught. **Play** goes home → hover → touch → press, holds for the key's press length, and comes back the same way with smooth joint moves (45°/s peak to hover, 20°/s for the strokes, at 1×; the **Arm speed** slider in the top bar sets 0.25–3×). A beep confirms each capture; tap a ✓ point to redo it; **⌂ Home** on the map sets the arm's one home for every key, and **☾ Rest** sets a parking pose (Go to rest); between key presses the arm waits at home (in a phrase or score it goes straight from one key's hover to the next, so teach hovers high enough to clear Orchid). If another program left the follower powered, Teach asks you to support it first (torque blinks off while LeRobot's motor settings are applied). Points store the commanded goal, so the press replays its taught depth. Dial directions are recorded and replayed forward instead (a turn must not be reversed). No tracking tolerances; goals are clipped to 15° from the measured pose (LeRobot's `max_relative_target` rule) and **Stop motion** holds the arm. Same control loop as `teach_key.py` (`orchid_demo/teach.py`); taught motions stay valid until the follower calibration changes. See [leader operator instructions](docs/operator-guide.md#teach-with-the-leader-arm).
+For leader teaching, <kbd>Space</kbd> presses the highlighted button at every step: **Connect arms** (ports are scanned automatically; connecting only reads), **Teach C** (the follower holds where it is, that pose becomes the shared home, and it starts following the leader after a ramp of at most 30°/s), then capture **hover**, **touch** (just touching) and **press** (just sounding). Capturing the press returns press → touch → hover → home on its own, and the key counts as taught. **Play** goes home → hover → touch → press, holds for the key's press length, and comes back the same way with smooth joint moves (45°/s peak to hover, 20°/s for the strokes, at 1×; the **Arm speed** slider in the top bar sets 0.25–3×). A beep confirms each capture; tap a ✓ point to redo it; **⌂ Home** on the map sets the arm's one home for every key, and **☾ Rest** sets a parking pose (Go to rest); between key presses the arm waits at home (in a phrase or score it goes straight from one key's hover to the next, so teach hovers high enough to clear Orchid). If another program left the follower powered, Teach asks you to support it first (torque blinks off while LeRobot's motor settings are applied). Points store the commanded goal, so the press replays its taught depth. No tracking tolerances; goals are clipped to 15° from the measured pose (LeRobot's `max_relative_target` rule) and **Stop motion** holds the arm. Same control loop as `teach_key.py` (`orchid_demo/teach.py`); taught motions stay valid until the follower calibration changes. See [leader operator instructions](docs/operator-guide.md#teach-with-the-leader-arm).
 
 Finish the [hardware commissioning checklist](docs/operator-guide.md#commissioning-the-repaired-arm) before a public demo. Previous terminal-taught files are preserved locally but are **not automatically imported or trusted** by the web app. A joint repair requires fresh calibration and note teaching.
 
@@ -123,7 +123,7 @@ Finish the [hardware commissioning checklist](docs/operator-guide.md#commissioni
 - State lives in `data/simulation/` or `data/hardware/`: SQLite database, calibration backup, control revisions, and trial logs. Those directories are ignored by Git. New processes always start disconnected; they never resume a movement.
 - Arm faults and rejected commands are printed immediately to stdout as JSON and copied to `arm-events.jsonl` in the mode directory (5 MB per file, three rotated backups). Faults include the exception traceback, control phase, cached motor/leader feedback, failed target, and motion-log path. Cached readings are timestamped; they are not a claim that the motor is still holding.
 - Use **Export session** for a readable JSON snapshot of calibration, 12 note records, ten additional control records, and recent activity. JSON export is a record, not a restore feature. For a restorable backup or a move to another computer, use `python3 scripts/migrate.py export` (see [Move to another computer](#move-to-another-computer)).
-- Existing version-1 databases upgrade transactionally to version 2, preserving notes and history while adding chord/dial records. Keep a full backup before upgrading if you need to run the old app again; it cannot open version 2.
+- Existing version-1 databases upgrade transactionally to version 2, preserving notes and history while adding chord-button records. Keep a full backup before upgrading if you need to run the old app again; it cannot open version 2.
 - Changing the fixture, contact tool, or calibration invalidates prior registrations. A changed glove fit or gripper opening also requires a new fixture and re-teaching. Interrupted teaching restarts from a supported torque-off pose; the app does not drive back to an old starting point.
 
 ## Development
@@ -153,9 +153,7 @@ orchid_demo/
   lerobot_teleop.py       LeRobot's SO101 drivers on the app's serial bus
   motion.py               Bounded stroke controller and validation
   home.py                 Home and its measured routes
-  controls.py             Keyboard, chord, and dial motion catalog
-  dial.py                 Bounded forward dial loop and validation
-  voicing.py              Setting the voicing dial by turning it and listening
+  controls.py             Keyboard and chord-button catalog
   music.py, score.py      Musical time and scores on Orchid Studio's beat
   keycheck.py, tune.py    Checking what Orchid sent; correcting keys by ear
   keyboard.py             Key positions fitted from taught presses
