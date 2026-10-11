@@ -19,6 +19,7 @@ from . import music
 from . import score
 from . import voicing
 from .controls import CATALOG
+from .dialstop import DialStop
 from .engine import Engine
 from .motion import SafetyError
 
@@ -152,7 +153,8 @@ class IncidentReport(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
-def create_app(directory: Path, mode="simulation", *, engine=None, engines=None, studio_port=None, clock=None, studio=None):
+def create_app(directory: Path, mode="simulation", *, engine=None, engines=None, studio_port=None, clock=None, studio=None,
+               dial_stop=None):
     """studio_port: check each play's notes against Orchid Studio's key monitor on that local port, and time plays by
     its tempo and beat (music.py). Without it (simulation), plays keep 120 BPM time of their own; clock overrides both.
     A second follower (rig.py) is always available; it shows up once detected, and its data lives in directory/arm-b."""
@@ -176,6 +178,14 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     engine = engines["a"]
     token = secrets.token_urlsafe(32)
 
+    def stop_by_dial(turn):
+        """A hand on Orchid's voicing dial: every arm holds where it is, as with the console's Stop (dialstop.py)."""
+        for member in engines.values():
+            member.request_stop("Stopped by Orchid's voicing dial (the operator's stop): support the arm, then Hold & keep "
+                                "playing in the console")
+    # Orchid's voicing dial is the operator's stop, watched through Studio's key monitor (on by default with a Studio)
+    watcher = DialStop(studio, stop_by_dial) if (studio_port if dial_stop is None else dial_stop) and studio else None
+
     def pick(arm):
         if arm not in engines:
             raise HTTPException(404, f"No follower {arm!r} in this setup.")
@@ -192,9 +202,13 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                     raise RuntimeError("An operator console already owns this data directory.") from exc
             for member in engines.values():
                 member.start()
+            if watcher:
+                watcher.start()
             try:
                 yield
             finally:
+                if watcher:
+                    watcher.close()
                 for member in engines.values():
                     member.close()
 
@@ -439,7 +453,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready,
                 "settings": snap["teach_settings"], "controls": listing,
                 # A performance already running (one at a time): {what, since}, or None.
-                "performing": dict(now_playing) or None}
+                "performing": dict(now_playing) or None,
+                # Orchid's voicing dial stops the arms: whether it is being watched, and the stops it made.
+                "dial_stop": dict(watcher.state) if watcher else {"armed": False, "error": "not watching: start with --studio-port"}}
 
     # --- Musical time: note values, at Orchid Studio's tempo and on its beat (music.py) -------------------
 

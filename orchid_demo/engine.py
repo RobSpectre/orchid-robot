@@ -530,9 +530,16 @@ class Engine:
                                           "revision": revision, "args": args, "created": time.monotonic()})
             return deepcopy(receipt)
 
+    def request_stop(self, reason):
+        """Stop motion from outside the console (Orchid's voicing dial, dialstop.py): the arm holds where it is, as with
+        the console's Stop, and the stop says why."""
+        with self.lock:
+            self.stop_reason = reason
+            self.stop_event.set()
+
     def guard(self):
         m.require(not self.shutdown.is_set(), "Application is shutting down")
-        m.require(not self.stop_event.is_set(), "Motion stopped by the operator")
+        m.require(not self.stop_event.is_set(), getattr(self, "stop_reason", None) or "Motion stopped by the operator")
         with self.lock:
             m.require(self.lease_until > time.monotonic(), "Operator connection lost. Motion has been stopped.")
 
@@ -1798,6 +1805,7 @@ class Engine:
         self.feedback_at = None
         self.leader_feedback_at = None
         self.stop_event.clear()
+        self.stop_reason = None
         self.event("fault", message, context, exc=exc)
         self.publish()
 
@@ -2459,6 +2467,7 @@ class Engine:
             self.leader_visible_until = 0.0
             self.recent.clear()
             self.stop_event.clear()
+            self.stop_reason = None
             if self.mode == "hardware":
                 self.discovery = {"ports": [], "scanned_at": None, "scanning": False, "warnings": [], "error": None}
             self.transition("disconnected", "Unavailable connection forgotten; no torque command was sent. "
@@ -2831,6 +2840,7 @@ class Engine:
                 self.clear_calibration_capture()
             self.reset_note()
             self.stop_event.clear()
+            self.stop_reason = None
             if action == "disconnect":
                 if self.leader:
                     self.leader.close()
@@ -2884,6 +2894,7 @@ class Engine:
             if self.teach and self.phase in TEACH_SESSION_PHASES:
                 # Stop motion = hold at a fresh measured pose. Teaching continues from the hold.
                 self.stop_event.clear()
+                self.stop_reason = None
                 try:
                     self.teach.hold()
                     self.teach_returning = self.teach_going_home = False
