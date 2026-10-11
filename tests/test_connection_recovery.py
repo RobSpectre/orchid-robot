@@ -6,16 +6,7 @@ import pytest
 
 from orchid_demo import motion as m
 from orchid_demo.devices import SimulatedArm
-from orchid_demo.engine import Engine
-from test_operator_engine import Clock, command, connect, calibrate, reject
-
-
-@pytest.fixture
-def engine(tmp_path):
-    clock = Clock()
-    instance = Engine(tmp_path, clock=clock, sleep=clock.sleep)
-    yield instance
-    instance.close()
+from test_operator_engine import command, connect, calibrate, reject
 
 
 def unavailable(engine, monkeypatch):

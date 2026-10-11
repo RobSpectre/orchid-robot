@@ -21,14 +21,6 @@ class Clock:
         self.now += seconds
 
 
-@pytest.fixture
-def engine(tmp_path):
-    clock = Clock()
-    e = Engine(tmp_path, clock=clock, sleep=clock.sleep)
-    yield e
-    e.close()
-
-
 def command(e, action, **args):
     owner = "operator"
     e.heartbeat(owner)

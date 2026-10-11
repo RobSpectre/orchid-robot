@@ -5,17 +5,8 @@ import math
 import pytest
 
 from orchid_demo import motion as m
-from orchid_demo.engine import Engine
 from orchid_demo.telemetry import motor_status, pose_angles
-from test_operator_engine import Clock, command, connect, calibrate, teach
-
-
-@pytest.fixture
-def engine(tmp_path):
-    clock = Clock()
-    e = Engine(tmp_path, clock=clock, sleep=clock.sleep)
-    yield e
-    e.close()
+from test_operator_engine import command, connect, calibrate, teach
 
 
 def test_pose_is_unavailable_before_midpoint_and_after_disconnect(engine):

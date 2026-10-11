@@ -40,7 +40,6 @@ def console(tmp_path):
         beat = threading.Thread(target=heartbeat, daemon=True)
         beat.start()
         client.close_console = lambda: (beating.set(), beat.join())
-        client.console_headers = headers  # what the console page sends (programs send only the token)
         yield client, engine, command, {"x-orchid-token": token}
         beating.set()
         beat.join()

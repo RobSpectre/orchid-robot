@@ -6,18 +6,9 @@ import math
 import pytest
 
 from orchid_demo import home, motion as m
-from orchid_demo.engine import Engine
 from orchid_demo.leader import LeaderController
-from test_operator_engine import Clock, command, reject
+from test_operator_engine import command, reject
 from test_leader_teaching import prepare, move
-
-
-@pytest.fixture
-def engine(tmp_path):
-    clock = Clock()
-    e = Engine(tmp_path, clock=clock, sleep=clock.sleep)
-    yield e
-    e.close()
 
 
 def complete_route(e):

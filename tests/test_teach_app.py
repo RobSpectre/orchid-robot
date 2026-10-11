@@ -5,16 +5,7 @@ import time
 import pytest
 
 from orchid_demo import teach
-from orchid_demo.engine import Engine
-from test_operator_engine import Clock, command, connect, calibrate, reject
-
-
-@pytest.fixture
-def engine(tmp_path):
-    clock = Clock()
-    e = Engine(tmp_path, clock=clock, sleep=clock.sleep)
-    yield e
-    e.close()
+from test_operator_engine import command, connect, calibrate, reject
 
 
 def ready(e):

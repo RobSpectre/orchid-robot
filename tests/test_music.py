@@ -5,7 +5,7 @@ from orchid_demo import music, teach
 from orchid_demo.keycheck import check_step
 from orchid_demo.motion import SafetyError
 from test_operator_engine import command
-from test_teach_app import engine, following, run, teach_points  # noqa: F401  (engine is a fixture)
+from test_teach_app import following, run, teach_points
 
 
 def test_note_values_are_beats():

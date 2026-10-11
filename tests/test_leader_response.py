@@ -1,17 +1,8 @@
 """Native position-following behavior, including lag and explicit pause."""
 import pytest
 from orchid_demo import motion as m
-from orchid_demo.engine import Engine
-from test_operator_engine import Clock, command
+from test_operator_engine import command
 from test_leader_teaching import prepare
-
-
-@pytest.fixture
-def engine(tmp_path):
-    clock = Clock()
-    e = Engine(tmp_path, clock=clock, sleep=clock.sleep)
-    yield e
-    e.close()
 
 
 @pytest.mark.parametrize('start,end', [(839,831),(831,839)])

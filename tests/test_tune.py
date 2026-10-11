@@ -4,9 +4,8 @@ from copy import deepcopy
 import pytest
 
 from orchid_demo import teach, tune
-from orchid_demo.engine import Engine
 from orchid_demo.keycheck import KeyChecker
-from test_operator_engine import Clock, command, reject
+from test_operator_engine import command, reject
 from test_teach_app import following, run, taught_keys, teach_points
 
 
@@ -48,15 +47,6 @@ def test_finding_presses_deeper_only_up_to_the_limit():
     assert steps == int(tune.LIMIT_DEG / tune.STEP_DEG) and "3°" in why
 
 
-@pytest.fixture
-def engine(tmp_path):
-    clock = Clock()
-    e = Engine(tmp_path, clock=clock, sleep=clock.sleep)
-    yield e
-    e.close()
-
-
-
 NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
 
@@ -82,11 +72,6 @@ def orchid(e, decide):
                                "notes": [60 + NAMES.index(k) for k in keys]})
         return events
     return heard
-
-
-def at_trigger(e, i):
-    """Finding: the key sounds 30% into the stroke. Testing: decided by the test's own function."""
-    return e.selected
 
 
 def taught_c(e, decide):
