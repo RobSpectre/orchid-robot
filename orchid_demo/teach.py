@@ -334,10 +334,6 @@ class Session:
         self.soft = self.soft_due = None
 
     @property
-    def recorded_seconds(self) -> float:
-        return self.frames[-1]["t"] if self.frames else 0.0
-
-    @property
     def progress(self) -> float | None:
         if self.mode != "playing":
             return None

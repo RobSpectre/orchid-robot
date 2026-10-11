@@ -295,9 +295,8 @@ class Engine:
             if entry and entry.get("format") == WAYPOINT_FORMAT:
                 valid = (entry.get("calibration_sha256") == signature and entry.get("mode") == self.mode
                          and not self.waypoint_problem(entry))
-                trials = entry.get("verification", {}).get("successful_trials", 0) if valid else 0
                 result[name] = {"status": "registered" if valid else "needs_reteach",
-                                "trials": trials, "saved_at": entry.get("saved_at"), "recorded": valid,
+                                "trials": 0, "saved_at": entry.get("saved_at"), "recorded": valid,
                                 **({"turn_degrees": entry["turn_degrees"]} if "turn_degrees" in entry else {}),
                                 **({"press_s": entry["press_s"]} if "press_s" in entry else {})}
                 continue
@@ -400,8 +399,7 @@ class Engine:
                 "leader_following": bool(self.teach and self.teach.mode in ("aligning", "following"))
                                     or (isinstance(self.controller, LeaderController) and self.controller.engaged),
                 "teach": None if not self.teach else {
-                    "mode": self.teach.mode, "recording": self.teach.frames is not None, "leader": self.teach.read_leader is not None,
-                    "recorded_seconds": self.teach.recorded_seconds, "progress": self.teach.progress,
+                    "mode": self.teach.mode, "leader": self.teach.read_leader is not None, "progress": self.teach.progress,
                     "warning": self.teach.warning, "played": self.teach_played, "roll_guard": self.teach.roll_guard,
                     "chord_held": self.chord_held, "rhythm": deepcopy(self.rhythm),
                     "reteaching": (self.reteaching or {}).get("control") if self.teach_points_for == (self.reteaching or {}).get("control") else None,
@@ -1021,7 +1019,7 @@ class Engine:
                 "format": WAYPOINT_FORMAT, "control_id": control, "points": deepcopy(points), "turn_degrees": degrees,
                 "units": "lerobot_degrees_gripper_0_100", "calibration_sha256": m.fingerprint(self.calibration),
                 "leader_calibration_sha256": m.fingerprint(self.leader_calibration), "fixture_id": self.fixture["id"],
-                "mode": self.mode, "saved_at": m.stamp(), "verification": {"successful_trials": 0}})
+                "mode": self.mode, "saved_at": m.stamp()})
         self.controls = self.repo.controls()
         self.events = self.repo.events()
 
@@ -2149,7 +2147,7 @@ class Engine:
                 current = self.arm.read_raw()
                 self.arm.check_calibrated_pose(current)
                 at_home = home.at_home(current, self.home["pose"])
-            selected = args.get("control", args.get("key", self.selected))
+            selected = args.get("control", self.selected)
             m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
             if self.teaching_mode == "leader":
                 motion_arm = home.HomeArm(self.arm, self.home["pose"] if at_home else current)
@@ -2538,11 +2536,10 @@ class Engine:
             self.require_phase("teach_follow", "teach_play")
             if "control" in args:
                 self.teach_control(args)
-            discarded = self.teach.frames is not None
             self.teach.hold()
             self.teach_returning = self.teach_going_home = False
             self.teach_going_rest = None
-            self.transition("teach_hold", "Holding here." + (" The unfinished recording was discarded." if discarded else ""))
+            self.transition("teach_hold", "Holding here.")
         elif action == "teach_set_home":
             self.require_phase("teach_hold", "teach_follow")
             note = self.parking_note("home")
@@ -2605,8 +2602,8 @@ class Engine:
                 self.leader_roll_doc = {"degrees": round(degrees, 3), "calibration_sha256": signature, "saved_at": m.stamp()}
                 self.repo.put("leader_roll_offset", self.leader_roll_doc)
 
-            def moved(pose, role="follower"):
-                return {**pose, "wrist_roll": shift_roll(pose["wrist_roll"], shifts.get(role, 0))} if "wrist_roll" in pose else pose
+            def moved(pose):
+                return {**pose, "wrist_roll": shift_roll(pose["wrist_roll"], shifts.get("follower", 0))} if "wrist_roll" in pose else pose
 
             def moved_point(point):
                 return {"goal": moved(point["goal"]), "measured": moved(point["measured"])}
@@ -2619,10 +2616,6 @@ class Engine:
                 for field in ("points", "taught_points"):  # taught_points: what the leader taught, kept by Correct keys
                     if field in entry:
                         entry[field] = {n: moved_point(pt) for n, pt in entry[field].items()}
-                if "frames" in entry:
-                    entry["frames"] = [{**f, "goal": moved(f["goal"]), "follower": moved(f["follower"]),
-                                        **({"leader": moved(f["leader"], "leader")} if "leader" in f else {})}
-                                       for f in entry["frames"]]
                 entry.update(calibration_sha256=signature, leader_calibration_sha256=leader_signature)
                 self.selected = control
                 self.save_entry(entry)
@@ -2698,8 +2691,7 @@ class Engine:
                                      "units": "lerobot_degrees_gripper_0_100",
                                      "calibration_sha256": m.fingerprint(self.calibration),
                                      "leader_calibration_sha256": m.fingerprint(self.leader_calibration),
-                                     "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp(),
-                                     "verification": {"successful_trials": 0}})
+                                     "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp()})
                 if point == final:
                     self.teach_played, self.teach_returning = None, True
                     back = teach_motion.dial_return_recording if self.is_dial else teach_motion.return_recording
