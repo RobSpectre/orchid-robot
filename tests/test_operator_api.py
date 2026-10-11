@@ -19,7 +19,7 @@ def client(tmp_path):
 
 def operator_headers(client):
     token = client.get("/api/session").json()["token"]
-    return {"x-orchid-token": token, "x-orchid-operator": str(uuid4())}
+    return {"x-orchid-token": token, "x-orchid-operator": str(uuid4()), "origin": "http://127.0.0.1"}
 
 
 def wait_command(client, identity):
@@ -69,7 +69,7 @@ def test_following_permission_requires_explicit_visible_heartbeat(client):
 def test_single_operator_idempotency_stale_and_export(client):
     headers = operator_headers(client)
     assert client.post("/api/heartbeat", json={}, headers=headers).status_code == 200
-    assert client.post("/api/heartbeat", json={}, headers={**headers, "x-orchid-operator": str(uuid4())}).status_code == 409
+    assert client.post("/api/heartbeat", json={}, headers={**headers, "x-orchid-operator": str(uuid4()), "origin": "http://127.0.0.1"}).status_code == 409
     cmd = {"id":str(uuid4()), "action":"connect", "revision":0, "args":{"prepared":True, "fixture":"API practice"}}
     assert client.post("/api/commands", json=cmd, headers=headers).status_code == 202
     state = wait_command(client, cmd["id"])

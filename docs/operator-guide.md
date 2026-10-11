@@ -229,6 +229,14 @@ chord, after the modelled clearance check from that pose; if that check fails, t
 performance stops with the Keys Arm over a key, it goes home, unless you pressed Stop motion (which always holds the arm
 where it is).
 
+**Test the path between keys** (04 Correct keys, below the Correct buttons) checks those moves after you re-teach hovers:
+it plays every taught key once, in order, from hover to hover, then jumps from the last back to the first (the longest
+move), then goes home. It reports how many moves went straight, which went by way of home (and how far the straight move
+would have dipped), the deepest modelled dip, and what Orchid heard for each key. The **first run through any key that is
+new or re-taught since its last path test is very slow (0.25×)**, whatever the Arm speed, so you can watch the new moves
+and stop them in time; once a run plays through to the end, later runs use the Arm speed. Stop motion part way does not
+count as a run through.
+
 **Chords.** A key played with a chord button is the one time both arms are away from home together, and orchid-robot runs
 it from one instruction (`orchid.py chord C maj`, `POST /api/chords/play`, or a sequence step with a `chord`):
 
@@ -253,21 +261,18 @@ can be about 2 cm off: use it to see where the arms are, not to judge clearance 
 
 ## Play from scripts or Claude (API)
 
-While the console is open, connected and holding (Play, Teach or Follow any control once; playing needs only the follower), taught controls can be played and adjusted from `scripts/orchid.py` or the `orchid-keys` Claude skill. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply.
+While the console is open, connected and holding (Play, Teach or Follow any control once; playing needs only the follower), taught controls can be played from `scripts/orchid.py`, the `orchid-keys` Claude skill or any program, through the **performance API**. Programs can play music, send the arms home or to rest, and Stop. orchid-robot carries out every move itself, in a safe order, through its own checks. Everything else is the console's alone, and programs are refused it (HTTP 403): holding, arm speed, press hardness, dial angles, connecting, and every console command. The console page is recognised by the `Origin` its browser sends. orchid-robot plays **one performance at a time**, refusing a second caller while one runs, so two programs can never drive the arms at once. A performance that finds an arm connected but not holding (after a restart, say) takes the hold itself, where the arm is, only when that needs no torque gap: the motors unpowered, or powered with every setting LeRobot writes already in place (read back register by register, nothing written). Otherwise it is refused with what to do: hold it from the console with a hand on the arm. The API refuses to move the arm when the console is not in control, so its Stop button, <kbd>Esc</kbd> and lost-page stop always apply. The console's operator id is never published.
 
 ```bash
 python3 scripts/orchid.py status                 # controls, speed, default note value, readiness
 python3 scripts/orchid.py clock                  # Orchid Studio's tempo; whether notes land on its beat
 python3 scripts/orchid.py play C --duration 1/4  # waits until the arm is back home
-python3 scripts/orchid.py seq "C:1/4 E:1/4 r:1/4 G:1/2" --speed 1.5
+python3 scripts/orchid.py seq "C:1/4 E:1/4 r:1/4 G:1/2"
 python3 scripts/orchid.py chord C maj --duration 1/2   # both arms: Maj held by the Chord Arm, C played by the Keys Arm
 python3 scripts/orchid.py seq "C+maj:1 A+min:1 F+maj:1 G+sus:1"
 python3 scripts/orchid.py chord C maj --duration 4bars   # a long sweeping chord: the Keys Arm holds C for four bars
 python3 scripts/orchid.py score "1.1 C+maj:1  2.1 A+min:1  3.1 F+maj:1  4.1 G+sus:1" --plan   # a whole piece, planned
-python3 scripts/orchid.py set ccw --turn -25     # a dial direction's turn angle
-python3 scripts/orchid.py speed 2                # shared arm speed
-python3 scripts/orchid.py duration 1/4           # the note value when none is given
-python3 scripts/orchid.py home | stop
+python3 scripts/orchid.py home | rest | stop      # park both arms (orchid-robot orders the moves), or hold now
 ```
 
 **Musical time.** The API takes note values, not seconds: a quarter note is one beat. You can write `1/4`, `1/8`,
@@ -309,7 +314,7 @@ timing holds at any arm speed. Each performance also measures how long each kind
 chord to chord and so on), and the next plan uses it (`DATA_DIR/score-timing.json`). Re-teaching or correcting a key
 starts its learning over. Notes played while correcting keys are not used.
 
-HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `GET /api/clock`, `POST /api/controls/{id}/play` (`duration?`, `speed?`, `turn_degrees?`), `POST /api/controls/{id}` (`turn_degrees`), `POST /api/sequence` (steps `{control or "rest", chord?, duration?}`), `POST /api/score` (`events`, `speed?`, `plan_only?`), `POST /api/chords/play` (`key`, `chord`, `speed?`, `duration?`), `POST /api/settings` (`speed`, `duration`, `press_hardness` 0.1–1), `POST /api/home`, `POST /api/stop`. A sequence on one arm is one motion: from key to key it goes hover to hover, and through home between other controls. A sequence with chords or with both arms' controls plays one step at a time, keeping the rhythm across steps: the Keys Arm waits over the last key's hover between keys, and the Chord Arm goes home after each chord.
+HTTP endpoints (`X-Orchid-Token` from `GET /api/session` on POSTs): `GET /api/controls`, `GET /api/clock`, `POST /api/controls/{id}/play` (`duration?`), `POST /api/sequence` (steps `{control or "rest", chord?, duration?}`), `POST /api/score` (`events`, `plan_only?`), `POST /api/chords/play` (`key`, `chord`, `duration?`), `POST /api/home` and `POST /api/rest` (both arms, or `?arm=a|b`), `POST /api/stop`. `GET /api/controls` also says what is `performing`. Console-only (403 to programs): `/api/settings`, `/api/commands`, `/api/heartbeat`, configuring a control, connecting and handing over the leader. A sequence on one arm is one motion: from key to key it goes hover to hover, and through home between other controls. A sequence with chords or with both arms' controls plays one step at a time, keeping the rhythm across steps: the Keys Arm waits over the last key's hover between keys, and the Chord Arm goes home after each chord.
 
 ## Register the eight chord buttons
 

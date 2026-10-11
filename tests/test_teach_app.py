@@ -967,3 +967,29 @@ def test_cancelling_a_re_teach_keeps_the_saved_motion_and_the_dials_shared_steps
     assert engine.repo.get("teach_dial") != shared
     command(engine, "teach_cancel_reteach")
     assert engine.repo.get("teach_dial") == shared
+
+
+def test_the_path_test_plays_every_key_hover_to_hover_and_reports_each_move(engine, monkeypatch):
+    from orchid_demo import kinematics
+    taught_keys(engine, ("C", "D"))
+    spread_keys(engine)
+    command(engine, "teach_settings", speed=2.0)
+    assert engine.public["teach"]["path_untested"] == ["C", "D"]
+    command(engine, "teach_sequence", steps=[{"control": "C"}, {"control": "D"}, {"control": "C"}], path_test=True)
+    assert engine.teach.speed == engine.PATH_FIRST_SPEED  # new moves: the first run is very slow, whatever the Arm speed
+    run(engine, 400, until=lambda: engine.phase == "teach_hold")
+    test = engine.public["teach"]["path_test"]
+    assert test["keys"] == ["C", "D", "C"] and [(h["from"], h["to"], h["route"]) for h in test["hops"]] == [("C", "D", "direct"), ("D", "C", "direct")]
+    assert test["first"] == ["C", "D"] and engine.public["teach"]["path_untested"] == []
+    command(engine, "teach_sequence", steps=[{"control": "C"}, {"control": "D"}], path_test=True)
+    assert engine.teach.speed == 2.0  # played through once: the Arm speed from now on
+    run(engine, 120, until=lambda: engine.phase == "teach_hold")
+    engine.save_control_entry("D", {**engine.notes["D"], "saved_at": "re-taught"})  # a new hover for D
+    assert engine.path_untested() == ["D"]
+    monkeypatch.setattr(kinematics, "dip", lambda *a, **k: 12.5)  # every straight move would sag toward Orchid
+    command(engine, "teach_sequence", steps=[{"control": "C"}, {"control": "D"}], path_test=True)
+    assert "by way of home: C → D" in engine.message
+    run(engine, 120, until=lambda: engine.phase == "teach_hold")
+    assert engine.public["teach"]["path_test"]["hops"] == [{"from": "C", "to": "D", "route": "home", "dip_mm": 12.5}]
+    command(engine, "teach_sequence", steps=[{"control": "C"}, {"control": "D"}])  # an ordinary phrase is not a path test
+    assert engine.public["teach"]["path_test"] is None

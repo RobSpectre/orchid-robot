@@ -45,6 +45,7 @@ FOLLOWS = ("teach_follow", "leader_resume")
 UNPLACED = "position unknown"  # Engine.parked's reason when the arm has no home or rest to be parked at
 CHORD_TIMEOUT_S = 60.0
 RELEASE_AFTER_S = 0.1  # recording seconds past the key reaching its press before the chord button lets go
+SETTLE_AFTER_S = 8.0  # after a chord, how long to wait for both arms to settle and report parked (not a failure if not)
 
 
 def owner(control):
@@ -227,9 +228,11 @@ class Rig:
         # A held note (bars of it) and a wait for its beat lengthen the chord; the timeouts allow for both.
         held = float((play or {}).get("sound_s") or 0.0)
         due = max(0.0, float(((play or {}).get("rhythm") or {}).get("at") or 0.0) - time.monotonic())
+        def state():  # both arms right now, for a refusal the caller can act on
+            return "; ".join(f"{NAMES[e.arm_id]}: {e.phase}, {e.message}" for e in (keys, chords))
         try:
             self.command(chords, "chord_press", {"control": chord, **pace})
-            self.wait(lambda: chords.phase != "teach_play")
+            self.wait(lambda: chords.phase != "teach_play", what=f"the Chord Arm pressing {name}", state=state)
             m.require(not stopped(), "Stopped while pressing the chord button.")
             m.require(chords.chord_held == chord and not chords.chord_pressing,
                       f"Chord Arm did not get {name} held down: {chords.message}")
@@ -237,17 +240,24 @@ class Rig:
             try:
                 self.command(keys, "teach_play", {**(play or {}), "control": key, "chord": chord, **pace})
                 press = keys.teach.recording["marks"]["press"] + RELEASE_AFTER_S
-                self.wait(lambda: keys.phase != "teach_play" or (keys.play_t or 0) >= press, CHORD_TIMEOUT_S + due)
+                self.wait(lambda: keys.phase != "teach_play" or (keys.play_t or 0) >= press, CHORD_TIMEOUT_S + due,
+                          what=f"the Keys Arm reaching {key}", state=state)
             finally:  # never while the Keys Arm is still on its way down to the key
                 if not stopped() and chords.phase == "teach_hold" and chords.chord_held == chord and \
                         (keys.phase != "teach_play" or (keys.play_t or 0) >= press):
                     self.command(chords, "chord_release", pace)
-            self.wait(lambda: "teach_play" not in (keys.phase, chords.phase), CHORD_TIMEOUT_S + held)
+            self.wait(lambda: "teach_play" not in (keys.phase, chords.phase), CHORD_TIMEOUT_S + held,
+                      what="both arms finishing the chord", state=state)
             m.require(not stopped(), "Stopped during the chord; both arms hold where they are.")
             m.require(keys.teach_played == key, f"Keys Arm did not play {key}: {keys.message}")
-            # So the next chord sees the Chord Arm parked, and the Keys Arm home or still over this key's hover (stay).
+            # The chord has played. Give the arms a moment to settle and report parked, so the next chord sees them
+            # parked; an arm still settling is not a failed chord (the next command's interlock checks it anyway).
             stay = (play or {}).get("stay") is True
-            self.wait(lambda: chords.parked_now[0] and (keys.parked_now[0] or stay and keys.parked_now[1] != "moving"), 2.0)
+            try:
+                self.wait(lambda: chords.parked_now[0] and (keys.parked_now[0] or stay and keys.parked_now[1] != "moving"),
+                          SETTLE_AFTER_S)
+            except m.SafetyError:
+                pass
         finally:
             with self.lock:
                 self.chord = None
@@ -263,10 +273,13 @@ class Rig:
             raise m.SafetyError(f"{NAMES[engine.arm_id]}: {done.get('message') or 'did not finish'}")
 
     @staticmethod
-    def wait(done, seconds=CHORD_TIMEOUT_S):
+    def wait(done, seconds=CHORD_TIMEOUT_S, what=None, state=None):
+        """Until done(); a SafetyError after `seconds`, naming what it waited for and both arms' state."""
         deadline = time.monotonic() + seconds
         while not done():
-            m.require(time.monotonic() < deadline, "The chord took too long; stop motion and check both arms.")
+            if time.monotonic() >= deadline:
+                raise m.SafetyError(f"The chord took too long{f' waiting for {what}' if what else ''} ({seconds:.0f} s); "
+                                    f"stop motion and check both arms.{f' {state()}.' if state else ''}")
             time.sleep(0.01)
 
     CONTROLS = tuple(CATALOG)

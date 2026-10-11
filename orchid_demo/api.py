@@ -1,9 +1,10 @@
 """Loopback-only HTTP interface and operator lease."""
-from contextlib import ExitStack, asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 import fcntl
 import json
 from pathlib import Path
 import secrets
+import threading
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -94,6 +95,9 @@ class ScoreRequest(StudioSettings):
     # Studio's loop layer (1-4) to hand the composition to: the score starts on the loop's next pass, and from the pass
     # after the arms play it, Studio repeats it exactly as written (voiced as Orchid sounded it).
     loop_slot: StrictInt | None = Field(default=None, ge=1, le=4)
+    # The loop layer's velocity (1-127) instead of the one Orchid reported for each press: Orchid's notes and voicing,
+    # at a level that sits in the mix. Without it the layer keeps the press velocity (often 15-40).
+    loop_velocity: StrictInt | None = Field(default=None, ge=1, le=127)
     speed: float | None = Field(default=None, ge=0.1, le=3.0)
     plan_only: bool = False
 
@@ -214,6 +218,50 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         except ValueError as exc:
             raise HTTPException(400, "Missing operator identity") from exc
 
+    def console(request):
+        """Holding, settings, connecting and every console command belong to the operator console alone (the page a
+        person has open: browsers send its Origin, which protect() has checked). Programs play music through the
+        performance API (play, sequence, chord, score), may send the arms home or to rest (/api/home, /api/rest: carried
+        out by orchid-robot, through its checks) and may Stop; orchid-robot does everything else."""
+        if request.headers.get("origin") is None:
+            raise HTTPException(403, "That is the operator console's command. Programs play music through the "
+                                     "performance API (play, sequence, chords, score) and may send the arms home or to "
+                                     "rest, or Stop; holding, speed, hardness and connecting are the console's.")
+
+    performing = threading.Lock()  # one performance at a time: a second caller is refused, never interleaved
+    now_playing = {}
+
+    def hold_arms():
+        """A connected arm that is not holding (after a restart, say) is taken into a hold by orchid-robot itself, where
+        it is, when that needs no torque gap (Engine performance_hold); otherwise the refusal names what the operator
+        must do. A program never has to manage holds."""
+        for member in engines.values():
+            if member.arm is not None and member.phase in ("connected", "ready"):
+                try:
+                    run("performance_hold", {}, True, member)
+                except HTTPException as exc:
+                    raise HTTPException(exc.status_code, f"{NAMES[member.arm_id]}: {exc.detail}") from exc
+
+    @contextmanager
+    def performance(what):
+        if not performing.acquire(blocking=False):
+            raise HTTPException(409, f"orchid-robot is already performing ({now_playing.get('what')}, since "
+                                     f"{now_playing.get('since')}). One performance at a time: wait until it returns.")
+        now_playing.update(what=what, since=time.strftime("%H:%M:%S"))
+        try:
+            hold_arms()
+            yield
+        finally:
+            now_playing.clear()
+            performing.release()
+
+    def no_motion_overrides(speed=None, turn_degrees=None):
+        """The arms' speed and dial turns are orchid-robot's (the console's settings), never a caller's."""
+        if speed is not None:
+            raise HTTPException(422, "Arm speed is set in the operator console, not per request: leave out `speed`.")
+        if turn_degrees is not None:
+            raise HTTPException(422, "Dial turns are orchid-robot's: leave out `turn_degrees` (a score's `voicing` sets the dial).")
+
     @app.get("/api/session")
     def session(arm: str = "a", teaching_mode: str = "leader"):
         return {"token": token, "state": pick(arm).snapshot(), "arms": rig.summary() if rig else None,
@@ -235,6 +283,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.post("/api/leader/move")
     def move_leader(body: LeaderMove, request: Request):
+        console(request)
         """Give the one leader to another follower: the follower that has it stops following and holds where it is
         (torque stays on), lets the leader go, and the other follower connects it. Calibration is shared."""
         target = pick(body.to)
@@ -252,6 +301,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.post("/api/connect-all")
     def connect_all(body: ConnectAll, request: Request):
+        console(request)
         """Find the arms (scan=True) and connect every detected follower to its arm, plus the leader, each through its
         own worker. Connecting only reads the motors; nothing moves."""
         scanner = next((member for member in engines.values() if member.arm is None), None)
@@ -290,6 +340,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.post("/api/heartbeat")
     async def heartbeat(request: Request):
+        console(request)
         try:
             body = await request.json()
             for member in engines.values():  # one console operates every follower
@@ -308,6 +359,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.post("/api/commands", status_code=202)
     def commands(command: Command, request: Request):
+        console(request)
         target = pick(command.arm)
         try:
             if command.action == "stop":  # Stop motion stops every follower
@@ -379,7 +431,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         ready = {arm: s["phase"] in ("teach_hold", "teach_follow") and s["lease_live"]
                  for arm, s in ((arm, member.snapshot()) for arm, member in engines.items())}
         return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready,
-                "settings": snap["teach_settings"], "controls": listing}
+                "settings": snap["teach_settings"], "controls": listing,
+                # A performance already running (one at a time): {what, since}, or None.
+                "performing": dict(now_playing) or None}
 
     # --- Musical time: note values, at Orchid Studio's tempo and on its beat (music.py) -------------------
 
@@ -433,7 +487,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         """Orchid Studio's tempo and whether its transport runs (plays land on its beat while it does)."""
         return clock_now()
 
-    @app.post("/api/controls/{control}/play")
     def play_control(control: str, body: PlayRequest):
         """Play one taught control for `duration` (default: settings.duration), on Orchid Studio's beat while its
         transport runs. Returns when the note has been held and the arm is home, with when it struck (`rhythm`)."""
@@ -441,13 +494,14 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         step = phrase([{"control": control, **({"duration": body.duration} if body.duration else {}),
                         **({"turn_degrees": body.turn_degrees} if body.turn_degrees is not None else {})}], clock)[0]
         member = owner(control)
-        result = run("teach_play", {**timed(step, clock), "speed": body.speed}, body.wait, member)
+        result = run("teach_play", timed(step, clock), body.wait, member)
         rhythm = played_rhythm(member) if body.wait else None
         return {**result, "message": result["message"] + (tempo_note(rhythm, clock) if body.wait else ""),
                 "duration": {"beats": step["beats"], "seconds": round(step["sound_s"], 3)}, "rhythm": rhythm}
 
     @app.post("/api/controls/{control}")
-    def configure_control(control: str, body: ControlSettings):
+    def configure_control(control: str, body: ControlSettings, request: Request):
+        console(request)
         return run("teach_configure", {"control": control, "turn_degrees": body.turn_degrees}, False, owner(control))
 
     def play_chord(step, clock, speed=None, at=None, bar=None, align=music.BEATS_PER_BAR, stay=False):
@@ -475,18 +529,16 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 + ("the Keys Arm waits over its hover for the next key." if stay else "both arms home."),
                 "error": None, **played, "rhythm": played_rhythm(engine), **({"key_check": snap["key_check"]} if checked else {})}
 
-    @app.post("/api/chords/play")
     def play_chord_route(body: ChordRequest):
         """Play a key with a chord button held: the chord button goes down first, the key second, and the Chord Arm
         returns home as soon as the key is down. The key is then held for `duration` (any number of bars) and the chord
         sounds the whole time. Both arms' motion is orchid-robot's; this only names the chord and how long it lasts."""
         clock = clock_now()
         step = phrase([{"control": body.key, "chord": body.chord, **({"duration": body.duration} if body.duration else {})}], clock)[0]
-        result = play_chord(step, clock, body.speed)
+        result = play_chord(step, clock)
         return {**result, "message": result["message"] + tempo_note(result["rhythm"], clock),
                 "duration": {"beats": step["beats"], "seconds": round(step["sound_s"], 3)}}
 
-    @app.post("/api/sequence")
     def play_sequence(body: SequenceRequest):
         """A phrase: each step sounds for its duration and the next comes after it ({"control": "rest"} for silence).
         Steps may be chords ({"control": "C", "chord": "chord.maj", "duration": "4bars"}). Returns when it is done."""
@@ -496,10 +548,10 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if len(players) == 1 and not any("chord" in step for step in steps):
             member = players.pop()
             result = run("teach_sequence", {"steps": [{k: v for k, v in timed(s, clock).items() if k != "rhythm"} for s in steps],
-                                            "rhythm": rhythm_of(steps, clock), "speed": body.speed}, body.wait, member)
+                                            "rhythm": rhythm_of(steps, clock)}, body.wait, member)
             rhythm = played_rhythm(member) if body.wait else None
             return {**result, "message": result["message"] + (tempo_note(rhythm, clock) if body.wait else ""), "rhythm": rhythm}
-        result = perform_steps(steps, clock, body.speed)
+        result = perform_steps(steps, clock, None)
         names = [("rest" if s["control"] in ("rest", "r") else f"{s['control']} + {CATALOG[s['chord']]['label']}" if s.get("chord")
                   else s["control"]) for s in (st.model_dump() for st in body.steps)]
         return {**result, "message": "Played " + " → ".join(names) + "; holding at home." + tempo_note(result["rhythm"], clock)}
@@ -581,7 +633,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if rig is None:
             raise HTTPException(409, "Chords need the second follower (Chord Arm) for the chord buttons.")
 
-    @app.post("/api/score")
     def play_score(body: ScoreRequest):
         """A score: keys and chords at bars and beats, played as one performance on Orchid Studio's beat. orchid-robot
         plans every move (when to leave home, when to press the chord button, how long each note can be held) and
@@ -620,7 +671,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 raise HTTPException(409, "Studio's loops are not playing. Start them (loop-start) so the composition has a loop to "
                                          "land in, then send the score again.")
             loop = {"slot": body.loop_slot, "bars": looper["settings"]["bars"]}
-        speed = body.speed or engine.snapshot()["teach_settings"]["speed"]
+        speed = engine.snapshot()["teach_settings"]["speed"]  # the console's: never a caller's
         timing = score_timing(speed)
         learned = score.load(timing_file)
         later = score.changes([c.model_dump() for c in body.changes], placed)
@@ -640,8 +691,11 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 raise HTTPException(409, str(exc)) from exc
             planned["loop"] = dict(loop)
             if planned["length_bars"] > loop["bars"]:
-                planned["loop"]["warning"] = (f"the arms' pass needs {planned['length_bars']} bars with its moves; the loop is "
-                                              f"{loop['bars']}, so it runs into the next pass")
+                # Not a problem for the loop: the layer gets every note on its written beat however long the pass takes.
+                # Only the live pass (voice 5) runs on into the loop's next passes while the arms finish.
+                planned["loop"]["note"] = (f"the arms' pass takes {planned['length_bars']} bars, longer than the {loop['bars']}-bar "
+                                           "loop: the loop layer still gets every note on its written beat; only the live "
+                                           "pass runs on while the arms finish (turn `live` down if it clashes)")
         planned["changes"] = [{"bar": c["bar"], "beat": c.get("beat", 1),
                                **{k: c[k] for k in ("sound", "perform", "fx", "voicing") if c.get(k) is not None}} for c in later]
         if body.plan_only:
@@ -716,7 +770,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if len(strikes) == len(placed) and not result.get("error"):  # a whole performance: learn how long changes took
             score.save(timing_file, score.learn(learned, placed, strikes, timing, before))
         if loop:  # what the arms played on this pass, each chord on its written beat, for Studio's loop to repeat
-            loop.update(keep_pass(placed, result, loop, body.perform))
+            loop.update(keep_pass(placed, result, loop, body.perform, body.loop_velocity))
         studio_report = {"start": applied_start, **fired, **({"loop": loop} if loop else {}), **({"voicing": voiced} if voiced else {})}
         note = plan_note(planned, played)
         if fired["errors"] or fired["missed"]:
@@ -724,7 +778,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 [f"bar {e['bar']}: {e['error']}" for e in fired["errors"]] + [f"bar {m_['bar']} (after the last note)" for m_ in fired["missed"]]) + "."
         return {**result, "plan": planned, "played": played, "studio": studio_report, "message": note}
 
-    def keep_pass(placed, result, loop, perform=None):
+    def keep_pass(placed, result, loop, perform=None, velocity=None):
         """Hand Studio's loop this pass: what Orchid sent for each note, placed on its written beat (score.take). It
         takes over at the next loop boundary."""
         check = result.get("key_check") or {}
@@ -733,7 +787,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             reason = ("nothing sounded on this pass" if check and check.get("status") != "unavailable" else
                       "the note check did not hear this pass (is Orchid Studio's key monitor on?)")
             return {"kept": False, "reason": reason + ": the loop layer is unchanged"}
-        chords, missed = score.take(placed, heard)
+        chords, missed = score.take(placed, heard, velocity)
         try:  # the layer plays through the score's own Perform settings (Studio fills in the rest from its defaults)
             reply = studio("loop-compose", slot=loop["slot"], chords=chords, **({"settings": perform} if perform else {}))
         except SafetyError as exc:
@@ -770,8 +824,41 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 text += f"; moved {slipped} bar{'s' if slipped != 1 else ''} later in all"
         return text + "."
 
+    @app.post("/api/controls/{control}/play")
+    def play_control_route(control: str, body: PlayRequest):
+        """Play one taught control for `duration` (a note value) on Orchid Studio's beat."""
+        no_motion_overrides(body.speed, body.turn_degrees)
+        with performance(f"play {control}"):
+            return play_control(control, body)
+
+    @app.post("/api/chords/play")
+    def chord_route(body: ChordRequest):
+        """A key with a chord button held, both arms run by orchid-robot."""
+        no_motion_overrides(body.speed)
+        with performance(f"chord {body.key} + {body.chord}"):
+            return play_chord_route(body)
+
+    @app.post("/api/sequence")
+    def sequence_route(body: SequenceRequest):
+        """A phrase of steps in time."""
+        no_motion_overrides(body.speed)
+        for step in body.steps:
+            no_motion_overrides(turn_degrees=step.turn_degrees)
+        with performance("a sequence"):
+            return play_sequence(body)
+
+    @app.post("/api/score")
+    def score_route(body: ScoreRequest):
+        """A score on Orchid Studio's beat; plan_only plans it without moving (and without waiting its turn)."""
+        no_motion_overrides(body.speed)
+        if body.plan_only:
+            return play_score(body)
+        with performance(f"a score of {len(body.events)} notes"):
+            return play_score(body)
+
     @app.post("/api/settings")
-    def playback_settings(body: PlaybackSettings):
+    def playback_settings(body: PlaybackSettings, request: Request):
+        console(request)
         if body.duration is not None:
             try:
                 music.beats(body.duration)
@@ -781,9 +868,35 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                        False, member) for member in engines.values()]  # one Arm speed, note value and hardness for both arms
         return results[0]
 
+    def park(where, arm=None):
+        """Every arm (or one) to its home, or to rest by way of home; orchid-robot orders the arms and checks each move
+        (the interlock): all of them home first, then each to rest, one at a time."""
+        members = [pick(arm)] if arm else list(engines.values())
+
+        def move(action, member):
+            try:
+                return run(action, {}, True, member)
+            except HTTPException as exc:  # say which arm, so the caller can tell the operator
+                raise HTTPException(exc.status_code, f"{NAMES[member.arm_id]}: {exc.detail}") from exc
+        results = []
+        for member in members:
+            if not member.parked_now[0] or where == "home":
+                results.append(move("teach_go_home", member))
+        if where == "rest":
+            results = [move("teach_go_rest", member) for member in members]
+        return {**results[-1], "message": " ".join(f"{NAMES[m.arm_id]}: {r['message']}" for m, r in zip(members, results[-len(members):]))}
+
     @app.post("/api/home")
-    def go_home(arm: str = "a"):
-        return run("teach_go_home", {}, True, pick(arm))
+    def go_home(arm: str | None = None):
+        """Send the arms (or `arm`) home. orchid-robot moves them, one at a time, through its own checks."""
+        with performance("going home"):
+            return park("home", arm)
+
+    @app.post("/api/rest")
+    def go_rest(arm: str | None = None):
+        """Park the arms (or `arm`) at rest, by way of home. orchid-robot moves them, one at a time, through its own checks."""
+        with performance("going to rest"):
+            return park("rest", arm)
 
     @app.post("/api/stop")
     def stop():

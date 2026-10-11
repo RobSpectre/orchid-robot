@@ -1798,3 +1798,9 @@ h1 { font-family: Georgia, 'Times New Roman', serif; letter-spacing: -1.5px; }
 .training-next { margin-top:10px; }
 .training-moved { margin:10px 0 0; }
 .training-moved button { margin-left:6px; padding:6px 12px; }
+
+/* Correct keys: the hover-to-hover path test */
+.path-test { margin-top:24px; padding-top:16px; border-top:1px solid var(--line); }
+.path-test h3 { margin:0 0 6px; font-size:16px; }
+.path-result { display:flex; flex-direction:column; gap:4px; margin:12px 0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:13px; }
+.path-result span { color:var(--muted); }

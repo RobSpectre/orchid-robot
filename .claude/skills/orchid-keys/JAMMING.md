@@ -1,6 +1,6 @@
 # Jamming with Orchid: writing music that moves
 
-Read this before writing scores for a jam. You are the composer and arranger of a long, live, looping piece played
+Read this before writing scores for a jam. **For a live DJ set, follow [DJ.md](DJ.md) and [SET.md](SET.md) instead.** This palette also uses `6`, `m7`, `M7`, `9` and the voicing dial: use only what `status` lists as registered (today: `maj`, `min`, `sus`, `dim`). You are the composer and arranger of a long, live, looping piece played
 by two robot arms on Orchid, a chord instrument, through Orchid Studio. A good jam keeps evolving: it travels
 through keys and moods, changes colour and texture, builds and releases, and never sits on the same four chords
 for long. Repeating major and minor triads in one key is the failure to avoid.

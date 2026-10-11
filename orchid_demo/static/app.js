@@ -305,6 +305,30 @@ function keyCheck(s) {
 }
 // 04 Correct keys (tune.py): test each key by what Orchid hears, then move or deepen it; small capped corrections.
 const tuning = (s = state) => s?.tune?.status === "running" || !!s?.tune_queue?.length;
+// The path between keys: every taught key in order, hover to hover (never home between them), then back from the last
+// to the first, the longest move. Checks the hovers clear Orchid and shows which moves go straight and which by home.
+const pathKeys = taught => taught.length > 1 ? [...taught, taught[0]] : [];
+function pathTest(s, taught) {
+  const run = s.teach?.path_test, keys = pathKeys(taught), fresh = (s.teach?.path_untested || []).filter(k => taught.includes(k));
+  const slow = s.teach?.path_first_speed ?? 0.25;
+  let html = `<div class="path-test"><h3>Test the path between keys</h3><p class="hint">Plays ${keys.map(esc).join(" → ")} once each at your Arm speed, ` +
+    "going straight from each key’s hover to the next, as phrases and scores do, then home. Watch that the finger stays clear of " +
+    "Orchid between keys. A move whose straight path would dip toward Orchid goes by way of home instead, and is listed.</p>" +
+    (fresh.length ? `<p class="notice" role="status"><b>First run: very slow (${slow}×).</b> ` +
+      (fresh.length === taught.length ? "None of these keys has been through a path test since it was taught" :
+        `${fresh.map(esc).join(" ")} ${fresh.length === 1 ? "has not been through a path test since it was" : "have not been through a path test since they were"} taught`) +
+      `, so this run goes at ${slow}× whatever the Arm speed. Once it plays through to the end, the next runs use your Arm speed.</p>` : "");
+  if (run && s.phase === "teach_hold" && s.message.startsWith("Played")) {  // not after Stop motion part way
+    const home = run.hops.filter(h => h.route === "home"), deepest = run.hops.filter(h => h.dip_mm != null).sort((a, b) => b.dip_mm - a.dip_mm)[0];
+    html += `<div class="path-result" role="status"><strong>${run.hops.length - home.length} of ${run.hops.length} moves straight from hover to hover` +
+      ` · played at ${run.speed}×${run.first?.length ? " (first run, very slow)" : ""}</strong>` +
+      (home.length ? `<span>By way of home: ${home.map(h => `${esc(h.from)} → ${esc(h.to)}${h.dip_mm != null ? ` (would dip ${h.dip_mm} mm)` : ""}`).join(", ")}.</span>` : "") +
+      (deepest && deepest.dip_mm > 0 ? `<span>Deepest dip modelled: ${esc(deepest.from)} → ${esc(deepest.to)}, ${deepest.dip_mm} mm below the lower hover.</span>` :
+        "<span>No straight move dips below its hovers in the model.</span>") + "</div>" + keyCheck(s);
+  }
+  return html + actions(button("teach_sequence", fresh.length ? `Test the path ▶ first run at ${slow}×` : `Test the path ▶ ${keys.length} keys`, true,
+    `data-path="${esc(keys.join(","))}"`)) + "</div>";
+}
 function tuneSection() {
   const s = state, t = s.tune, limits = s.tune_limits || {}, results = s.tune_results || {}, queue = s.tune_queue || [];
   const busy = tuning(s), taught = notes.filter(k => allStatuses()[k]?.recorded);
@@ -332,7 +356,9 @@ function tuneSection() {
   } else {
     if (t) html += `<p class="${t.status === "done" ? "hint" : "notice"}" role="status"><b>${esc(t.name)}:</b> ${esc(t.message)}</p>`;
     html += confirm("beside_arm", `I am beside the arm with Stop motion in reach. Each test plays one key ${limits.presses} times at my playing speed.`, "Ready to correct");
-    if (s.phase === "teach_follow") html += '<p class="hint">Hold the arm first; it follows the leader now.</p>' + actions(button("teach_hold", "Hold here", false));
+    if (s.phase === "teach_play") html += `<div class="tune-progress" role="status"><strong>${s.teach?.sequence ? `Playing the path: ${esc(s.teach.sequence)}` : "Moving…"}</strong></div>` +
+      '<progress id="teach-progress" max="1" value="0" aria-label="Playback progress"></progress>' + actions(button("teach_hold", "■ Stop & hold here", false));
+    else if (s.phase === "teach_follow") html += '<p class="hint">Hold the arm first; it follows the leader now.</p>' + actions(button("teach_hold", "Hold here", false));
     else if (s.phase !== "teach_hold") html += '<p class="hint">The arm holds at home before correcting.</p>' +
       (powered() ? confirm("supported", "The follower is already powered. I am supporting it: torque blinks off for a moment while LeRobot’s motor settings are applied.", "Support the follower") : "") +
       actions(button("teach_begin", "Go to home ▶", false, 'data-pose="home" data-play="1"'));
@@ -345,6 +371,7 @@ function tuneSection() {
         button("tune_start", taught.length === 1 ? `Correct ${esc(taught[0])}` : `Correct all ${taught.length} taught keys`, !!(off.length || failed.length), `data-controls="${esc(taught.join(","))}"`) +
         (failed.length ? button("tune_start", `Correct the ${failed.length} key${failed.length === 1 ? "" : "s"} that failed (${failed.map(esc).join(" ")})`, false, `data-controls="${esc(failed.join(","))}"`) :
           off.length ? button("tune_start", `Correct the ${off.length} key${off.length === 1 ? "" : "s"} off the pattern (${off.map(esc).join(" ")})`, false, `data-controls="${esc(off.join(","))}"`) : ""));
+      if (taught.length > 1) html += pathTest(s, taught);
     }
   }
   html += `<div class="tune-grid" role="group" aria-label="Keys">${notes.map(k => {
@@ -666,7 +693,7 @@ function render() {
   if (p === "disconnected") { connectionView = false; calibrationView = false; calibrationChoice = null; tuneView = false; }
   guideAdvance(s);
   const trained = s.catalog ? trainingSteps(s) : [];
-  const key = [trained.map(x => x.done ? 1 : 0).join(""), JSON.stringify(guide.moved), JSON.stringify(connectPlan), JSON.stringify(s.discovery), JSON.stringify(Object.values(arms || {}).map(a => [a.connected, a.available, a.leader])), s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following, s.home?.id, s.home_ready, connectionView, calibrationView, calibrationTarget(), s.teach?.mode, s.teach?.warning, s.teach?.played, s.teach?.returning, s.teach?.going_home, s.teach?.home_saved_at, s.teach?.going_rest, s.teach?.rest_saved_at, JSON.stringify(s.teach_settings), JSON.stringify(s.key_check), JSON.stringify(s.tune), JSON.stringify(s.tune_queue), JSON.stringify(s.tune_results), tuneView, JSON.stringify(s.teach?.points), s.teach?.points_for, powered(s), JSON.stringify(allStatuses()[selectedNote || s.selected])].join(":");
+  const key = [trained.map(x => x.done ? 1 : 0).join(""), JSON.stringify(guide.moved), JSON.stringify(connectPlan), JSON.stringify(s.discovery), JSON.stringify(Object.values(arms || {}).map(a => [a.connected, a.available, a.leader])), s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following, s.home?.id, s.home_ready, connectionView, calibrationView, calibrationTarget(), s.teach?.mode, s.teach?.warning, s.teach?.played, s.teach?.returning, s.teach?.going_home, s.teach?.home_saved_at, s.teach?.going_rest, s.teach?.rest_saved_at, JSON.stringify(s.teach_settings), JSON.stringify(s.key_check), JSON.stringify(s.tune), JSON.stringify(s.tune_queue), JSON.stringify(s.tune_results), tuneView, JSON.stringify(s.teach?.points), s.teach?.points_for, JSON.stringify(s.teach?.path_test), JSON.stringify(s.teach?.path_untested), s.teach?.sequence, powered(s), JSON.stringify(allStatuses()[selectedNote || s.selected])].join(":");
   if (key !== renderKey) {
     cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools(); homeTools(); leaderPanel();
     say(["teach_record", "teach_play", "teach_follow", "dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_hover", "note_pressed", "note_touch", "retreating", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
@@ -889,6 +916,7 @@ function dispatchButton(b) {
   if (action === "simulate_leader") { args.motor = $("leader-sim-joint").value; args.delta = Number(b.dataset.delta); }
   if (action === "control_start") args.control = b.dataset.control;
   if (action === "tune_start") { args.controls = b.dataset.controls.split(","); if (b.dataset.testOnly) args.test_only = true; }
+  if (action === "teach_sequence" && b.dataset.path) { args.steps = b.dataset.path.split(",").map(control => ({control})); args.path_test = true; }
   // Every teaching command names the key selected on the map, so the app never falls back to the previous key.
   if (["teach_begin","teach_follow","teach_hold","teach_record","teach_play","teach_capture"].includes(action)) args.control = targetControl();
   if (action === "teach_play") { if (b.dataset.speed) args.speed = Number(b.dataset.speed); args.force = b.dataset.force === "true"; }

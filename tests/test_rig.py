@@ -234,7 +234,7 @@ def test_connect_all_connects_every_detected_arm_with_one_confirmation(tmp_path)
     with TestClient(create_app(tmp_path), base_url="http://127.0.0.1") as client:
         session = client.get("/api/session").json()
         assert set(session["connect_plan"]) == {"a", "b"} and session["connect_plan"]["a"]["leader_port"] == "simulator-leader"
-        auth = {"x-orchid-token": session["token"], "x-orchid-operator": str(uuid4())}
+        auth = {"x-orchid-token": session["token"], "x-orchid-operator": str(uuid4()), "origin": "http://127.0.0.1"}
         client.post("/api/heartbeat", json={}, headers=auth)
         refused = client.post("/api/connect-all", json={"prepared": False, "fixture": "Plate"}, headers=auth)
         assert refused.status_code == 200  # queued; each arm's worker refuses an unconfirmed connection
@@ -289,7 +289,7 @@ def test_one_press_finds_the_arms_then_connects_each_to_its_place(tmp_path):
     b = Engine(tmp_path / "arm-b", "hardware", port_scanner=scanner, leader_store=LeaderStore(a.repo))
     with TestClient(create_app(tmp_path, "hardware", engines={"a": a, "b": b}), base_url="http://127.0.0.1") as client:
         token = client.get("/api/session").json()["token"]
-        auth = {"x-orchid-token": token, "x-orchid-operator": str(uuid4())}
+        auth = {"x-orchid-token": token, "x-orchid-operator": str(uuid4()), "origin": "http://127.0.0.1"}
         client.post("/api/heartbeat", json={}, headers=auth)
         reply = client.post("/api/connect-all", json={"prepared": True, "scan": True}, headers=auth)
         assert reply.status_code == 200 and len(scans) == 1
@@ -303,7 +303,7 @@ def test_the_leader_moves_to_the_other_arm_in_one_step_and_each_arm_selects_its_
     import time as clock
     with TestClient(create_app(tmp_path), base_url="http://127.0.0.1") as client:
         token = client.get("/api/session").json()["token"]
-        auth = {"x-orchid-token": token, "x-orchid-operator": str(uuid4())}
+        auth = {"x-orchid-token": token, "x-orchid-operator": str(uuid4()), "origin": "http://127.0.0.1"}
         app_engines = client.app.state.engines
         a, b = app_engines["a"], app_engines["b"]
         client.post("/api/heartbeat", json={}, headers=auth)
@@ -375,3 +375,10 @@ def test_an_arm_with_no_home_yet_does_not_stop_the_other_being_taught_with_the_l
     a.parked_now = (False, "moving")  # someone is moving it: not even guided teaching
     with pytest.raises(SafetyError, match="Keys Arm is not parked"):
         r.claim("b", "teach_follow", {})
+
+
+def test_a_chord_timeout_says_what_it_waited_for_and_where_both_arms_are():
+    with pytest.raises(SafetyError) as refused:
+        Rig.wait(lambda: False, 0.05, what="the Chord Arm pressing Major", state=lambda: "Keys Arm: teach_hold, At home")
+    text = str(refused.value)
+    assert "waiting for the Chord Arm pressing Major" in text and "Keys Arm: teach_hold, At home" in text

@@ -4,6 +4,7 @@ No connect/configure/disconnect call is made here: those are attended lifecycle
 operations. Driver reads and writes, normalization and default settings are used
 unchanged. The cache exposes the raw observation from the SAME serial read.
 """
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 
@@ -23,6 +24,28 @@ class ObservationBus:
         return {n: normalized[self.device.motors[n].id] for n in self.raw}
 
 
+class ConfigRecorder:
+    """LeRobot's SO101Follower.configure run against this instead of the bus: it records every register write the
+    driver would make, reads stay real (configure reads the Phase register), and torque is never touched. So the app
+    can ask, without writing anything, whether the motors already carry the driver's settings."""
+
+    def __init__(self, bus):
+        self._bus, self.writes = bus, []
+
+    def __getattr__(self, name):
+        return getattr(self._bus, name)
+
+    @contextmanager
+    def torque_disabled(self, motors=None):
+        yield
+
+    def write(self, data_name, motor, value, **_):
+        self.writes.append((data_name, motor, value))
+
+    def configure_motors(self, *args, **kwargs):
+        type(self._bus).configure_motors(self, *args, **kwargs)  # the driver's own method, writing into this recorder
+
+
 class NativeTeleop:
     def __init__(self, device):
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
@@ -36,6 +59,14 @@ class NativeTeleop:
         self.view = SimpleNamespace(bus=self.bus, config=self.config, cameras={}, is_connected=True)
         self.read_method = SO101Leader.get_action if self.role == "leader" else SO101Follower.get_observation
         self.send_method = SO101Follower.send_action
+
+    def configured(self):
+        """Whether every register LeRobot's configure would write already holds that value (read only)."""
+        from lerobot.robots.so_follower import SO101Follower
+        recorder = ConfigRecorder(self.bus.device)
+        SO101Follower.configure(SimpleNamespace(bus=recorder, config=self.config, cameras={}, is_connected=True))
+        return bool(recorder.writes) and all(self.bus.device.read(name, motor, normalize=False) == value
+                                             for name, motor, value in recorder.writes)
 
     @property
     def settings(self):

@@ -48,7 +48,7 @@ DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}
 DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S, "press_hardness": teach_motion.PRESS_HARDNESS,
                           "duration": music.DEFAULT_DURATION}  # duration: the API's note value when a play gives none
 API_ACTIONS = ("teach_play", "teach_sequence", "teach_settings", "teach_configure", "teach_hold", "teach_go_home", "teach_go_rest",
-               "chord_press", "chord_release")  # default wrist turn per direction (deg); set per direction
+               "chord_press", "chord_release", "performance_hold")  # default wrist turn per direction (deg); set per direction
 STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)",
               "open": " (jaws open, still above the knob)", "lower": " (lowered around the knob, not touching it)",
               "grip": " (jaws closed on the knob)"}
@@ -183,6 +183,10 @@ class Engine:
         self.onsets = self.repo.get("onsets") or {}
 
         self.teach_dial_doc = self.repo.get("teach_dial")  # hover/open/lower/grip shared by both dial directions
+        self.path_test, self.last_sag = None, float("inf")  # the last hover-to-hover path test (teach_sequence path_test)
+        # Each key's motion as it was when a path test last played it through ({key: saved_at}). A key new or re-taught
+        # since (new hovers) gets its first path test at PATH_FIRST_SPEED, whatever the Arm speed.
+        self.path_tested = self.repo.get("path_tested") or {}
         self.teach_settings = {**DEFAULT_TEACH_SETTINGS, **(self.repo.get("teach_settings") or {})}
         self.teach_sequence_label = None
         self.teach_going_rest = None  # "rest" during an operator Go to rest
@@ -405,7 +409,8 @@ class Engine:
                     "reteaching": (self.reteaching or {}).get("control") if self.teach_points_for == (self.reteaching or {}).get("control") else None,
                     "clipped_steps": self.teach.clipped_steps, "speed": self.teach.speed,
                     "points": [n for n in self.point_names(self.teach_points_for) if n in self.teach_points],
-                    "sequence": self.teach_sequence_label,
+                    "sequence": self.teach_sequence_label, "path_test": deepcopy(self.path_test),
+                    "path_untested": self.path_untested(), "path_first_speed": self.PATH_FIRST_SPEED,
                     "points_for": self.teach_points_for,
                     "home_saved": self.shared_teach_home() is not None, "returning": self.teach_returning,
                     "going_home": self.teach_going_home,
@@ -480,7 +485,7 @@ class Engine:
 
     def snapshot(self):
         with self.lock:
-            return {**deepcopy(self.public), "pending": self.pending, "operator": self.owner,
+            return {**deepcopy(self.public), "pending": self.pending,  # never the operator's id: it is the console's lease
                     "lease_live": self.lease_until > time.monotonic(),
                     "worker_alive": self.thread is None or self.thread.is_alive()}
 
@@ -1071,6 +1076,12 @@ class Engine:
         return timing
 
     HOVER_MATCH_DEG = 2.0  # the arm waits over a key's hover when its held goal is this close to it
+    PATH_FIRST_SPEED = 0.25  # a path test through keys never tested that way yet: very slow, to watch the new moves
+
+    def path_untested(self, keys=None):
+        """Taught keys whose current motion no path test has played through yet."""
+        keys = [k for k in (keys or self.owns) if k in m.KEYS and (self.notes.get(k) or {}).get("format") == WAYPOINT_FORMAT]
+        return [k for k in dict.fromkeys(keys) if self.path_tested.get(k) != self.notes[k].get("saved_at")]
 
     def over_key(self):
         """The key whose hover the arm holds still at (it played that key and stayed for the next one), else None."""
@@ -1101,6 +1112,7 @@ class Engine:
             sag = kinematics.dip(start["goal"], points["hover"]["goal"], self.calibration, self.arm_id)
         except (ValueError, KeyError, TypeError):  # no model of this arm: never guess
             sag = float("inf")
+        self.last_sag = sag  # for the path test's report
         return (("from",) if sag <= kinematics.HOP_DIP_MM else ("from", "home")), {"from": start}
 
     def chord_timing(self, chord, speed):
@@ -1142,12 +1154,15 @@ class Engine:
                 points = {**points, **start}
                 path = {"approach": approach, "stay": args.get("stay") is True and CATALOG[control]["kind"] == "key"}
                 recording = teach_motion.waypoint_recording(points, control, float(press_s), hardness, *strike, **path)
+                route = {"approach": list(approach), **({"dip_mm": round(self.last_sag, 1) if math.isfinite(self.last_sag) else None}
+                                                        if approach != ("home",) else {})}
+                recording["route"] = route
                 changed = {"press_s": float(press_s)} if "press_s" in args and press_s != entry.get("press_s") else {}
                 if "sound_s" in args:  # a note value: the press is whatever makes it sound that long
                     sound_s = args["sound_s"]
                     m.require(type(sound_s) in (int, float) and 0 < sound_s < float("inf"), "A note needs a length.")
                     press_s = teach_motion.press_for(float(sound_s), recording, speed)
-                    recording = teach_motion.waypoint_recording(points, control, press_s, hardness, *strike, **path)
+                    recording = {**teach_motion.waypoint_recording(points, control, press_s, hardness, *strike, **path), "route": route}
                     changed = {}
                 origin = {("home",): "home", ("from",): f"{after}'s hover", ("from", "home"): f"{after}'s hover → home"}[approach]
                 description = (f"{origin} → hover → touch → press ({hardness:.0%} hardness, held {press_s:.2f} s) → hover"
@@ -1287,6 +1302,10 @@ class Engine:
         elif event == "played" and self.teach_sequence_label:
             self.request_key_check()
             label, self.teach_sequence_label = self.teach_sequence_label, None
+            if self.path_test:  # played through to the end: these keys' moves have had their first, slow run
+                self.path_tested = {**self.path_tested, **{k: self.notes[k].get("saved_at") for k in self.path_test["keys"]
+                                                           if (self.notes.get(k) or {}).get("saved_at")}}
+                self.repo.put("path_tested", self.path_tested)
             self.transition("teach_hold", f"Played {label}; holding at home.")
         elif event == "played":
             self.request_key_check()
@@ -2477,14 +2496,21 @@ class Engine:
                 else:
                     self.control_motion(self.selected, {})
             powered = any(self.arm.torque_status().values())
-            # LeRobot's configure() briefly turns torque off while it writes the gains.
-            m.require(not powered or args.get("supported") is True,
+            # LeRobot's configure() briefly turns torque off while it writes the gains. A hold nobody is supporting
+            # (no_gap: a performance request) is taken only when that cannot happen: unpowered, or powered with the
+            # settings already in place (nothing to write, so torque stays on).
+            keep = powered and args.get("no_gap") is True and self.arm.configured()
+            if args.get("no_gap") is True:
+                m.require(not powered or keep, "The follower is powered and its motor settings would have to be written "
+                          "again (torque goes off for a moment), so it needs a hand on it: the operator holds it in the "
+                          "console (select a taught control and press Play once).")
+            m.require(not powered or keep or args.get("supported") is True,
                       "The follower is already powered. Support it with a hand: torque blinks off for a moment while the motor settings are applied.")
             if leader:
                 self.leader_torque = self.leader.require_torque(False)
             self.reset_note()
             self.actuating = True
-            self.arm.arm_for_teleop()
+            self.arm.arm_for_teleop(keep_settings=keep)
             self.teach = teach_motion.Session(self.read_follower_joints, self.arm.teleop_goal,
                                               self.read_leader_joints if leader else None, clock=self.clock)
             self.teach.send(self.teach.goal)
@@ -2503,6 +2529,15 @@ class Engine:
                 self.transition("teach_hold", f"Follower holding here, torque ON.{home_note} Hands off the follower, then follow the leader to teach {name}.")
             else:
                 self.transition("teach_hold", f"Follower holding here, torque ON. Hands off the follower; {name} is ready to play.")
+        elif action == "performance_hold":
+            # A performance asked for this arm while it is connected but not holding (after a restart, say). orchid-robot
+            # takes the hold itself, where the arm is, only when no torque gap is possible; otherwise it names what the
+            # operator must do. Faults and calibration stay the operator's.
+            self.require_phase("connected", "ready")
+            m.require(self.calibrated, "Calibrate the follower in the console before playing.")
+            self.dispatch("teach_begin", {"pose": "home", "no_gap": True})
+            self.event("workflow", "Holding here for a performance: the hold was taken by orchid-robot where the arm is, "
+                                   "with no torque gap.")
         elif action == "teach_follow":
             self.require_phase("teach_hold")
             m.require(self.teach.read_leader is not None, "Connect and calibrate the leader to follow it.")
@@ -2770,6 +2805,9 @@ class Engine:
             m.require(isinstance(steps, list) and 1 <= len(steps) <= 64 and all(isinstance(x, dict) for x in steps),
                       "Give 1 to 64 steps, each like {\"control\": \"C\"}.")
             speed = self.play_speed(args)
+            untested = self.path_untested([x.get("control") for x in steps]) if args.get("path_test") is True else []
+            if untested:  # new moves between new hovers: the first time through is very slow
+                speed = min(speed, self.PATH_FIRST_SPEED)
             parts, after = [], self.over_key()
             for n, step in enumerate(steps):
                 control = step.get("control")
@@ -2784,8 +2822,15 @@ class Engine:
                 after = control if follows else None
             self.teach_sequence_label = " → ".join(CATALOG[x["control"]]["label"] for x in steps)
             self.start_playback(teach_motion.sequence_recording(parts), speed, args)
+            # Each move between two keys: straight from hover to hover, or by way of home (and how far the straight
+            # move would have dipped toward Orchid). The console's path test (Correct keys) shows it.
+            hops = [{"from": steps[n - 1]["control"], "to": x["control"], "route": "direct" if part.get("route", {}).get("approach") == ["from"] else "home",
+                     "dip_mm": part.get("route", {}).get("dip_mm")} for n, (x, part) in enumerate(zip(steps, parts)) if n]
+            self.path_test = {"keys": [x["control"] for x in steps], "hops": hops, "speed": speed, "first": untested,
+                              "at": m.stamp()} if args.get("path_test") is True else None
+            home_hops = [f"{h['from']} → {h['to']}" for h in hops if h["route"] == "home"]
             self.transition("teach_play", f"Playing {self.teach_sequence_label} at {speed:g}× speed, from each key's hover to "
-                            "the next one's. Stop motion holds the arm.")
+                            "the next one's" + (f" (by way of home: {', '.join(home_hops)})" if home_hops else "") + ". Stop motion holds the arm.")
         elif action == "teach_settings":
             changes = {}
             if "speed" in args:

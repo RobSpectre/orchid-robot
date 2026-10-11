@@ -227,6 +227,10 @@ def test_performances_teach_the_plan_how_long_changes_really_take(tmp_path):
     score.save(tmp_path / "t.json", learned)
     assert score.load(tmp_path / "t.json")["extra"]["chord>chord"] == pytest.approx(2.5)
     assert score.load(tmp_path / "missing.json")["extra"] == score.SEEDED  # before any performance: today's measurement
+    quick = [{"strike_at": 100.0}, {"strike_at": 104.0, "earliest": 100.0 + model - 0.5}]  # 0.5 s quicker than the model
+    assert score.learn(score.load(tmp_path / "x.json"), placed, quick, timing)["extra"]["chord>chord"] == pytest.approx(-0.5)
+    slow = [{"strike_at": 100.0}, {"strike_at": 104.0, "earliest": 100.0 + model - 3.0}]  # a glitch: never trusted past the floor
+    assert score.learn(score.load(tmp_path / "y.json"), placed, slow, timing)["extra"]["chord>chord"] == score.LEARN_FLOOR_S
 
 
 def test_a_score_starts_on_its_own_beat_of_studios_bar():

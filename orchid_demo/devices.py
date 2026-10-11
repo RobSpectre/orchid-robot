@@ -92,10 +92,14 @@ class SimulatedArm(m.Arm):
         return {"driver": "simulated LeRobot SO101", "use_degrees": True,
                 "max_relative_target": None, "num_read_retries": 2}
 
-    def arm_for_teleop(self):
+    def arm_for_teleop(self, keep_settings=False):
         """Hold the measured pose with torque on, whether or not torque was already on."""
         m.require(self.calibration is not None, "Complete motor calibration first.")
         self.enabled = True
+
+    def configured(self):
+        """The simulator keeps its settings while it is powered."""
+        return self.enabled
 
     def teleop_goal(self, goal):
         """Degrees/0-100 goal; out-of-range values stop at the calibrated ends like servo firmware limits."""
@@ -251,10 +255,11 @@ class HardwareArm(m.Arm):
         # joints retain their last goal; no separate jaw command is fabricated.
         return self.teleop_driver.send(action)
 
-    def arm_for_teleop(self):
+    def arm_for_teleop(self, keep_settings=False):
         """teach_key's connect: seed Goal_Position at the measured pose, then run LeRobot's own
         SOFollower.configure (torque briefly off while gains are written, then on, holding the seed).
-        Works whether torque was off or another program left the arm holding."""
+        Works whether torque was off or another program left the arm holding. keep_settings: the motors are powered
+        and already carry exactly those settings (configured()), so skip the write: torque never goes off."""
         from lerobot.robots.so_follower import SO101Follower
 
         m.require(self.role == "follower", "Leader torque enable is forbidden.")
@@ -262,8 +267,14 @@ class HardwareArm(m.Arm):
         present = self.bus.sync_read("Present_Position", normalize=False, num_retry=2)
         m.pose_valid(present)
         self.bus.sync_write("Goal_Position", present, normalize=False)
-        SO101Follower.configure(self.teleop_driver.view)
+        if not keep_settings:
+            SO101Follower.configure(self.teleop_driver.view)
         self.require_torque(True)
+
+    def configured(self):
+        """Whether the powered motors already carry every setting LeRobot's configure writes (read only)."""
+        m.require(self.role == "follower", "Only a follower is configured for motion.")
+        return all(self.torque_status().values()) and self.teleop_driver.configured()
 
     def teleop_goal(self, goal):
         """Degrees/0-100 goal through SO101Follower.send_action; servo firmware enforces the EEPROM limits."""

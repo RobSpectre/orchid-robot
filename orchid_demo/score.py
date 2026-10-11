@@ -106,10 +106,13 @@ def learn(learned: dict, placed: list, strikes: list, timing, before=None) -> di
         kind = change_kind(step, nxt)
         history[kind] = (history.get(kind, []) + [round(took - model, 3)])[-LEARN_CHANGES:]
     extra = {kind: sorted(v)[len(v) // 2] for kind, v in history.items() if v}
-    return {"history": history, "extra": {k: max(0.0, round(v, 3)) for k, v in extra.items()}}
+    return {"history": history, "extra": {k: max(LEARN_FLOOR_S, round(v, 3)) for k, v in extra.items()}}
 
 
 LEARN_CHANGES = 9
+# A change can also turn out quicker than the motion times say (a key to the next key in one motion has no command
+# overhead: measured about 0.6 s quicker on 2026-10-10). Trust that, down to this much.
+LEARN_FLOOR_S = -0.6
 # Measured on this rig (2026-10-10, 1.2x, 76 BPM): a chord-to-chord change took about 2.2 s longer than the motion
 # times alone (the arms' settling, the interlock's waits, commands). Replaced by what each performance measures.
 SEEDED = {"chord>chord": 2.2}
@@ -225,15 +228,16 @@ def fits(placed: list, loop_beats: float) -> None:
                   f"{loop_beats / music.BEATS_PER_BAR:g}-bar loop: lengthen the loop (loop-configure) or shorten the score.")
 
 
-def take(placed: list, heard: list) -> tuple:
+def take(placed: list, heard: list, velocity=None) -> tuple:
     """This pass as Studio loop chords: what Orchid sent for each note (its notes, voicing and velocity), placed on the
     note's written beat for its written length, however early or late it was. heard: the key check's steps, one per
-    note in order. A note nothing sounded for is left out. Returns (chords, the notes left out)."""
+    note in order. A note nothing sounded for is left out. velocity: the layer's level instead of each press's.
+    Returns (chords, the notes left out)."""
     chords, missed = [], []
     for step, note in zip(placed, list(heard) + [{}] * (len(placed) - len(heard))):
         if not note.get("midi"):
             missed.append({"bar": step["bar"], "beat": step["beat"], "key": step["control"], "chord": step.get("chord")})
             continue
         chords.append({"beat": step["offset"], "duration": max(0.125, step["beats"]), "notes": list(note["midi"]),
-                       "velocity": note.get("velocity") or 80})
+                       "velocity": velocity or note.get("velocity") or 80})
     return chords, missed

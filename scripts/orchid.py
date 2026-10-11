@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Play and configure taught Orchid controls through the running operator console's API, in musical time.
+"""Play taught Orchid controls through orchid-robot's performance API, in musical time.
 
 Durations are note values (a quarter note is one beat): 1/4 1/8 1/2 1 1/16, dotted 1/8. and triplet 1/8t (or q e h w s),
 or bars of 4/4: 2bars, 1bar; tie them with +: 1bar+1/2. A note can be held for any number of bars.
@@ -8,8 +8,7 @@ They follow Orchid Studio's tempo, and while its transport runs every note lands
     python3 scripts/orchid.py status                  # taught controls, speed, default note value, readiness
     python3 scripts/orchid.py clock                   # Orchid Studio's tempo, and whether notes land on its beat
     python3 scripts/orchid.py play C                  # one key for the default note value (waits until home)
-    python3 scripts/orchid.py play C --duration 1/4 --speed 2
-    python3 scripts/orchid.py play cw --turn 25       # dial directions: cw / ccw (turn angle in degrees)
+    python3 scripts/orchid.py play C --duration 1/4
     python3 scripts/orchid.py seq "C:1/4 E:1/4 G:1/2" # a phrase: each step lands its note value after the last
     python3 scripts/orchid.py seq "C:1/4 r:1/4 E:1/2" # r: a rest
     python3 scripts/orchid.py chord C maj --duration 1/2   # C with the Maj button held (Chord Arm)
@@ -18,14 +17,14 @@ They follow Orchid Studio's tempo, and while its transport runs every note lands
     python3 scripts/orchid.py score "1.1 C+maj:1  2.1 A+min:1  3.1 F+maj:1  4.1 G+sus:1"   # a whole piece, bar.beat
     python3 scripts/orchid.py score piece.json --plan  # {"events": [{"bar":1,"beat":1,"key":"C","chord":"maj",...}]}
     python3 scripts/orchid.py score "1.1 C+maj:2bars 3.1 A+min:2bars" --sound 12 --perform mode=harp --loop 1
-    python3 scripts/orchid.py set ccw --turn -25      # a dial direction's default turn
-    python3 scripts/orchid.py speed 2                 # arm speed for everything (0.1-3)
-    python3 scripts/orchid.py duration 1/4            # the note value when none is given
-    python3 scripts/orchid.py hardness 40             # press hardness: touch -> press speed, 10-100 % of the strokes
-    python3 scripts/orchid.py home | stop
+    python3 scripts/orchid.py home                    # both arms home (orchid-robot moves them, one at a time)
+    python3 scripts/orchid.py rest                    # both arms to rest, by way of home
+    python3 scripts/orchid.py stop                    # emergency only: hold both arms where they are
 
-The console (http://127.0.0.1:8081) must be open, connected and holding (Play any taught control once);
-the API never moves the arm on its own. Standard library only; exits non-zero with the reason on refusal.
+This performs music and can park the arms (home, rest). Everything else about the arms is orchid-robot's and the
+operator console's: holding, arm speed, press hardness, dial angles, the order of moves, safety. The console (http://127.0.0.1:8081) must be open,
+connected and holding. orchid-robot plays one performance at a time and refuses a second while one runs.
+Standard library only; exits non-zero with the reason on refusal.
 """
 from __future__ import annotations
 
@@ -134,25 +133,17 @@ def main(argv=None) -> None:
     piece.add_argument("--fx", help='Studio effects as JSON: {"reverb": {"mix": 30, "room": "hall"}}')
     piece.add_argument("--loop", type=int, metavar="LAYER", help="hand the composition to Studio's loop layer 1-4 to repeat")
     piece.add_argument("--voicing", type=int, metavar="POSITION", help="Orchid's voicing dial position (0-127) to start from")
-    piece.add_argument("--speed", type=float)
     chord = sub.add_parser("chord", help="play a key with a chord button held (needs both arms)")
     chord.add_argument("key")
     chord.add_argument("chord", help="dim, min, maj, sus, 6, m7, M7 or 9")
     for p in (play, seq, chord):
-        p.add_argument("--speed", type=float)
         p.add_argument("--duration", help="note value or bars: 1/4, 1/8., 1/8t, 2bars, 1bar+1/2 ... (keys and chords)")
         if p is not chord:
             p.add_argument("--no-wait", action="store_true", help="return as soon as playback starts")
-    play.add_argument("--turn", type=float, help="dial turn in degrees (negative = the other way)")
-    setter = sub.add_parser("set")
-    setter.add_argument("control")
-    setter.add_argument("--turn", type=float, required=True)
-    sub.add_parser("speed").add_argument("value", type=float)
-    sub.add_parser("duration").add_argument("value", help="the default note value, e.g. 1/8")
     sub.add_parser("clock")
-    sub.add_parser("hardness").add_argument("percent", type=float, help="10-100; lower presses more gently")
-    sub.add_parser("home")
-    sub.add_parser("stop")
+    for where in ("home", "rest"):
+        sub.add_parser(where, help=f"both arms to {where} (orchid-robot moves them)").add_argument("--arm", choices=("a", "b"))
+    sub.add_parser("stop", help="emergency only: hold both arms where they are")
     args = parser.parse_args(argv)
     console = Console(args.url)
 
@@ -164,11 +155,13 @@ def main(argv=None) -> None:
         for c in listing["controls"]:
             extra = f" turn {c['turn_degrees']:g}°" if c.get("turn_degrees") is not None else ""
             print(f"  {c['id']:<12} {c['name']:<22} {c.get('status', 'empty')}{extra}")
+        if listing.get("performing"):
+            print(f"Performing now: {listing['performing']['what']} (since {listing['performing']['since']}); wait for it.")
         if not listing["ready_to_play"]:
-            print("Not ready: in the console, select a taught control and press Play once so the follower is holding.")
+            print("Not ready: ask the operator to hold the arms in the console (select a taught control and press Play once).")
         return
     if args.command == "play":
-        body = {k: v for k, v in {"speed": args.speed, "duration": args.duration, "turn_degrees": args.turn}.items() if v is not None}
+        body = {"duration": args.duration} if args.duration else {}
         report(console.call("POST", f"/api/controls/{quote(control_id(args.control), safe='')}/play", {**body, "wait": not args.no_wait}))
     elif args.command == "seq":
         steps = []
@@ -179,16 +172,15 @@ def main(argv=None) -> None:
             if note or args.duration:
                 step["duration"] = note or args.duration
             steps.append(step)
-        body = {"steps": steps, "wait": not args.no_wait, **({"speed": args.speed} if args.speed is not None else {})}
+        body = {"steps": steps, "wait": not args.no_wait}
         report(console.call("POST", "/api/sequence", body))
     elif args.command == "chord":
         body = {"key": control_id(args.key), "chord": control_id(args.chord),
-                **{k: v for k, v in {"speed": args.speed, "duration": args.duration}.items() if v is not None}}
+                **({"duration": args.duration} if args.duration else {})}
         report(console.call("POST", "/api/chords/play", body))
     elif args.command == "score":
         given = score_events(args.events)
         body = {**(given if isinstance(given, dict) else {"events": given}), "plan_only": args.plan,
-                **({"speed": args.speed} if args.speed is not None else {}),
                 **({"sound": args.sound} if args.sound is not None else {}),
                 **({"perform": perform_settings(args.perform)} if args.perform else {}),
                 **({"fx": json.loads(args.fx)} if args.fx else {}),
@@ -214,20 +206,12 @@ def main(argv=None) -> None:
             slipped = f", {note['slipped_beats']} beat{'s' if note['slipped_beats'] != 1 else ''} late" if note.get("slipped_beats") else ""
             print(f"  bar {note['bar']} beat {note['beat']:g}  {name:<10} {where}{slipped}")
         report(result, say=False)
-    elif args.command == "set":
-        report(console.call("POST", f"/api/controls/{quote(control_id(args.control), safe='')}", {"turn_degrees": args.turn}))
-    elif args.command == "speed":
-        report(console.call("POST", "/api/settings", {"speed": args.value}))
-    elif args.command == "duration":
-        report(console.call("POST", "/api/settings", {"duration": args.value}))
     elif args.command == "clock":
         clock = console.call("GET", "/api/clock")
         print(f"{clock['bpm']:g} BPM · " + ("Orchid Studio's transport is running: notes land on its beat" if clock["grid"] else
                                             "Orchid Studio's transport is stopped: phrases keep their own time at this tempo"))
-    elif args.command == "hardness":
-        report(console.call("POST", "/api/settings", {"press_hardness": args.percent / 100}))
-    elif args.command == "home":
-        report(console.call("POST", "/api/home", {}))
+    elif args.command in ("home", "rest"):
+        report(console.call("POST", f"/api/{args.command}" + (f"?arm={args.arm}" if args.arm else ""), {}))
     elif args.command == "stop":
         report(console.call("POST", "/api/stop", {}))
 

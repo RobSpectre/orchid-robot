@@ -32,7 +32,7 @@ def plate(tmp_path, monkeypatch):
     with TestClient(create_app(tmp_path, engines={"a": a, "b": b}, studio=studio), base_url="http://127.0.0.1") as client:
         client.studio_calls = calls
         token = client.get("/api/session").json()["token"]
-        headers = {"x-orchid-token": token, "x-orchid-operator": str(uuid4())}
+        headers = {"x-orchid-token": token, "x-orchid-operator": str(uuid4()), "origin": "http://127.0.0.1"}
 
         def command(engine, action, **args):
             client.post("/api/heartbeat", json={"leader_visible": True}, headers=headers)
@@ -60,6 +60,7 @@ def plate(tmp_path, monkeypatch):
             until = time.monotonic() + 10
             while time.monotonic() < until and not (engine.phase == "teach_hold" and engine.parked_now[0]):
                 time.sleep(0.01)
+            command(engine, "teach_settings", speed=3.0)  # the operator's Arm speed (programs cannot set it)
         beating = threading.Event()
 
         def heartbeat():  # the console page keeps the lease while it is open
@@ -93,7 +94,7 @@ def test_a_chord_presses_the_button_first_and_lets_go_once_the_key_is_down(plate
         original = engine.transition
         engine.transition = lambda phase, message, engine=engine, original=original: (
             order.append((engine.arm_id, phase, engine.play_t if phase != "teach_play" else None)), original(phase, message))[1]
-    played = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj", "speed": 3.0}, headers=auth)
+    played = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
     assert played.status_code == 200, played.text
     body = played.json()
     assert body["message"].startswith("Played C + Maj; both arms home. At 120 BPM") and body["clearance_mm"] >= kinematics.CLEARANCE_MM
@@ -109,7 +110,7 @@ def test_a_chord_presses_the_button_first_and_lets_go_once_the_key_is_down(plate
 def test_chords_in_a_sequence_and_refusals(plate, monkeypatch):
     client, a, b, command, auth = plate
     seq = client.post("/api/sequence", json={"steps": [{"control": "C", "chord": "chord.maj"}, {"control": "D"},
-                                                       {"control": "D", "chord": "chord.min"}], "speed": 3.0}, headers=auth)
+                                                       {"control": "D", "chord": "chord.min"}]}, headers=auth)
     assert seq.status_code == 200, seq.text
     assert seq.json()["message"].startswith("Played C + Maj → D → D + Min; holding at home. At 120 BPM")
     untaught = client.post("/api/chords/play", json={"key": "C", "chord": "chord.sus"}, headers=auth)
@@ -132,7 +133,7 @@ def test_a_failed_key_lets_the_chord_button_go(plate, monkeypatch):
             return motion(control, args, speed, after)
         raise m.SafetyError(f"{control} cannot play right now.")
     monkeypatch.setattr(a, "control_motion", refuse)
-    refused = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj", "speed": 3.0}, headers=auth)
+    refused = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
     assert refused.status_code == 409 and refused.json()["detail"] == "Keys Arm: C cannot play right now."
     until = time.monotonic() + 10
     while time.monotonic() < until and not (b.phase == "teach_hold" and b.parked_now[0]):
@@ -149,11 +150,11 @@ def test_the_rig_refuses_other_moves_while_a_chord_holds_and_only_releases_a_hel
     refused = client.post("/api/controls/C/play", json={}, headers=auth)
     assert refused.status_code == 409 and "Chord Arm is away from its home" in refused.json()["detail"]
     command(b, "chord_release")
-    until = time.monotonic() + 10
-    while time.monotonic() < until and b.phase != "teach_hold":
+    until = time.monotonic() + 10  # back home and published as parked (the interlock reads that, a tick after the phase)
+    while time.monotonic() < until and not (b.phase == "teach_hold" and b.parked_now[0]):
         time.sleep(0.01)
     assert b.chord_held is None
-    assert client.post("/api/controls/C/play", json={"speed": 3.0}, headers=auth).status_code == 200
+    assert client.post("/api/controls/C/play", json={}, headers=auth).status_code == 200
 
 
 def test_the_key_check_reads_a_chord_by_its_tones():
@@ -191,7 +192,7 @@ def test_the_model_keeps_two_arms_apart_and_measures_them():
 def test_a_chord_sweeps_on_for_bars(plate):
     client, a, b, command, auth = plate
     started = time.monotonic()
-    played = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj", "duration": "2bars", "speed": 3.0},
+    played = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj", "duration": "2bars"},
                          headers=auth)
     assert played.status_code == 200, played.text
     assert played.json()["duration"] == {"beats": 8.0, "seconds": 4.0}  # two 4/4 bars at 120 BPM
@@ -203,12 +204,12 @@ def test_a_score_of_chords_and_keys_is_planned_then_played_and_reports_each_note
     events = [{"bar": 1, "beat": 1, "key": "C", "chord": "chord.maj", "duration": "1/2"},
               {"bar": 2, "beat": 1, "key": "D"},
               {"bar": 3, "beat": 1, "key": "D", "chord": "chord.min", "duration": "1"}]
-    planned = client.post("/api/score", json={"events": events, "speed": 3.0, "plan_only": True}, headers=auth)
+    planned = client.post("/api/score", json={"events": events, "plan_only": True}, headers=auth)
     assert planned.status_code == 200, planned.text
     body = planned.json()
     assert body["status"] == "planned" and body["plan"]["events"] == 3 and body["plan"]["bpm"] == 120
     assert a.phase == b.phase == "teach_hold" and a.teach_played is None  # nothing moved
-    played = client.post("/api/score", json={"events": events, "speed": 3.0}, headers=auth)
+    played = client.post("/api/score", json={"events": events}, headers=auth)
     assert played.status_code == 200, played.text
     body = played.json()
     assert [(p["bar"], p["key"], p["chord"]) for p in body["played"]] == [(1, "C", "chord.maj"), (2, "D", None), (3, "D", "chord.min")]
@@ -225,7 +226,7 @@ def test_a_score_sets_sound_perform_and_fx_at_the_start_and_changes_them_on_thei
     client, a, b, command, auth = plate
     events = [{"bar": 1, "beat": 1, "key": "C", "chord": "chord.maj", "duration": "1/2"},
               {"bar": 3, "beat": 1, "key": "D", "chord": "chord.min", "duration": "1/2"}]
-    body = {"events": events, "speed": 3.0, "sound": 12, "perform": {"mode": "arp"},
+    body = {"events": events, "sound": 12, "perform": {"mode": "arp"},
             "fx": {"reverb": {"mix": 30, "room": "hall"}},
             "changes": [{"bar": 3, "perform": {"mode": "harp"}, "fx": {"delay": {"mix": 20, "beats": 0.5}}}]}
     planned = client.post("/api/score", json={**body, "plan_only": True}, headers=auth).json()
@@ -273,7 +274,7 @@ def test_a_looped_score_hands_studio_this_pass_with_each_chord_on_its_written_be
     a.key_checker = KeyChecker(orchid, settle_s=0, background=False)
     events = [{"bar": 1, "beat": 1, "key": "C", "chord": "chord.maj", "duration": "2bars"},
               {"bar": 3, "beat": 3, "key": "D", "duration": "1/2"}]
-    played = client.post("/api/score", json={"events": events, "speed": 3.0, "loop_slot": 2}, headers=auth)
+    played = client.post("/api/score", json={"events": events, "loop_slot": 2}, headers=auth)
     assert played.status_code == 200, played.text
     result = played.json()
     composed = [(f, t) for c, f, t in client.studio_calls if c == "loop-compose"]
@@ -285,10 +286,15 @@ def test_a_looped_score_hands_studio_this_pass_with_each_chord_on_its_written_be
     loop = result["studio"]["loop"]
     assert loop["kept"] and loop["slot"] == 2 and loop["bars"] == 4 and loop["applies_at_beat"] == 16 and loop["missed"] == []
     silent.add("D")
-    result = client.post("/api/score", json={"events": events, "speed": 3.0, "loop_slot": 2}, headers=auth).json()
+    result = client.post("/api/score", json={"events": events, "loop_slot": 2}, headers=auth).json()
     composed = [f for c, f, t in client.studio_calls if c == "loop-compose"]
     assert composed[-1]["chords"] == [{"beat": 0.0, "duration": 8.0, "notes": [48, 52, 55], "velocity": 70}]
     assert result["studio"]["loop"]["missed"] == [{"bar": 3, "beat": 3, "key": "D", "chord": None}]
+    silent.discard("D")
+    client.post("/api/score", json={"events": events, "loop_slot": 2, "loop_velocity": 96}, headers=auth)
+    composed = [f for c, f, t in client.studio_calls if c == "loop-compose"]
+    assert [c["velocity"] for c in composed[-1]["chords"]] == [96, 96]  # Orchid's notes, at the layer's level
+    assert [c["notes"] for c in composed[-1]["chords"]] == [[48, 52, 55], [62]]
     too_long = client.post("/api/score", json={"events": events + [{"bar": 5, "beat": 1, "key": "C"}], "loop_slot": 1,
                                                "plan_only": True}, headers=auth)
     assert too_long.status_code == 409 and "past the end of Studio's 4-bar loop" in too_long.json()["detail"]
@@ -308,7 +314,7 @@ def test_a_looped_scores_sound_and_fx_reach_its_loop_layers_voice_and_the_layer_
     client, a, b, command, auth = plate
     a.key_checker = KeyChecker(lambda: [{"type": "press", "t": a.play_steps[0]["due"], "name": "C", "notes": [60], "velocity": 60}],
                                settle_s=0, background=False)
-    body = {"events": [{"bar": 1, "beat": 1, "key": "C", "duration": "1"}], "speed": 3.0, "loop_slot": 3, "sound": 21,
+    body = {"events": [{"bar": 1, "beat": 1, "key": "C", "duration": "1"}], "loop_slot": 3, "sound": 21,
             "perform": {"mode": "bloom"}, "fx": {"reverb": {"mix": 30, "room": "plate"}}}
     played = client.post("/api/score", json=body, headers=auth)
     assert played.status_code == 200, played.text
@@ -317,3 +323,13 @@ def test_a_looped_scores_sound_and_fx_reach_its_loop_layers_voice_and_the_layer_
     assert ("fx", {"slot": 5, "reverb": {"mix": 30, "room": "plate"}}) in sent and ("fx", {"slot": 3, "reverb": {"mix": 30, "room": "plate"}}) in sent
     composed = [f for c, f in sent if c == "loop-compose"]
     assert composed[-1]["slot"] == 3 and composed[-1]["settings"] == {"mode": "bloom"}
+
+
+def test_a_program_sends_both_arms_home_and_orchid_robot_moves_them_one_at_a_time(plate):
+    client, a, b, command, auth = plate
+    home = client.post("/api/home", json={}, headers=auth)
+    assert home.status_code == 200, home.text
+    assert "Keys Arm: At home" in home.json()["message"] and "Chord Arm: At home" in home.json()["message"]
+    assert a.parked_now[0] and b.parked_now[0]
+    rest = client.post("/api/rest?arm=b", json={}, headers=auth)
+    assert rest.status_code == 409 and "Chord Arm" in rest.json()["detail"]  # no rest taught: refused, nothing guessed
