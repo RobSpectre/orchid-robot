@@ -264,7 +264,6 @@ class Session:
         self.goal = dict(self.measured)
         self.leader_pose = None
         self.gripper_hold = self.measured["gripper"] if lock_gripper else None
-        self.roll_hold = None  # wrist roll held still while following (lock_wrist_roll; not used by the console)
         self.roll_guard = False  # the leader's wrist is turned past where the follower's can go: ours waits at its end
         self.roll_prev, self.roll_turns = None, 0  # the leader's last wrist reading, and whole turns across its +-180 edge
         self.mode = "holding"
@@ -309,15 +308,6 @@ class Session:
         self.mode, self.frames, self.recording, self.warning = "aligning", None, None, None
         self.soft = self.soft_due = None
         self.roll_prev = None  # pick up the leader's wrist afresh, the way nearest the follower's
-
-    def lock_wrist_roll(self, locked: bool):
-        """Hold the wrist roll where it is now, or release it; releasing ramps it to the leader instead of jumping."""
-        if locked and self.roll_hold is None:
-            self.roll_hold = self.goal["wrist_roll"]
-        elif not locked and self.roll_hold is not None:
-            self.roll_hold = None
-            if self.mode == "following":
-                self.mode = "aligning"
 
     def start_recording(self):
         if self.mode != "following":
@@ -386,8 +376,6 @@ class Session:
             self.leader_pose = self.read_leader()
             if self.gripper_hold is not None:
                 self.leader_pose["gripper"] = self.gripper_hold
-            if self.roll_hold is not None:
-                self.leader_pose["wrist_roll"] = self.roll_hold
         event = None
         if self.mode in ("aligning", "following"):
             target = self.wrap_guard(self.leader_pose)

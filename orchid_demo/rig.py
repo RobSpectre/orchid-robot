@@ -30,7 +30,6 @@ from .controls import CATALOG, EXTRA_CONTROLS
 from .discovery import follower_problem
 from .motion import KEYS
 
-ARMS = ("a", "b")
 ROLES = {"a": tuple(KEYS), "b": tuple(EXTRA_CONTROLS)}
 NAMES = {"a": "Keys Arm", "b": "Chord Arm"}  # what the operator sees; "a" and "b" stay the ids (and DATA_DIR/arm-b)
 PARKED_DEG = 5.0

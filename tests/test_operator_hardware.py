@@ -124,17 +124,6 @@ def test_failed_calibration_read_keeps_prior_motor_voltages_without_extra_io(arm
     arm.close()
 
 
-def test_goal_readback_is_read_only_and_requires_six_valid_motor_values(arm):
-    arm.open()
-    expected = dict.fromkeys(m.MOTORS, 2048)
-    arm.bus.values["Goal_Position"] = dict(expected)
-    assert arm.read_goal() == expected
-    arm.bus.values["Goal_Position"].pop("elbow_flex")
-    with pytest.raises(m.SafetyError):
-        arm.read_goal()
-    assert not arm.bus.writes
-
-
 def test_replay_motor_setup_stays_off_then_seeds_pose_before_enable(arm):
     arm.open()
     calibration = deepcopy(arm.bus.hardware_calibration)

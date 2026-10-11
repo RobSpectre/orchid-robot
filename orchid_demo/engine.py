@@ -42,11 +42,11 @@ WAYPOINT_FORMAT = "leader_waypoints_v1"
 STROKE_PAIRS = {"key": (("hover", "touch", ()), ("touch", "press", ())),
                 "dial": (("hover", "open", ("gripper",)), ("open", "lower", ("gripper",)), ("lower", "grip", ("gripper",)))}
 DIAL_SHARED = ("hover", "open", "lower", "grip")  # one knob: CW and CCW share every taught step
-DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}
+DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}  # default wrist turn per direction (deg); set per direction
 DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S, "press_hardness": teach_motion.PRESS_HARDNESS,
                           "duration": music.DEFAULT_DURATION}  # duration: the API's note value when a play gives none
 API_ACTIONS = ("teach_play", "teach_sequence", "teach_hold", "teach_go_home", "teach_go_rest",
-               "chord_press", "chord_release", "performance_hold")  # default wrist turn per direction (deg); set per direction
+               "chord_press", "chord_release", "performance_hold")
 STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)",
               "open": " (jaws open, still above the knob)", "lower": " (lowered around the knob, not touching it)",
               "grip": " (jaws closed on the knob)"}

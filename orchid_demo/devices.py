@@ -343,12 +343,6 @@ class HardwareArm(m.Arm):
         self.check_calibrated_pose(pose)
         self.bus.sync_write("Goal_Position", pose, normalize=False, num_retry=0)
 
-    def read_goal(self):
-        """Read actual servo goal registers, distinct from encoder feedback."""
-        goals = self.bus.sync_read("Goal_Position", normalize=False, num_retry=0)
-        m.pose_valid(goals)
-        return goals
-
     def arm_at_calibrated(self, current):
         self.require_torque(False)
         self.send_calibrated(current)

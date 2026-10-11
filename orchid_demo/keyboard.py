@@ -124,11 +124,6 @@ class Keyboard:
         along = self.offsets().get(key, (0.0, 0.0))[0]
         return max(0.0, along if SLOTS[sounded][0] > SLOTS[key][0] else -along)
 
-    def spacing(self, key, other):
-        """How far apart two keys' middles are, mm (from the fitted pattern)."""
-        (a1, b1), (a0, b0) = self.expected(key), self.expected(other)
-        return math.hypot(a1 - a0, b1 - b0)
-
     def along3(self):
         return (self.along[0], self.along[1], 0.0)
 

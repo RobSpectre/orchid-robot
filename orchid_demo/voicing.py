@@ -17,7 +17,6 @@ from pathlib import Path
 MAX_TURNS, MIN_DEG, MAX_DEG = 8, 5.0, 90.0
 DEFAULTS = {"up": "voicing.cw", "clicks_per_degree": 0.1, "first_degrees": 20.0}  # a guess until a turn is heard
 OTHER = {"voicing.cw": "voicing.ccw", "voicing.ccw": "voicing.cw"}
-VALUE_RANGE = (0, 127)  # CC115
 
 
 def load(path: Path) -> dict:
