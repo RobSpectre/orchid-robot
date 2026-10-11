@@ -252,5 +252,5 @@ in the API. Long durations are fine: the request blocks until the note has been 
 your HTTP client no timeout or one longer than the music (`duration.seconds` in the reply says how long the note was).
 `POST /api/stop` from another request ends it early.
 Refusals come back as HTTP 409 (state/safety, or another performance running) or 422 (a bad value, or a `speed` /
-`turn_degrees`: those are orchid-robot's) with `detail`. Console commands (`/api/commands`, `/api/heartbeat`,
-`/api/settings`, configuring a control, connecting) answer 403 to programs: they belong to the console.
+`turn_degrees`: those are orchid-robot's) with `detail`. Console commands (`/api/commands` (settings among them),
+`/api/heartbeat`, connecting) answer 403 to programs: they belong to the console.

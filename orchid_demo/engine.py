@@ -47,7 +47,7 @@ DIAL_SHARED = ("hover", "open", "lower", "grip")  # one knob: CW and CCW share e
 DIAL_DIRECTIONS = {"voicing.cw": 20.0, "voicing.ccw": -20.0}
 DEFAULT_TEACH_SETTINGS = {"speed": 1.0, "press_s": teach_motion.PRESS_DWELL_S, "press_hardness": teach_motion.PRESS_HARDNESS,
                           "duration": music.DEFAULT_DURATION}  # duration: the API's note value when a play gives none
-API_ACTIONS = ("teach_play", "teach_sequence", "teach_settings", "teach_configure", "teach_hold", "teach_go_home", "teach_go_rest",
+API_ACTIONS = ("teach_play", "teach_sequence", "teach_hold", "teach_go_home", "teach_go_rest",
                "chord_press", "chord_release", "performance_hold")  # default wrist turn per direction (deg); set per direction
 STEP_HINTS = {"touch": " (the key just touched, not pressed)", "press": " (press only until it sounds)",
               "open": " (jaws open, still above the knob)", "lower": " (lowered around the knob, not touching it)",
@@ -2852,14 +2852,6 @@ class Engine:
             self.teach_settings = {**self.teach_settings, **changes}
             self.repo.put("teach_settings", self.teach_settings)
             self.event("teach_settings", "Playback settings: " + ", ".join(f"{k} {v}" for k, v in self.teach_settings.items()))
-        elif action == "teach_configure":
-            control = args.get("control")
-            m.require(isinstance(control, str) and control in CATALOG, "Choose an instrument control.")
-            allowed = {"turn_degrees"} if CATALOG[control]["kind"] == "dial" else {"press_s"}
-            m.require(set(args) - {"control"} == allowed,
-                      "Give turn_degrees for a dial direction, or press_s for a key or chord button.")
-            self.control_motion(control, args)  # validates and saves the new default
-            self.event("teach_configure", f"{CATALOG[control]['name']}: " + ", ".join(f"{k} {v}" for k, v in args.items() if k != "control"))
         elif action == "teach_verify":
             self.require_phase("teach_hold")
             m.require(self.teach_played == self.selected, "Play this control back before marking it good.")

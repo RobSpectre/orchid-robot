@@ -20,7 +20,7 @@ Local defenses: trusted loopback Host values, same-origin mutation checks, a per
 
 ## State machine
 
-`discovery.py` is shared with `find_ports.py`: USB candidates are pinged for Feetech IDs 1–20 at 1 Mbaud, then voltage register 62 is read on the first responder. It acquires serial exclusivity before packet traffic, uses bounded serial writes and monotonic packet deadlines, closes each adapter, and checks cancellation/ownership between reads. Nonresponding serial devices are omitted; busy adapters produce warnings. The authenticated `refresh_ports` command runs only in the disconnected phase on the motor worker. GET `/api/ports` and state polling return cached results without serial I/O. Simulation never imports or invokes discovery. Scan failure invalidates old results. Eligibility requires IDs 1–6, a valid voltage, and an inferred follower role; hardware connection still revalidates all six voltages and modes.
+`discovery.py` is shared with `find_ports.py`: USB candidates are pinged for Feetech IDs 1–20 at 1 Mbaud, then voltage register 62 is read on the first responder. It acquires serial exclusivity before packet traffic, uses bounded serial writes and monotonic packet deadlines, closes each adapter, and checks cancellation/ownership between reads. Nonresponding serial devices are omitted; busy adapters produce warnings. The authenticated `refresh_ports` command runs only in the disconnected phase on the motor worker. State polling returns cached results without serial I/O. Simulation never imports or invokes discovery. Scan failure invalidates old results. Eligibility requires IDs 1–6, a valid voltage, and an inferred follower role; hardware connection still revalidates all six voltages and modes.
 
 ```mermaid
 stateDiagram-v2

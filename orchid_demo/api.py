@@ -133,18 +133,6 @@ class SequenceRequest(BaseModel):
     wait: bool = True
 
 
-class ControlSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    turn_degrees: float | None = Field(default=None, ge=-90, le=90)
-
-
-class PlaybackSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    speed: float | None = Field(default=None, ge=0.1, le=3.0)
-    duration: str | None = Field(default=None, min_length=1, max_length=40, description=DURATION)  # the note value when a play gives none
-    press_hardness: float | None = Field(default=None, ge=0.1, le=1.0)
-
-
 class ConnectAll(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prepared: bool
@@ -375,12 +363,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             raise HTTPException(409, str(exc)) from exc
         return {"ok": True}
 
-    @app.get("/api/ports")
-    def ports(arm: str = "a"):
-        # GET never opens a serial device. Authenticated refresh_ports commands
-        # perform discovery on the same worker that owns all other bus traffic.
-        return pick(arm).snapshot()["discovery"]
-
     @app.post("/api/commands", status_code=202)
     def commands(command: Command, request: Request):
         console(request)
@@ -522,11 +504,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         rhythm = played_rhythm(member) if body.wait else None
         return {**result, "message": result["message"] + (tempo_note(rhythm, clock) if body.wait else ""),
                 "duration": {"beats": step["beats"], "seconds": round(step["sound_s"], 3)}, "rhythm": rhythm}
-
-    @app.post("/api/controls/{control}")
-    def configure_control(control: str, body: ControlSettings, request: Request):
-        console(request)
-        return run("teach_configure", {"control": control, "turn_degrees": body.turn_degrees}, False, owner(control))
 
     def play_chord(step, clock, speed=None, at=None, bar=None, align=music.BEATS_PER_BAR, stay=False):
         """One chord: orchid-robot runs both arms (rig.Rig.play_chord); this waits for it and for the key check.
@@ -907,18 +884,6 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             return play_score(body)
         with performance(f"a score of {len(body.events)} notes"):
             return play_score(body)
-
-    @app.post("/api/settings")
-    def playback_settings(body: PlaybackSettings, request: Request):
-        console(request)
-        if body.duration is not None:
-            try:
-                music.beats(body.duration)
-            except SafetyError as exc:
-                raise HTTPException(422, str(exc)) from exc
-        results = [run("teach_settings", {"speed": body.speed, "duration": body.duration, "press_hardness": body.press_hardness},
-                       False, member) for member in engines.values()]  # one Arm speed, note value and hardness for both arms
-        return results[0]
 
     def park(where, arm=None):
         """Every arm (or one) to its home, or to rest by way of home; orchid-robot orders the arms and checks each move

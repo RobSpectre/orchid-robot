@@ -1,4 +1,4 @@
-"""HTTP control API (list, configure, play, sequence) against the running worker, in simulation."""
+"""HTTP control API (list, play, sequence) against the running worker, in simulation."""
 from copy import deepcopy
 import threading
 import time
@@ -71,7 +71,7 @@ def taught(engine, command):
         time.sleep(0.01)
 
 
-def test_list_play_and_configure_through_the_api(console):
+def test_list_and_play_through_the_api(console):
     client, engine, command, auth = console
     taught(engine, command)
     listing = client.get("/api/controls").json()
@@ -90,15 +90,10 @@ def test_list_play_and_configure_through_the_api(console):
 
     assert client.post("/api/controls/C/play", json={"press_s": 0.5}, headers=auth).status_code == 422  # seconds are gone
     assert client.post("/api/controls/C/play", json={"duration": "1/5"}, headers=auth).status_code == 422
-    # Settings are the console's: a program is refused; the console page (its Origin) may set them.
-    assert client.post("/api/settings", json={"speed": 2.5}, headers=auth).status_code == 403
-    console = client.console_headers
-    assert client.post("/api/settings", json={"duration": "1/4."}, headers=console).json()["status"] == "complete"
-    assert client.get("/api/controls").json()["settings"]["duration"] == "1/4."
-    assert client.post("/api/settings", json={"duration": "x"}, headers=console).status_code == 422
-    assert client.post("/api/settings", json={"press_hardness": 0.3}, headers=console).json()["status"] == "complete"
-    assert client.get("/api/controls").json()["settings"]["press_hardness"] == 0.3
-    assert client.post("/api/settings", json={"press_hardness": 0.05}, headers=console).status_code == 422
+    # Settings are the console's (its teach_settings command); a program reads them in the listing.
+    command("teach_settings", duration="1/4.", press_hardness=0.3)
+    settings = client.get("/api/controls").json()["settings"]
+    assert settings["duration"] == "1/4." and settings["press_hardness"] == 0.3
 
     seq = client.post("/api/sequence", json={"steps": [{"control": "C", "duration": "1/2"}, {"control": "rest", "duration": "1/4"},
                                                        {"control": "D", "duration": "1"}]}, headers=auth).json()
@@ -196,8 +191,7 @@ def test_programs_only_perform_and_never_drive_the_arms_directly(console):
     client, engine, command, auth = console
     taught(engine, command)
     program = {**auth, "x-orchid-operator": str(uuid4())}
-    for path, body in (("/api/heartbeat", {}), ("/api/settings", {"speed": 1}),
-                       ("/api/controls/cw", {"turn_degrees": 20}), ("/api/connect-all", {"prepared": True}),
+    for path, body in (("/api/heartbeat", {}), ("/api/connect-all", {"prepared": True}),
                        ("/api/commands", {"id": str(uuid4()), "action": "teach_go_home", "revision": 0, "args": {}})):
         refused = client.post(path, json=body, headers=program)
         assert refused.status_code == 403 and "operator console" in refused.json()["detail"], path

@@ -38,7 +38,7 @@ def test_startup_has_no_hardware_side_effects_and_serves_ui(client):
     assert state["mode"] == "simulation"
     assert state["teaching_workflow_version"] == "leader-record-replay-v1"
     assert list(state["keys"]) == ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-    assert client.get("/api/ports").json()["ports"][0]["path"] == "simulator"
+    assert client.get("/api/state").json()["discovery"]["ports"][0]["path"] == "simulator"
     response = client.get("/")
     assert response.status_code == 200
     assert "Teach the instrument" in response.text
@@ -111,7 +111,7 @@ def test_hardware_mode_never_connects_on_startup(tmp_path):
     app = create_app(tmp_path, "hardware", engine=e)
     with TestClient(app, base_url="http://127.0.0.1") as c:
         assert c.get("/api/state").json()["connected"] is False
-        assert c.get("/api/ports").json()["ports"] == []
+        assert c.get("/api/state").json()["discovery"]["ports"] == []
 
 
 def test_discovery_uses_authenticated_worker_and_keeps_http_responsive(tmp_path):
@@ -135,7 +135,7 @@ def test_discovery_uses_authenticated_worker_and_keeps_http_responsive(tmp_path)
         try:
             assert c.post("/api/commands", json=cmd, headers=headers).status_code == 202
             assert entered.wait(1)
-            assert c.get("/api/ports").json()["scanning"] is True
+            assert c.get("/api/state").json()["discovery"]["scanning"] is True
             assert c.get("/api/state").json()["pending"] is True
             assert c.post("/api/heartbeat", json={}, headers=headers).status_code == 200
             assert c.post("/api/commands", json={**cmd, "id": str(uuid4())}, headers=headers).status_code == 409

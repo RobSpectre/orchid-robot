@@ -153,8 +153,7 @@ def test_each_arm_is_only_ever_taught_its_own_controls(dynamic):
     assert a.public["selected"] in ROLES["a"]
     for action, args in (("teach_begin", {"control": "chord.maj", "follow": True}), ("control_start", {"control": "voicing.cw"}),
                          ("teach_sequence", {"steps": [{"control": "C"}, {"control": "chord.min"}]}),
-                         ("tune_start", {"controls": ["C", "chord.dim"], "beside_arm": True}),
-                         ("teach_configure", {"control": "voicing.ccw", "turn_degrees": 10})):
+                         ("tune_start", {"controls": ["C", "chord.dim"], "beside_arm": True})):
         assert "played by the other arm" in reject(a, action, **args)["message"], action
     connect(b, port="simulator-2")
     assert "C is played by the other arm" in reject(b, "teach_play", control="C")["message"]

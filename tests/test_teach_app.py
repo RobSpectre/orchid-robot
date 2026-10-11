@@ -838,13 +838,6 @@ def test_api_acts_only_while_the_console_is_in_control(engine):
         engine.api_submit("release", {"supported": True})
 
 
-def test_configure_sets_press_length_or_dial_angle(engine):
-    taught_keys(engine)
-    command(engine, "teach_configure", control="C", press_s=0.8)
-    assert engine.notes["C"]["press_s"] == 0.8
-    assert "dial direction" in reject(engine, "teach_configure", control="C", turn_degrees=10)["message"]
-
-
 def test_each_play_is_checked_against_what_orchid_sent(engine):
     from orchid_demo.keycheck import KeyChecker
     heard = []
