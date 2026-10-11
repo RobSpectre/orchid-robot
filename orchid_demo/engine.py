@@ -35,10 +35,8 @@ REQUIRED_TRIALS = 3
 LEASE_SECONDS = 5.0
 TEACHING_WORKFLOW_VERSION = "leader-record-replay-v1"
 CALIBRATION_SETUP_PHASES = ("connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review")
-TEACH_SESSION_PHASES = ("teach_hold", "teach_follow", "teach_record", "teach_play")
-RECORDING_FORMAT = "leader_recording_v1"
+TEACH_SESSION_PHASES = ("teach_hold", "teach_follow", "teach_play")
 WAYPOINT_FORMAT = "leader_waypoints_v1"
-RECORDING_FORMATS = (RECORDING_FORMAT, WAYPOINT_FORMAT)
 # Neighbouring steps must stay close (a far one means it was captured in the wrong place). The listed joints
 # are expected to change: the jaws open and close on the dial, and the turn is a wrist roll.
 STROKE_PAIRS = {"key": (("hover", "touch", ()), ("touch", "press", ())),
@@ -294,7 +292,7 @@ class Engine:
         signature = m.fingerprint(self.calibration or {})
         result = {}
         for name, entry in entries.items():
-            if entry and entry.get("format") in RECORDING_FORMATS:
+            if entry and entry.get("format") == WAYPOINT_FORMAT:
                 valid = (entry.get("calibration_sha256") == signature and entry.get("mode") == self.mode
                          and not self.waypoint_problem(entry))
                 trials = entry.get("verification", {}).get("successful_trials", 0) if valid else 0
@@ -344,7 +342,7 @@ class Engine:
             return f"Torque OFF. Support the arm and start with the pad hovering above {self.control['label']}."
         return f"Torque OFF. Support the arm and start with the pad hovering above {self.selected}."
 
-    MOVING_PHASES = ("teach_play", "teach_follow", "teach_record", "home_moving", "home_positioning", "home_arrival",
+    MOVING_PHASES = ("teach_play", "teach_follow", "home_moving", "home_positioning", "home_arrival",
                      "home_approach", "home_return", "testing", "retreating", "note_hover", "note_pressed", "note_touch",
                      "dial_approach", "dial_contact", "dial_turned", "dial_lifted",
                      "calibration_midpoint", "calibration_range", "calibration_review")  # hand-moved: not parked either
@@ -856,8 +854,6 @@ class Engine:
     @staticmethod
     def waypoint_problem(entry):
         """A saved key whose hover is not near its touch (or touch near press) would swing through that pose."""
-        if entry.get("format") != WAYPOINT_FORMAT:
-            return None
         points = entry["points"]
         dial = "grip" in points
         if dial and ("turn" in points or "lower" not in points):
@@ -871,7 +867,7 @@ class Engine:
     def recording_entry(self, control):
         entry = self.notes.get(control) if control in m.KEYS else self.controls.get(control)
         status = {**self.key_statuses(), **self.statuses(self.controls)}[control]
-        m.require(entry and entry.get("format") in RECORDING_FORMATS,
+        m.require(entry and entry.get("format") == WAYPOINT_FORMAT,
                   f"{CATALOG[control]['name']} has not been taught yet. Capture its points with the leader first.")
         problem = self.waypoint_problem(entry)
         m.require(not problem, f"{CATALOG[control]['name']} needs re-teaching: {problem}. Follow the leader, capture hover just above it, then touch and press.")
@@ -1040,8 +1036,6 @@ class Engine:
     def control_points(self, control):
         """A point-taught control's steps with the shared home (for chord press / release)."""
         entry = self.recording_entry(control)
-        m.require(entry["format"] == WAYPOINT_FORMAT, f"{CATALOG[control]['name']} was recorded freely, not taught by points. "
-                  "Re-teach it with the leader.")
         home = self.shared_teach_home()
         m.require(home, "No home is set for this arm. Set home with the leader first.")
         return {**{k: self.reachable(v) for k, v in entry["points"].items() if k in teach_motion.POINTS}, "home": home}
@@ -1129,8 +1123,6 @@ class Engine:
         if after is ...:
             after = self.over_key()
         entry = self.recording_entry(control)
-        if entry["format"] != WAYPOINT_FORMAT:
-            return entry, "the recorded motion"
         home_point = self.shared_teach_home()
         dial = CATALOG[control]["kind"] == "dial"
         points = {**entry["points"], **(self.shared_dial_points() if dial else {}), **({"home": home_point} if home_point else {})}
@@ -1492,10 +1484,8 @@ class Engine:
 
     def tune_check(self, control):
         m.require(isinstance(control, str) and control in CATALOG, "Choose a key to correct.")
-        name = CATALOG[control]["name"]
         m.require(CATALOG[control]["kind"] == "key", "Only keyboard keys can be corrected: chord buttons and the dial send no notes to check.")
         entry = self.recording_entry(control)
-        m.require(entry["format"] == WAYPOINT_FORMAT, f"{name} was recorded freely, not taught by points. Re-teach it with the leader first.")
         m.require(self.shared_teach_home(), "No home is set. Set home with the leader first.")
         return entry
 
@@ -2143,7 +2133,7 @@ class Engine:
             self.arm.check_calibrated_pose(current)
             self.save_home_reference(current)
             self.transition("ready", "Home saved with torque off. Every new leader-taught control will start and return here.")
-        elif action in ("note_start", "control_start"):
+        elif action == "control_start":
             self.require_phase("connected", "ready", "saved")
             self.supported(args)
             m.require(self.calibrated, "Complete motor calibration first.")
@@ -2161,8 +2151,6 @@ class Engine:
                 at_home = home.at_home(current, self.home["pose"])
             selected = args.get("control", args.get("key", self.selected))
             m.require(isinstance(selected, str) and selected in CATALOG, "Choose an instrument control.")
-            if action == "note_start":
-                m.require(selected in m.KEYS, "Choose one of the twelve notes.")
             if self.teaching_mode == "leader":
                 motion_arm = home.HomeArm(self.arm, self.home["pose"] if at_home else current)
                 motion_arm.check_pose(current)
@@ -2260,7 +2248,7 @@ class Engine:
             self.transition(self.phase, f"Following leader joint positions with LeRobot SO101 defaults; {grip}. Pause before capture." if self.controller.engaged
                             else "Following paused. Follower holds here; reposition the leader or capture the waypoint.")
         elif action == "simulate_leader":
-            self.require_phase(*TEACH_PHASES, "teach_follow", "teach_record")
+            self.require_phase(*TEACH_PHASES, "teach_follow")
             m.require(self.mode == "simulation" and (isinstance(self.controller, LeaderController) or self.teach),
                       "Simulation-only leader input.")
             m.require(self.simulated_leader_input is None, "The simulated hand movement is still in progress.")
@@ -2547,7 +2535,7 @@ class Engine:
             self.transition("teach_follow", f"Matching the leader at up to {teach_motion.RAMP_SPEED:.0f}°/s. Hold the leader near "
                             "the follower's pose." + self.begin_pass())
         elif action == "teach_hold":
-            self.require_phase("teach_follow", "teach_record", "teach_play")
+            self.require_phase("teach_follow", "teach_play")
             if "control" in args:
                 self.teach_control(args)
             discarded = self.teach.frames is not None
@@ -2625,7 +2613,7 @@ class Engine:
 
             updated, selected = 0, self.selected
             for control, entry in [*self.notes.items(), *self.controls.items()]:
-                if not entry or entry.get("format") not in RECORDING_FORMATS or entry.get("calibration_sha256") != old_signature:
+                if not entry or entry.get("format") != WAYPOINT_FORMAT or entry.get("calibration_sha256") != old_signature:
                     continue  # never revive a motion that was already stale
                 entry = deepcopy(entry)
                 for field in ("points", "taught_points"):  # taught_points: what the leader taught, kept by Correct keys
@@ -2733,29 +2721,6 @@ class Engine:
             name = self.cancel_pass()
             self.transition(self.phase, f"Re-teaching {name} cancelled. Its saved motion is unchanged; follow the leader to "
                             "re-teach it again.")
-        elif action == "teach_record":
-            self.require_phase("teach_follow")
-            name = self.teach_control(args)
-            m.require(self.teach.mode == "following", "Wait for FOLLOWING before recording.")
-            self.teach.start_recording()
-            self.teach_played = None
-            self.transition("teach_record", f"RECORDING {name}: rest → above it → press until it sounds → lift → back to rest. Then Stop & save.")
-        elif action == "teach_save":
-            self.require_phase("teach_record")
-            try:
-                frames = self.teach.stop_recording()
-            except RuntimeError as exc:
-                self.transition("teach_follow", str(exc))
-                raise m.SafetyError(str(exc)) from exc
-            entry = {"format": RECORDING_FORMAT, "control_id": self.selected, "fps": teach_motion.FPS,
-                     "units": "lerobot_degrees_gripper_0_100", "frames": frames,
-                     "calibration_sha256": m.fingerprint(self.calibration),
-                     "leader_calibration_sha256": m.fingerprint(self.leader_calibration),
-                     "fixture_id": self.fixture["id"], "mode": self.mode, "saved_at": m.stamp(),
-                     "verification": {"successful_trials": 0}}
-            self.save_entry(entry)
-            self.transition("teach_follow", f"Saved {self.control['name']} ({frames[-1]['t']:.1f} s). Still following. "
-                            "Return the arm to rest, then Play it back.")
         elif action == "teach_play":
             self.require_phase("teach_hold", "teach_follow")
             name = self.teach_control(args)
@@ -2852,15 +2817,6 @@ class Engine:
             self.teach_settings = {**self.teach_settings, **changes}
             self.repo.put("teach_settings", self.teach_settings)
             self.event("teach_settings", "Playback settings: " + ", ".join(f"{k} {v}" for k, v in self.teach_settings.items()))
-        elif action == "teach_verify":
-            self.require_phase("teach_hold")
-            m.require(self.teach_played == self.selected, "Play this control back before marking it good.")
-            entry = self.recording_entry(self.selected)
-            trials = entry.get("verification", {}).get("successful_trials", 0) + 1
-            self.save_entry({**entry, "verification": {"successful_trials": trials, "verified_at": m.stamp(),
-                             "method": "simulated playback" if self.mode == "simulation" else "operator heard playback"}})
-            self.teach_played = None
-            self.transition("teach_hold", f"{self.control['name']} marked good. Pick another control above, or play it again.")
         elif action in ("release", "disconnect", "retry"):
             m.require(self.arm is not None, "No arm is connected")
             self.supported(args)

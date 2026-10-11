@@ -305,7 +305,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if holder is target:
             return {"status": "ok", "message": "This arm already has the leader."}
         owner = operator(request)
-        if holder.phase in ("teach_follow", "teach_record"):
+        if holder.phase == "teach_follow":
             perform(holder, owner, "teach_hold", {})
         perform(holder, owner, "leader_detach", {})
         perform(target, owner, "connect_leader", {"prepared": True, "leader_port": rig.released_leader})

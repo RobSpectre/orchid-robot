@@ -65,7 +65,7 @@ def teach(e):
 def test_forward_capture_order_and_reverse_release_preserve_the_taught_stroke(engine):
     connect(engine)
     calibrate(engine)
-    command(engine, "note_start", key="C", supported=True)
+    command(engine, "control_start", control="C", supported=True)
     reject(engine, "capture_pressed")
     reject(engine, "capture_touch")
     command(engine, "capture_hover")
@@ -112,7 +112,7 @@ def accept_trial(e):
 def held(e):
     connect(e)
     calibrate(e)
-    command(e, "note_start", key="C", supported=True)
+    command(e, "control_start", control="C", supported=True)
     teach(e)
 
 
@@ -242,7 +242,7 @@ def test_reset_stops_when_rollback_cannot_be_verified(engine):
 def test_complete_twelve_notes_and_resume(engine, tmp_path):
     connect(engine)
     calibrate(engine)
-    command(engine, "note_start", key="C", supported=True)
+    command(engine, "control_start", control="C", supported=True)
     for note in m.KEYS:
         assert engine.selected == note
         teach(engine)
@@ -280,7 +280,7 @@ def test_support_and_calibration_are_required(engine):
     with pytest.raises(m.SafetyError, match="weight"):
         engine.dispatch("calibrate", {})
     with pytest.raises(m.SafetyError, match="calibration"):
-        engine.dispatch("note_start", {"supported": True, "key": "C"})
+        engine.dispatch("control_start", {"supported": True, "control": "C"})
     assert not engine.arm.enabled
 
 
@@ -403,7 +403,7 @@ def test_jammed_motor_does_not_save_a_note(engine):
 def test_large_manual_jump_stops_capture(engine):
     connect(engine)
     calibrate(engine)
-    command(engine, "note_start", key="C", supported=True)
+    command(engine, "control_start", control="C", supported=True)
     command(engine, "capture_hover")
     engine.arm.current["wrist_flex"] += 30
     engine.step()

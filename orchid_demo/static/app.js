@@ -62,7 +62,7 @@ const calibrationTarget = () => state?.phase.startsWith("calibration_") ? state.
   calibrationChoice || (leaderMode() && state.calibrated && !state.leader?.calibrated ? "leader" : "follower");
 const workflowSection = () => state.phase === "disconnected" || connectionView ? "connect" :
   tuneView && !state.phase.startsWith("calibration_") && referencesReady() ? "tune" : calibrationView || state.phase.startsWith("calibration_") || (!referencesReady() && ["connected","ready","fault"].includes(state.phase)) ? "calibration" : "notes";
-const teachSessionPhases = ["teach_hold", "teach_follow", "teach_record", "teach_play"];
+const teachSessionPhases = ["teach_hold", "teach_follow", "teach_play"];
 const powered = (s = state) => Object.values(s?.torque || {}).some(v => v === 1);
 const teachingPhases = ["home_positioning","home_arrival","home_approach","home_return","note_ready","note_hover","note_pressed","note_touch","dial_ready","dial_approach","dial_contact","dial_turned","dial_lifted"];
 const support = () => confirm("supported", leaderMode() ? "Both arms are supported or resting securely; it is safe to release torque or establish the follower hold." : "I am supporting the arm’s weight; it is safe to release or hold here.");
@@ -106,7 +106,7 @@ function leaderPanel() {
   if (s.teach && teachSessionPhases.includes(s.phase)) {
     const m = s.teach.mode;
     html += `<p class="hint">LeRobot SO101 driver · ${m === "aligning" ? "ramping to the leader’s pose at up to 30°/s" : m === "following" ? "follower mirrors the leader 1:1, gripper included" : ["ramping","settling"].includes(m) ? "moving to the recording’s start pose at up to 30°/s" : m === "playing" ? "playing the recorded motion" : "holding; moving the leader does not move the follower"}.</p>`;
-    if (isSim() && ["teach_follow","teach_record"].includes(s.phase) && !connectionView) html += `<details class="leader-simulation"><summary>Practice leader movement</summary><p class="hint">Each tap moves the simulated leader by 12 ticks over time; the follower mirrors it once following.</p><label class="form-field">Joint<select id="leader-sim-joint">${Object.entries(motors).map(([id,label])=>`<option value="${id}" ${id === "wrist_flex" ? "selected" : ""}>${label}</option>`).join("")}</select></label>${actions(button("simulate_leader", "− Leader", true, 'data-leader="true" data-delta="-12"') + button("simulate_leader", "+ Leader", true, 'data-leader="true" data-delta="12"'))}</details>`;
+    if (isSim() && s.phase === "teach_follow" && !connectionView) html += `<details class="leader-simulation"><summary>Practice leader movement</summary><p class="hint">Each tap moves the simulated leader by 12 ticks over time; the follower mirrors it once following.</p><label class="form-field">Joint<select id="leader-sim-joint">${Object.entries(motors).map(([id,label])=>`<option value="${id}" ${id === "wrist_flex" ? "selected" : ""}>${label}</option>`).join("")}</select></label>${actions(button("simulate_leader", "− Leader", true, 'data-leader="true" data-delta="-12"') + button("simulate_leader", "+ Leader", true, 'data-leader="true" data-delta="12"'))}</details>`;
   } else if (s.leader_teaching && teachingPhases.includes(s.phase)) {
     html += `<p class="hint">LeRobot SO101 · 1:1 joint motion · ${s.phase === "home_positioning" ? "position all six motors, including the gripper, for a new home" : s.phase === "home_arrival" ? "positioning available · confirm home below before recording a route" : "taught approach, local control motion, and return home"}. Pause to capture or reposition the leader. Uses the installed driver’s default position control. Pause holds the follower where it is. Every engagement has a five-second countdown, then the follower aligns to the leader’s current calibrated pose. Bring the leader close before the countdown ends.</p>`;
     html += s.leader_following ? actions(button("leader_pause", "Pause following · hold here", false, 'data-leader="true"')) : connectionView ? "" :
@@ -696,7 +696,7 @@ function render() {
   const key = [trained.map(x => x.done ? 1 : 0).join(""), JSON.stringify(guide.moved), JSON.stringify(connectPlan), JSON.stringify(s.discovery), JSON.stringify(Object.values(arms || {}).map(a => [a.connected, a.available, a.leader])), s.instance_id, s.revision, p, s.range_index, s.trials, s.selected, selectedNote, s.calibrated, s.leader?.calibrated, s.leader_teaching, s.leader_following, s.home?.id, s.home_ready, connectionView, calibrationView, calibrationTarget(), s.teach?.mode, s.teach?.warning, s.teach?.played, s.teach?.returning, s.teach?.going_home, s.teach?.home_saved_at, s.teach?.going_rest, s.teach?.rest_saved_at, JSON.stringify(s.teach_settings), JSON.stringify(s.key_check), JSON.stringify(s.tune), JSON.stringify(s.tune_queue), JSON.stringify(s.tune_results), tuneView, JSON.stringify(s.teach?.points), s.teach?.points_for, JSON.stringify(s.teach?.path_test), JSON.stringify(s.teach?.path_untested), s.teach?.sequence, powered(s), JSON.stringify(allStatuses()[selectedNote || s.selected])].join(":");
   if (key !== renderKey) {
     cancelCountdown(); clearConfirmations(); renderKey = key; workflow(); calibrationTools(); homeTools(); leaderPanel();
-    say(["teach_record", "teach_play", "teach_follow", "dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_hover", "note_pressed", "note_touch", "retreating", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
+    say(["teach_play", "teach_follow", "dial_ready", "dial_approach", "dial_contact", "dial_turned", "dial_lifted", "note_ready", "note_hover", "note_pressed", "note_touch", "retreating", "holding", "result", "saved", "fault"].includes(p) ? s.message : "");
   }
   renderPorts();
   const receipt = s.last_receipt;
@@ -845,7 +845,6 @@ function updateButtons() {
     if (b.dataset.action === "leader_pause") valid = !!state.leader_following;
     if (b.dataset.action === "leader_resume") valid = valid && state.leader_teaching && !state.leader_following && teachingPhases.includes(state.phase);
     if (b.dataset.action === "simulate_leader") valid = isSim() && state.leader_teaching && !state.simulated_leader_input;
-    if (b.dataset.action === "teach_record") valid = valid && state.teach?.mode === "following";
     if (b.dataset.action === "move_leader") valid = true;  // moves no arm: the other arm only stops following and holds
     if (b.dataset.action === "tune_start") valid = valid && state.phase === "teach_hold" && b.dataset.controls.split(",").every(k => allStatuses()[k]?.recorded);
     if (tuning() && !b.dataset.recovery && !b.dataset.connection) valid = b.dataset.action === "tune_stop";
@@ -918,7 +917,7 @@ function dispatchButton(b) {
   if (action === "tune_start") { args.controls = b.dataset.controls.split(","); if (b.dataset.testOnly) args.test_only = true; }
   if (action === "teach_sequence" && b.dataset.path) { args.steps = b.dataset.path.split(",").map(control => ({control})); args.path_test = true; }
   // Every teaching command names the key selected on the map, so the app never falls back to the previous key.
-  if (["teach_begin","teach_follow","teach_hold","teach_record","teach_play","teach_capture"].includes(action)) args.control = targetControl();
+  if (["teach_begin","teach_follow","teach_hold","teach_play","teach_capture"].includes(action)) args.control = targetControl();
   if (action === "teach_play") { if (b.dataset.speed) args.speed = Number(b.dataset.speed); args.force = b.dataset.force === "true"; }
   if (action === "teach_play" && $("turn-degrees")) args.turn_degrees = Number($("turn-degrees").value);
   if (action === "teach_play" && $("press-seconds")) args.press_s = Number($("press-seconds").value);

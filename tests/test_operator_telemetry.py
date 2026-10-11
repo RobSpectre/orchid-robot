@@ -79,7 +79,7 @@ def test_diagnostics_failure_clears_snapshot_without_changing_motor_state(engine
 def test_powered_targets_and_fault_telemetry(engine):
     connect(engine)
     calibrate(engine)
-    command(engine, 'note_start', key='C', supported=True)
+    command(engine, 'control_start', control='C', supported=True)
     teach(engine)
     status = engine.snapshot()['motor_status']
     assert all(v['torque_enabled'] is True and v['target_ticks'] is not None for v in status.values())

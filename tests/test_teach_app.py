@@ -1,4 +1,4 @@
-"""Web console leader record -> replay (same loop as teach_key.py), in simulation."""
+"""Web console leader teaching by points -> replay (same loop as teach_key.py), in simulation."""
 from copy import deepcopy
 import time
 
@@ -49,43 +49,6 @@ def following(e, control="C"):
     assert e.phase == "teach_follow" and e.teach.mode == "following"
 
 
-def record_press(e, control="C"):
-    command(e, "teach_record", control=control)
-    assert e.phase == "teach_record"
-    command(e, "simulate_leader", motor="wrist_flex", delta=48)
-    run(e, 1.0)
-    command(e, "simulate_leader", motor="wrist_flex", delta=-48)
-    run(e, 1.0)
-    command(e, "teach_save")
-    assert e.phase == "teach_follow"
-
-
-def test_teach_needs_no_home_and_records_then_replays_commanded_goals(engine):
-    following(engine)
-    record_press(engine)
-    entry = engine.notes["C"]
-    assert entry["format"] == "leader_recording_v1" and entry["frames"][-1]["t"] > 1.5
-    wrist = [f["goal"]["wrist_flex"] for f in entry["frames"]]
-    assert max(wrist) - wrist[0] > 3  # the press is in the recording
-    assert engine.public["keys"]["C"]["status"] == "registered" and engine.public["keys"]["C"]["recorded"]
-
-    command(engine, "teach_play", control="C", speed=1.0)
-    assert engine.phase == "teach_play"
-    sent = []
-    real = engine.arm.teleop_goal
-    engine.teach.send_follower = lambda goal: (sent.append(dict(goal)), real(goal))[1]
-    run(engine, 10, until=lambda: engine.phase == "teach_hold")
-    assert engine.phase == "teach_hold" and engine.teach_played == "C"
-    assert "plays it again" in engine.message
-    peak = max(goal["wrist_flex"] for goal in sent)
-    assert peak == pytest.approx(max(wrist), abs=0.01)
-    assert engine.arm.enabled
-
-    command(engine, "teach_verify")
-    assert engine.public["keys"]["C"]["status"] == "registered"
-    assert engine.home is None
-
-
 def test_following_ramps_to_leader_instead_of_jumping(engine):
     ready(engine)
     command(engine, "teach_begin", control="C")
@@ -111,27 +74,9 @@ def test_teach_adopts_a_follower_left_holding(engine):
     assert engine.phase == "teach_hold" and engine.arm.enabled
 
 
-def test_record_is_unavailable_until_following(engine):
-    ready(engine)
-    command(engine, "teach_begin", control="C")
-    reject(engine, "teach_record", control="C")
-    engine.leader.current["shoulder_lift"] += 600
-    command(engine, "teach_follow")
-    reject(engine, "teach_record", control="C")  # still ramping
-    assert engine.teach.mode == "aligning"
-
-
-def test_too_short_recording_is_not_saved(engine):
-    following(engine)
-    command(engine, "teach_record", control="C")
-    run(engine, 0.2)
-    reject(engine, "teach_save")
-    assert engine.phase == "teach_follow" and engine.notes["C"] is None
-
-
 def test_stop_motion_during_playback_holds_without_fault(engine):
     following(engine)
-    record_press(engine)
+    taught_key(engine)
     command(engine, "teach_play", control="C", speed=0.5)
     run(engine, teach.SETTLE_S + 0.5)
     engine.submit("operator", "stop-1", "stop", engine.revision, {})
@@ -142,8 +87,7 @@ def test_stop_motion_during_playback_holds_without_fault(engine):
 
 def test_blocked_start_pose_asks_then_plays_anyway(engine):
     following(engine)
-    record_press(engine)
-    command(engine, "teach_hold")
+    taught_key(engine)
     engine.arm.current["shoulder_pan"] += 200  # nudged ~18 deg away while holding
     engine.arm.jammed = True
     command(engine, "teach_play", control="C")
@@ -157,8 +101,7 @@ def test_blocked_start_pose_asks_then_plays_anyway(engine):
 
 def test_calibration_change_requires_rerecording(engine):
     following(engine)
-    record_press(engine)
-    command(engine, "teach_hold")
+    taught_key(engine)
     engine.calibration = {**engine.calibration, "gripper": {**engine.calibration["gripper"], "range_max": 3000}}
     engine.publish()
     assert engine.public["keys"]["C"]["status"] == "needs_reteach"
@@ -167,7 +110,7 @@ def test_calibration_change_requires_rerecording(engine):
 
 def test_lost_browser_during_playback_faults_with_a_hold(engine):
     following(engine)
-    record_press(engine)
+    taught_key(engine)
     command(engine, "teach_play", control="C")
     engine.lease_until = time.monotonic() - 1
     engine.clock.sleep(teach.PERIOD)
@@ -181,13 +124,6 @@ def test_release_ends_the_session_and_turns_torque_off(engine):
     command(engine, "teach_hold")
     command(engine, "release", supported=True)
     assert engine.teach is None and not engine.arm.enabled and engine.phase == "connected"
-
-
-def test_chords_and_dial_record_the_same_way(engine):
-    following(engine, "chord.min")
-    record_press(engine, "chord.min")
-    record_press(engine, "voicing.cw")
-    assert engine.controls["chord.min"]["format"] == engine.controls["voicing.cw"]["format"] == "leader_recording_v1"
 
 
 # --- waypoints: home -> hover -> touch -> press, then the same points in reverse ---------------------
@@ -212,6 +148,13 @@ def teach_points(e, control="C"):
     capture(e, "touch", control)
     move_leader(e, "wrist_flex", 12)
     capture(e, "press", control)
+
+
+def taught_key(e, control="C"):
+    """Teach a key by its points and wait for the return to home: the follower holds there."""
+    teach_points(e, control)
+    run(e, 10, until=lambda: e.phase == "teach_hold")
+    assert e.phase == "teach_hold" and e.public["keys"][control]["status"] == "registered"
 
 
 def spy(e):
