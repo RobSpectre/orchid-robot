@@ -405,6 +405,7 @@ class Engine:
                 "recording_error": self.recording_error,
                 "simulated_leader_input": self.simulated_leader_input is not None,
                 "calibration_id": m.fingerprint(self.calibration)[:12] if self.calibration else None,
+                "model_pan_deg": kinematics.pan_correction(self.calibration),
                 "discovery": deepcopy(self.discovery),
                 "fixture": deepcopy(self.fixture), "selected": self.selected,
                 "position": deepcopy(self.current), "torque": deepcopy(self.torque),
@@ -451,7 +452,8 @@ class Engine:
         s = self.snapshot()
         return {"arm": self.arm_id, "phase": s["phase"], "connected": s["connected"], "calibrated": s["calibrated"],
                 "message": s["message"], "parked": s["parked"], "parked_reason": s["parked_reason"],
-                "pose_angles": s.get("pose_angles"), "leader": s["leader"]["connected"], "owns": s["owns"],
+                "pose_angles": s.get("pose_angles"), "model_pan_deg": s.get("model_pan_deg", 0.0),
+                "leader": s["leader"]["connected"], "owns": s["owns"],
                 "powered": any(v == 1 for v in (s.get("torque") or {}).values()),
                 "tuning": bool(s.get("tune_queue")) or (s.get("tune") or {}).get("status") == "running"}
 

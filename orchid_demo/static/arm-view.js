@@ -9,15 +9,18 @@
   let scene='arm',arms=null;
   const plate=window.OrchidPlate,M=window.OrchidArmModel;
   const mountFrame=arm=>{const m=plate.layout.mounts[arm];return M.transform(m.xyz.map(n=>n/1000),[0,0,m.yaw_deg*Math.PI/180]);};
-  function plateScene(pose,active) {
-    const mine=latest?.arm||'a',other=mine==='a'?'b':'a';
-    const I=M.identity(),parts=[{mesh:'registration_plate',frame:I,color:[.36,.36,.35]},{mesh:'orchid_body',frame:I,color:[.42,.37,.48]},
-      {mesh:'orchid_white_keys',frame:I,color:[.9,.88,.84]},{mesh:'orchid_black_keys',frame:I,color:[.12,.12,.13]},
-      {mesh:'orchid_chord_buttons',frame:I,color:[.66,.58,.78]},{mesh:'orchid_dial',frame:I,color:[.2,.2,.22]}];
+  // Each arm on the plate with its measured pan correction (layout.PAN_CORRECTION_DEG), as the chord check models it.
+  const panned=(angles,deg)=>deg?{...angles,shoulder_pan:(angles.shoulder_pan||0)+deg*Math.PI/180}:angles;
+  function plateScene(angles,active) {
+    const mine=latest?.arm||'a',other=mine==='a'?'b':'a',pose=M.forward(panned(angles,latest?.model_pan_deg));
+    const I=M.identity(),O=window.OrchidArmRenderer.orchidFrame(plate.layout.orchid);
+    const parts=[{mesh:'registration_plate',frame:I,color:[.36,.36,.35]},{mesh:'orchid_body',frame:O,color:[.42,.37,.48]},
+      {mesh:'orchid_white_keys',frame:O,color:[.9,.88,.84]},{mesh:'orchid_black_keys',frame:O,color:[.12,.12,.13]},
+      {mesh:'orchid_chord_buttons',frame:O,color:[.66,.58,.78]},{mesh:'orchid_dial',frame:O,color:[.2,.2,.22]}];
     parts.push(...window.OrchidArmRenderer.instances(pose,'').map(p=>({...p,frame:M.multiply(mountFrame(mine),p.frame)})));
     const twin=arms?.[other]?.available?arms[other]:null;
     if(twin){
-      const ghost=M.forward(twin.connected&&twin.pose_angles?twin.pose_angles:{gripper:Math.PI/4});
+      const ghost=M.forward(twin.connected&&twin.pose_angles?panned(twin.pose_angles,twin.model_pan_deg):{gripper:Math.PI/4});
       parts.push(...window.OrchidArmRenderer.instances(ghost,'').map(p=>({...p,frame:M.multiply(mountFrame(other),p.frame),color:p.color.map(c=>c*.55+.12)})));
     }
     return {parts,labels:[[mine,true],...(twin?[[other,false]]:[])]};
@@ -50,7 +53,7 @@
     note.textContent=latest?.pose_reference_ready?'SO101 CAD driven by encoder angles. Use the physical arm to judge clearance; this view does not verify alignment or contact.':'SO101 reference pose. The physical pose is unverified until midpoint capture; identify joints by their number and location.';
     const pose=window.OrchidArmModel.forward(livePose||lastAngles||{gripper:Math.PI/4});
     const onPlate=scene==='plate'&&plate&&window.OrchidArmRenderer.hasPlate;
-    const built=onPlate?plateScene(pose,active):null;
+    const built=onPlate?plateScene(livePose||lastAngles||{gripper:Math.PI/4},active):null;
     const parts=built?built.parts:window.OrchidArmRenderer.instances(pose,active);
     const right=[-Math.sin(yaw),Math.cos(yaw),0],up=[-Math.cos(yaw)*Math.sin(elevation),-Math.sin(yaw)*Math.sin(elevation),Math.cos(elevation)],depth=[Math.cos(yaw)*Math.cos(elevation),Math.sin(yaw)*Math.cos(elevation),Math.sin(elevation)];
     const points=window.OrchidArmRenderer.bounds(parts);
@@ -76,8 +79,9 @@
       // Motor guidance belongs to the single-arm view; here, name the arms and Orchid.
       context.font='bold 11px ui-sans-serif,system-ui';context.textAlign='center';
       const tag=(text,at,color)=>{const p=project(at);context.fillStyle='#0c141ad0';context.fillRect(p[0]-context.measureText(text).width/2-6,p[1]-9,context.measureText(text).width+12,18);context.fillStyle=color;context.fillText(text,p[0],p[1]+4);};
-      for(const [arm,mine] of built.labels){const m=plate.layout.mounts[arm];tag(`${arm==='a'?'ARM A · KEYS':'ARM B · CHORDS'}${mine?'':' (other)'}`,[m.xyz[0]/1000,m.xyz[1]/1000+.06,.01],mine?'#ffe3a3':'#c9c3b5');}
-      const o=plate.layout.orchid;tag('ORCHID (MOCK)',[o.center[0]/1000,(o.center[1]-o.size[1]/2-12)/1000,(o.floor_z+o.height)/1000],'#e7d6ff');
+      // Each arm's tag sits just behind its base; Orchid's over its front (player's) edge.
+      for(const [arm,mine] of built.labels){const m=plate.layout.mounts[arm],back=m.yaw_deg*Math.PI/180;tag(`${arm==='a'?'ARM A · KEYS':'ARM B · CHORDS'}${mine?'':' (other)'}`,[m.xyz[0]/1000-.06*Math.cos(back),m.xyz[1]/1000-.06*Math.sin(back),m.xyz[2]/1000],mine?'#ffe3a3':'#c9c3b5');}
+      const o=plate.layout.orchid;tag('ORCHID (MOCK)',M.point(window.OrchidArmRenderer.orchidFrame(o),[0,(-o.size[1]/2-12)/1000,o.height/1000]),'#e7d6ff');
       context.textAlign='left';context.fillStyle='#c8bea1';context.font='10px ui-sans-serif,system-ui';
       context.fillText(`Plate · arms on measured M5 mounts · poses ±2 cm · mock Orchid: keys from Keys Arm's presses, buttons & dial approximate`,14,h-15,w-28);
       return;
@@ -118,13 +122,14 @@
     const origin=[-.13,-.1,0];[['X',[.035,0,0],'#d49371'],['Y',[0,.035,0],'#b2c591'],['Z',[0,0,.035],'#8db5c9']].forEach(([name,axis,color])=>{line(origin,add(origin,axis),color,1.5);const p=project(add(origin,mul(axis,1.2)));context.fillStyle=color;context.font='10px ui-monospace,monospace';context.fillText(name,p[0],p[1]);});
     context.textAlign='left';context.fillStyle='#c8bea1';context.font='10px ui-sans-serif,system-ui';context.fillText(cad?'SO101 · manufacturer CAD · 50 mm grid':'JOINT SCHEMATIC · CAD unavailable',14,h-15);
   }
-  function focusTarget(){if(scene==='plate'){[yaw,elevation]=[-Math.PI/2,.6];}else{const target=guide.target(latest,selected);[yaw,elevation]=target.camera||[-.95,.48];}zoom=1;$('pose-zoom').value='1';schedule();}
-  // Plate: from the player's side of Orchid (-y), plate x to the right.
+  // Plate: from the player's side of Orchid (layout.orchid.facing_deg), the keys running left to right.
+  const playerYaw=()=>(plate?.layout.orchid.facing_deg??-90)*Math.PI/180;
+  function focusTarget(){if(scene==='plate'){[yaw,elevation]=[playerYaw(),.6];}else{const target=guide.target(latest,selected);[yaw,elevation]=target.camera||[-.95,.48];}zoom=1;$('pose-zoom').value='1';schedule();}
   document.querySelectorAll('[data-scene]').forEach(b=>b.addEventListener('click',()=>setScene(b.dataset.scene)));
   if(!plate)document.querySelectorAll('[data-scene]').forEach(b=>b.hidden=true);
   let section=null;
   function setScene(value){scene=value;document.querySelectorAll('[data-scene]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.scene===value)));
-    if(scene==='plate'){[yaw,elevation]=[-Math.PI/2,.6];}else{[yaw,elevation]=[-.95,.48];}zoom=1;$('pose-zoom').value='1';schedule();}
+    if(scene==='plate'){[yaw,elevation]=[playerYaw(),.6];}else{[yaw,elevation]=[-.95,.48];}zoom=1;$('pose-zoom').value='1';schedule();}
   window.OrchidArmView={setArms(value){arms=value;schedule();},
     setSection(value){if(value===section||!plate)return;section=value;setScene(['notes','tune'].includes(value)?'plate':'arm');},
     update(s,connected,joint){

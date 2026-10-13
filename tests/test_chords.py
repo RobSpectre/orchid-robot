@@ -1,5 +1,6 @@
 """Chords: Chord Arm holds a chord button while Keys Arm plays a key, run by orchid-robot from one API call (simulation)."""
 from copy import deepcopy
+import re
 import threading
 import time
 from uuid import uuid4
@@ -7,7 +8,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 import pytest
 
-from orchid_demo import kinematics
+from orchid_demo import kinematics, layout
 from orchid_demo import motion as m
 from orchid_demo.api import create_app
 from orchid_demo.engine import Engine, WAYPOINT_FORMAT
@@ -121,7 +122,7 @@ def test_chords_in_a_sequence_and_refusals(plate, monkeypatch):
     assert wrong.status_code == 409 and "Choose a key" in wrong.json()["detail"]
     monkeypatch.setattr(kinematics, "CLEARANCE_MM", 10_000)
     close = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
-    assert close.status_code == 409 and "would bring the arms within 0 mm" in close.json()["detail"]
+    assert close.status_code == 409 and re.search(r"would bring the arms within \d+ mm", close.json()["detail"])
     assert b.phase == "teach_hold" and b.chord_held is None  # nothing moved
 
 
@@ -186,9 +187,22 @@ def test_the_model_keeps_two_arms_apart_and_measures_them():
     calibration = {name: {"range_min": 0, "range_max": 4094} for name in m.MOTORS}
     pose = dict.fromkeys(m.MOTORS, 0.0)
     near = kinematics.clearance([pose], calibration, [pose], calibration)
-    assert 0 < near < 1000  # the mounts are 400 mm apart
+    assert 0 < near < 1000  # the mounts are 265 mm apart
     assert kinematics._segment_distance((0, 0, 0), (10, 0, 0), (5, 5, 0), (5, 10, 0)) == pytest.approx(5)
     assert kinematics._segment_distance((0, 0, 0), (10, 0, 0), (20, 0, 0), (30, 0, 0)) == pytest.approx(10)
+
+
+def test_a_measured_pan_correction_turns_only_that_followers_model(monkeypatch):
+    calibration = {name: {"range_min": 0, "range_max": 4094} for name in m.MOTORS}
+    other = {**calibration, "gripper": {"range_min": 1, "range_max": 4094}}
+    pose = {**dict.fromkeys(m.MOTORS, 0.0), "shoulder_lift": 30.0}
+    tip, _ = kinematics.fingertip(pose, calibration, "b")
+    monkeypatch.setitem(layout.PAN_CORRECTION_DEG, m.fingerprint(calibration)[:12], 10.0)
+    assert kinematics.pan_correction(calibration) == 10.0 and kinematics.pan_correction(other) == 0.0
+    # the same as the follower turned 10 deg further at its shoulder_pan (to the model's 4095/4096 tick rounding)
+    assert kinematics.fingertip(pose, calibration, "b")[0] == pytest.approx(
+        kinematics.fingertip({**pose, "shoulder_pan": 10.0}, other, "b")[0], abs=0.05)
+    assert kinematics.fingertip(pose, calibration, "b")[0] != pytest.approx(tip, abs=1.0)
 
 
 def test_a_chord_sweeps_on_for_bars(plate):

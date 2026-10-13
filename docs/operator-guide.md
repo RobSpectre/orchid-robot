@@ -183,7 +183,7 @@ arm or Orchid, or after changing Arm speed or Press hardness a lot.
 The key check after every play also reports two keys struck together ("C and C# sounded together"): the finger landed
 between them.
 
-## Two followers on the registration plate
+## Two followers on the registration frame
 
 A second follower needs no setting. The connection page has one button, **Find and connect all arms**: it searches USB
 and connects every arm it finds. A follower recognised by the calibration in its motors goes to its own arm, a new one to
@@ -249,11 +249,25 @@ key is refused or does not start, the Chord Arm lets go and returns home. With O
 its tones above the key (so Orchid's voicing, its inversions and octaves, does not matter). It reports a press that sounded only the key
 as "the chord button was not held".
 
-The 3D view's **Plate** button shows the registration plate, Orchid in its pocket and both arms on their mounts with
-their live poses. Each base was placed by fitting the SO101 base's four bolt holes to the plate's four M5 sockets (within
-0.1 mm; see `orchid_demo/layout.py`); Orchid is drawn 43 mm tall. Poses are modelled from encoders and the CAD, so they
-can be about 2 cm off: use it to see where the arms are, not to judge clearance by eye (the chord check allows for that error). Rebuild the plate visual with
-`python scripts/build_plate_visual.py PLATE.stl` if the plate changes.
+The 3D view's **Plate** button shows the registration frame (FRAME V2), Orchid in its tilted cradle and both arms on their
+raised mounts behind it, with their live poses, seen from the player's side. Each base was placed by fitting the SO101
+base's four bolt holes to the frame's four M5 sockets (within 0.06 mm; see `orchid_demo/layout.py`); Orchid is drawn
+43 mm tall, tilted 10.8° toward the player as the cradle holds it. Poses are modelled from encoders and the CAD, so they
+can be about 2 cm off: use it to see where the arms are, not to judge clearance by eye (the chord check allows for that
+error). If the frame changes, refit the mounts in `orchid_demo/layout.py` (the chord check models the arms from them) and
+rebuild the visual with `python scripts/build_plate_visual.py FRAME.stl`.
+
+A hand-centred calibration can leave an arm's base rotation (shoulder pan) several degrees off, which the model shows
+as the whole arm swung sideways: on FRAME V2 it put the arms about 5 cm closer together than they are, and refused
+every chord near the middle. `layout.PAN_CORRECTION_DEG` holds a measured correction for each follower's calibration.
+After recalibrating an arm (its correction no longer applies), measure along Orchid's front edge between control
+centres and fit both arms again:
+
+    python scripts/fit_model_pan.py --apart Sus:C=63 --apart Dim:B=246
+
+It prints the corrections, how well they fit the ruler (a few mm is good), and every chord's clearance before and
+after. With the corrections, C and C# with Sus and C# with Dim, Min or Maj are still refused: there the arms really do
+come close.
 
 ## Play from scripts or Claude (API)
 

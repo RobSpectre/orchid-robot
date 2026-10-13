@@ -26,14 +26,22 @@
     return {vertices,triangles,bounds:[[Math.min(...xs)/1e5,Math.min(...ys)/1e5,Math.min(...zs)/1e5],[Math.max(...xs)/1e5,Math.max(...ys)/1e5,Math.max(...zs)/1e5]]};
   }
   // A mock Orchid: the measured body; keys placed where Keys Arm's taught presses land; chord buttons and dial approximate.
+  // Built in Orchid's own frame (mm): x along the keys toward the player's right, y from the front (player's) edge at
+  // -depth/2 to the back, z up from its underside. orchidFrame puts it on the plate.
   function mockOrchid(o) {
-    const [cx,cy]=o.center,[sx,sy]=o.size,top=o.floor_z+o.height;
-    const front=cy-sy/2,white=16.5,left=-4;
+    const [sx,sy]=o.size,top=o.height;
+    const front=-sy/2,white=16.5,left=-4;
     const whites=[...Array(7)].map((_,i)=>[left+i*white+.6,left+(i+1)*white-.6,front+18,front+78,top,top+4]);
     const blacks=[1,2,4,5,6].map(i=>[left+i*white-5,left+i*white+5,front+50,front+80,top+4,top+10]);
-    const buttons=[0,1].flatMap(row=>[0,1,2,3].map(col=>{const x=cx-sx/2+22+col*24,y=front+40+row*30;return [x,x+18,y,y+18,top,top+5];}));
-    return {orchid_body:solid([[cx-sx/2,cx+sx/2,front,cy+sy/2,o.floor_z,top]]),orchid_white_keys:solid(whites),orchid_black_keys:solid(blacks),
-            orchid_chord_buttons:solid(buttons),orchid_dial:solid([],[[cx-38,front+85,21,top,top+16]])};
+    const buttons=[0,1].flatMap(row=>[0,1,2,3].map(col=>{const x=-sx/2+22+col*24,y=front+40+row*30;return [x,x+18,y,y+18,top,top+5];}));
+    return {orchid_body:solid([[-sx/2,sx/2,front,sy/2,0,top]]),orchid_white_keys:solid(whites),orchid_black_keys:solid(blacks),
+            orchid_chord_buttons:solid(buttons),orchid_dial:solid([],[[-38,front+85,21,top,top+16]])};
+  }
+  // Orchid's frame on the plate (metres): its underside's middle, turned so its front edge faces facing_deg, and tilted
+  // so that edge dips tilt_deg.
+  function orchidFrame(o) {
+    const deg=Math.PI/180;
+    return model.transform([o.center[0]/1000,o.center[1]/1000,o.floor_z/1000],[(o.tilt_deg||0)*deg,0,((o.facing_deg??-90)+90)*deg]);
   }
   const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
   const sub=(a,b)=>a.map((v,i)=>v-b[i]);
@@ -103,6 +111,6 @@
     }
     return {draw};
   }
-  const api={instances,bounds,unpack,create,hasPlate:!!plate};
+  const api={instances,bounds,unpack,create,orchidFrame,hasPlate:!!plate};
   if(typeof module!=='undefined')module.exports=api;else root.OrchidArmRenderer=api;
 })(typeof window==='undefined'?globalThis:window);
