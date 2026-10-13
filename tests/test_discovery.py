@@ -192,7 +192,7 @@ def test_refresh_rejected_outside_disconnected(tmp_path, phase):
     e = Engine(tmp_path, "hardware", port_scanner=lambda **_: pytest.fail("Probed while busy"))
     try:
         e.phase = phase
-        with pytest.raises(m.SafetyError, match="not available"):
+        with pytest.raises(m.SafetyError, match="Cannot refresh ports while the arm is"):
             e.dispatch("refresh_ports", {})
     finally:
         e.close()

@@ -100,7 +100,9 @@ class Console:
                 pass
             raise SystemExit(f"Refused ({exc.code}): {detail}") from None
         except urllib.error.URLError as exc:
-            raise SystemExit(f"Cannot reach the console at {self.url} ({exc.reason}). Is app.py running?") from None
+            raise SystemExit(f"orchid-robot is not reachable at {self.url} ({exc.reason}): it is not running, or this is "
+                             "the wrong --url. If it is not running, the operator starts it (Start Orchid); programs never "
+                             "start or restart it.") from None
 
 
 def report(result: dict, say: bool = True) -> None:
@@ -157,7 +159,18 @@ def main(argv=None) -> None:
             print(f"  {c['id']:<12} {c['name']:<22} {c.get('status', 'empty')}")
         if listing.get("performing"):
             print(f"Performing now: {listing['performing']['what']} (since {listing['performing']['since']}); wait for it.")
-        if not listing["ready_to_play"]:
+        # What keeps a program from playing, one line each, naming the operator's step (they act; programs wait).
+        stopped = (listing.get("dial_stop") or {}).get("stopped")
+        if stopped:
+            print(f"WAITING FOR THE OPERATOR: stopped by Orchid's voicing dial at {stopped.get('at', '?')}; the operator plays a "
+                  "key or sends an arm home in the console before programs can move the arms again.")
+        arms = listing.get("arms") or {}
+        for arm in arms.values():
+            print(f"{arm['name']}: {arm['state']}")
+            if arm.get("problem"):
+                print(f"WAITING FOR THE OPERATOR: {arm['problem']}")
+        ready = listing["ready_to_play"]
+        if not arms and (ready is False or isinstance(ready, dict) and not all(ready.values())):
             print("Not ready: ask the operator to hold the arms in the console (select a taught control and press Play once).")
         return
     if args.command == "play":

@@ -29,7 +29,10 @@
     if (!data.incidents.length) { list.append(element('p', 'No incidents recorded yet.', 'subtle')); return; }
     for (const item of data.incidents) {
       const article = element('article', '', 'incident');
-      article.append(element('p', `${new Date(item.created).toLocaleString()} · ${item.mode} · ${item.id.slice(0, 8)}`, 'subtle'));
+      const kinds = {fault: 'fault', rejected: 'command failed', connection_failed: 'connection failed',
+                     hold_failed: 'hold failed', worker_failed: 'app error', cleanup_failed: 'cleanup failed'};
+      article.append(element('p', [new Date(item.created).toLocaleString(), item.arm_name, kinds[item.kind] || item.kind, item.mode,
+                                   item.id.slice(0, 8)].filter(Boolean).join(' · '), 'subtle'));
       const error = element('p', item.message, 'incident-error'); error.setAttribute('data-error-copy', '');
       article.append(error);
       if (item.imported) article.append(element('p', 'Recovered from earlier logs. Some diagnostic fields were not recorded by that app version.', 'subtle'));

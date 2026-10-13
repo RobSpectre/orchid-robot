@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict
 import importlib.metadata
+import re
 import time
 
 from . import motion as m
@@ -32,6 +33,63 @@ def check_calibrated_pose(calibration, pose):
         low, high = calibration[name]["range_min"], calibration[name]["range_max"]
         m.require(low <= value <= high,
                   f"{name}: {value} ticks is outside recorded travel {low}..{high}. No motion authorized.")
+
+
+RECALIBRATE = ("Recalibrate this follower (Calibrate motors → Reset calibration), sweeping every joint all the way to "
+               "its stops. Its taught keys and chord buttons, home and rest then need teaching again, and its pan correction "
+               "measuring again (scripts/fit_model_pan.py).")
+
+
+def motor_label(motor_id):
+    return f"motor {motor_id} ({m.MOTORS[motor_id - 1].replace('_', ' ')})" if 1 <= motor_id <= len(m.MOTORS) else f"motor {motor_id}"
+
+
+def out_of_range(calibration, position):
+    """[(motor, ticks, range_min, range_max)] for each motor reading outside its calibrated range. LeRobot sets each
+    motor's position limits from that range, and a motor outside them flags its replies, which LeRobot then takes for
+    a missing motor or a failed read or write."""
+    return [(name, position[name], cal["range_min"], cal["range_max"]) for name, cal in (calibration or {}).items()
+            if (position or {}).get(name) is not None and not cal["range_min"] <= position[name] <= cal["range_max"]]
+
+
+def range_advice(problems, *, connecting=False):
+    """What to tell the operator about motors outside their calibrated range (out_of_range); "" if none."""
+    if not problems:
+        return ""
+    said = "; ".join(f"{motor_label(m.MOTORS.index(name) + 1)} reads {ticks}, {low - ticks if ticks < low else ticks - high} "
+                     f"ticks {'below' if ticks < low else 'above'} its calibrated range {low}..{high}"
+                     for name, ticks, low, high in problems)
+    one = len(problems) == 1
+    return (f" {said[0].upper() + said[1:]}. A motor outside its calibrated range flags its replies, so it looks missing "
+            "or refuses commands: this arm's calibration no longer covers its travel. "
+            + (f"To connect, support the arm and move {'that joint' if one else 'those joints'} a few degrees back inside "
+               "the range by hand. " if connecting else "") + RECALIBRATE)
+
+
+def motor_error_diagnosis(exc, calibration, position):
+    """(kind, plain words) for a LeRobot motor error: "range" (a motor reads past its calibrated range), "flag" (a reply
+    with an error flag LeRobot does not name), "silent" (no reply), or (None, "") when there is nothing to add.
+    position: the last raw reading."""
+    text = str(exc)
+    if not re.search(r"Failed to |status packet|RxPacketError|Missing motor", text):
+        return None, ""  # not the motors talking (a lost USB port, the app's own refusals): nothing to add
+    advice = range_advice(out_of_range(calibration, position))
+    if advice:
+        return "range", advice
+    found = re.search(r"on id_=(\d+)", text)
+    motor = motor_label(int(found.group(1))) if found else "a motor"
+    if re.search(r"Failed to (sync )?(read|write) .* tries\.\s*$", text):  # a reply carrying a flag LeRobot has no name for
+        return "flag", (f" {motor[0].upper() + motor[1:]} answered with an error flag LeRobot does not name. That usually "
+                        "means it sits at or past the end of its calibrated range. If it happens again, "
+                        + RECALIBRATE[0].lower() + RECALIBRATE[1:])
+    if "There is no status packet" in text or "Incorrect status packet" in text:
+        return "silent", f" {motor[0].upper() + motor[1:]} did not answer: check its cable and the arm's power, then connect again."
+    return None, ""
+
+
+def motor_error_advice(exc, calibration, position):
+    """Plain words for a LeRobot motor error ("" when there is nothing to add). position: the last raw reading."""
+    return motor_error_diagnosis(exc, calibration, position)[1]
 
 
 class SimulatedArm(m.Arm):
@@ -195,7 +253,13 @@ class HardwareArm(m.Arm):
 
     def open(self):
         self.connection_readings = {"stage": "open_serial"}
-        self.bus.connect()
+        try:
+            self.bus.connect()
+        except RuntimeError as exc:
+            note = self.missing_motors(str(exc)) if "Missing motor IDs" in str(exc) else ""
+            if not note:
+                raise
+            raise RuntimeError(note) from exc
         # pyserial's exclusive flock also prevents another cooperating serial owner.
         self.bus.port_handler.ser.exclusive = True
         self.connection_readings["stage"] = "voltage"
@@ -212,6 +276,42 @@ class HardwareArm(m.Arm):
         self.connection_readings["stage"] = "saved_calibration_readback"
         self.calibration_matches = bool(self.calibration) and self.bus.is_calibrated
         self.connection_readings["stage"] = "complete"
+
+    def missing_motors(self, error):
+        """LeRobot's connection check reported motors missing: say which answered with an error flag (it counts a
+        flagged reply as none) and where they are, and which did not answer at all. Read only: a ping and a position read
+        each. "" if the port or the SDK does not cooperate (LeRobot's own error stands)."""
+        missing = [int(i) for i in re.findall(r"^\s*-\s*(\d+) \(expected model:", error, re.M)]
+        wrong = re.search(r"Motors with incorrect model numbers:\n((?:\s*-.*\n?)+)", error)  # kept in the message
+        handler, port = self.bus.packet_handler, self.bus.port_handler
+        try:
+            flagged, silent = {}, []
+            for i in missing:
+                _, comm, error_flag = handler.ping(port, i)
+                if comm != 0:
+                    silent.append(i)
+                elif error_flag:
+                    ticks, comm, _ = handler.read2ByteTxRx(port, i, 56)  # Present_Position
+                    flagged[m.MOTORS[i - 1]] = ticks if comm == 0 else None
+        except Exception:
+            return ""
+        if not missing or not (flagged or silent):
+            return ""
+        self.connection_readings["flagged_positions"] = dict(flagged)
+        said = []
+        if silent:
+            said.append(f"{', '.join(motor_label(i) for i in silent)} did not answer: check {'its' if len(silent) == 1 else 'their'} "
+                        "cable and the arm's power, then connect again.")
+        if flagged:
+            labels = ", ".join(motor_label(m.MOTORS.index(n) + 1) for n in flagged)
+            said.append(f"{labels} answered with an error flag, so LeRobot reported {'it' if len(flagged) == 1 else 'them'} "
+                        "missing." + (range_advice(out_of_range(self.calibration, flagged), connecting=True) or
+                                      " It reports a fault (voltage, temperature, overload or its sensor) while inside its "
+                                      "calibrated range: check the motor, its cable and the arm's power before retrying."))
+        if wrong:
+            said.append("Also, motors with the wrong model number: " + "; ".join(line.strip(" -") for line in wrong.group(1).strip().splitlines()) + ".")
+        text = " ".join(said)
+        return text[0].upper() + text[1:]
 
     def check_pose(self, pose):
         m.require(self.calibration is not None and self.calibration_matches,

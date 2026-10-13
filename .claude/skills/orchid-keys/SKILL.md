@@ -265,7 +265,7 @@ Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/
 
 | Method & path | Body | Result |
 |---|---|---|
-| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, performing:{what, since}\|null, controls:[{id,name,kind,group,arm,status,press_s?}]}`; with two arms `ready_to_play` is `{a, b}` |
+| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, performing:{what, since}\|null, controls:[{id,name,kind,group,arm,status,press_s?}], arms:{a:{name,phase,state,problem}, …}, dial_stop}`; with two arms `ready_to_play` is `{a, b}`. `arms.*.problem` is null when a program can play that arm, else the operator's step (pass it on) |
 | `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
 | `POST /api/controls/{id}/play` | `{duration? ("1/4", "2bars", "1bar+1/2"), wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?}], wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |

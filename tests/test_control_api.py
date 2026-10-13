@@ -161,6 +161,24 @@ def test_cli_names_and_steps():
         ["C", "C#", "C#", "chord.min", "chord.M7", "chord.m7"]
 
 
+def test_cli_status_names_what_the_operator_does(monkeypatch, capsys):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("orchid_cli", "scripts/orchid.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    listing = {"phase": "teach_hold", "ready_to_play": {"a": True, "b": False}, "settings": {"speed": 1.0}, "controls": [],
+               "performing": None, "dial_stop": {"armed": True, "stopped": {"at": "22:31:05", "value": 3}},
+               "arms": {"a": {"name": "Keys Arm", "state": "holding", "problem": None},
+                        "b": {"name": "Chord Arm", "state": "stopped after a fault",
+                              "problem": "Chord Arm is stopped (x). In the operator console, the operator supports it and presses Hold & keep playing."}}}
+    monkeypatch.setattr(cli.Console, "call", lambda self, method, path, body=None: listing)
+    cli.main(["status"])
+    out = capsys.readouterr().out
+    assert "WAITING FOR THE OPERATOR: stopped by Orchid's voicing dial at 22:31:05" in out
+    assert "Keys Arm: holding" in out and "Chord Arm: stopped after a fault" in out
+    assert "WAITING FOR THE OPERATOR: Chord Arm is stopped (x)." in out
+
+
 def test_two_followers_share_one_console(tmp_path):
     from orchid_demo.rig import ROLES, LeaderStore
     a = Engine(tmp_path, sleep=lambda s: time.sleep(min(s, 0.005)), owns=ROLES["a"])

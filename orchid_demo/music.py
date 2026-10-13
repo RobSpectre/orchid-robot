@@ -75,8 +75,8 @@ class Studio:
             except ValueError:
                 reply = {"status": "error", "error": f"HTTP {exc.code}"}
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            raise m.SafetyError(f"Orchid Studio is not reachable on {self.url} ({getattr(exc, 'reason', exc)}). "
-                                "Start Orchid Studio, then try again.") from None
+            raise m.SafetyError(f"Orchid Studio is not reachable on {self.url} ({getattr(exc, 'reason', exc)}). The "
+                                "operator starts it (Start Orchid); programs never start or restart it.") from None
         m.require(reply.get("status") != "error", f"Orchid Studio refused {command}: {reply.get('error') or 'no reason given'}.")
         return reply
 

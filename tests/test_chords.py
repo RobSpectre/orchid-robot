@@ -144,6 +144,45 @@ def test_a_failed_key_lets_the_chord_button_go(plate, monkeypatch):
     assert b.chord_held is None and b.parked_now[0] and a.rig.chord is None  # B let go and went home
 
 
+def test_refusals_say_what_the_operator_does_next(plate):
+    client, a, b, command, auth = plate
+    # A stopped arm in a chord: the operator's step is Hold & keep playing (it cannot be sent home)
+    b.phase, b.error = "fault", "Failed to write 'Torque_Enable' on id_=2 with '0' after 1 tries."
+    refused = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
+    detail = refused.json()["detail"]
+    assert refused.status_code == 409 and detail.startswith("A chord needs both arms. Chord Arm is stopped (Failed to write")
+    assert "presses Hold & keep playing" in detail and "send it home" not in detail
+    arms = client.get("/api/controls").json()["arms"]  # what an agent reads before it starts a set
+    assert arms["b"]["state"] == "stopped after a fault" and "Hold & keep playing" in arms["b"]["problem"]
+    assert arms["a"]["problem"] is None and arms["a"]["name"] == "Keys Arm"
+    b.phase, b.error = "teach_hold", None
+    command(b, "release", supported=True)  # torque off, calibrated, with a home: a performance takes its hold itself
+    assert client.get("/api/controls").json()["arms"]["b"]["problem"] is None
+    # Both arms' error reports are listed, each with its arm
+    b.report_error("fault", RuntimeError("Chord Arm test fault"))
+    until = time.monotonic() + 5
+    while time.monotonic() < until and not any(i["state"] == "saved" for i in b.incidents.listing()["incidents"]):
+        time.sleep(0.01)
+    listed = client.get("/api/incidents").json()["incidents"]
+    mine = [i for i in listed if i["message"] == "Chord Arm test fault"]
+    assert mine and mine[0]["arm"] == "b" and mine[0]["arm_name"] == "Chord Arm"
+    assert client.get(f"/api/incidents/{mine[0]['id']}").status_code == 200  # downloadable from the Chord Arm's store
+
+
+def test_an_arm_that_settled_just_off_its_home_is_named_with_its_joint(plate):
+    from orchid_demo import rig
+    _, a, b, command, auth = plate
+    assert rig.park_step("moving") == "Wait until it holds still."
+    assert rig.park_step("position unknown: no home set or not calibrated").startswith("Teach its home and rest first")
+    assert "Go to home once more" in rig.park_step("5.4° from home on its shoulder lift")
+    joints = dict(b.arm.joint_action(b.current))
+    home = b.shared_teach_home()["measured"]
+    b.teach.measured = {**joints, **{j: home[j] for j in ("shoulder_pan", "elbow_flex", "wrist_flex")},
+                        "shoulder_lift": home["shoulder_lift"] + 7.25}
+    parked, why = b.parked()
+    assert not parked and why == "7.2° from home on its shoulder lift"
+
+
 def test_the_rig_refuses_other_moves_while_a_chord_holds_and_only_releases_a_held_button(plate):
     client, a, b, command, auth = plate
     b.api_submit("chord_press", {"control": "chord.maj"})  # B holds Maj on its own (no chord run)

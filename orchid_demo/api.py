@@ -20,6 +20,7 @@ from . import score
 from .controls import CATALOG
 from .dialstop import DialStop
 from .engine import Engine
+from .rig import NAMES as ARM_NAMES
 from .motion import SafetyError
 
 STATIC = Path(__file__).with_name("static")
@@ -395,8 +396,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                             for member in engines.values()]
                 return receipts[list(engines).index(command.arm)]
             return target.submit(operator(request), str(command.id), command.action, command.revision, command.args)
-        except SafetyError as exc:
-            target.report_error("rejected", exc, {"action": command.action, "command_id": str(command.id), "source": "http"})
+        except SafetyError as exc:  # refused before reaching the worker: logged, not an error report
+            target.event_log.emit("refused", str(exc), {"action": command.action, "command_id": str(command.id), "source": "http"})
             raise HTTPException(409, str(exc)) from exc
 
     # --- Control API: list, configure and play taught controls --------------------------------------
@@ -458,7 +459,11 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         snap = engine.snapshot()
         ready = {arm: s["phase"] in ("teach_hold", "teach_follow") and s["lease_live"]
                  for arm, s in ((arm, member.snapshot()) for arm, member in engines.items())}
-        return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready,
+        # Each arm: why a program cannot play it now and the operator's step (None when it can), in words.
+        arms = {arm: {"name": ARM_NAMES[arm], "phase": member.phase, "state": member.phase_words(),
+                      "problem": member.program_problem(ARM_NAMES[arm]) if rig is not None else member.program_problem()}
+                for arm, member in engines.items()}
+        return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready, "arms": arms,
                 "settings": snap["teach_settings"], "controls": listing,
                 # A performance already running (one at a time): {what, since}, or None.
                 "performing": dict(now_playing) or None,
@@ -930,24 +935,35 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.get("/api/incidents")
     def incidents():
-        return engine.incidents.listing()
+        """Both arms' error reports, newest first, each with the arm it came from."""
+        listed = []
+        for arm, member in engines.items():
+            listed += [{**item, "arm": arm, "arm_name": ARM_NAMES[arm]} for item in member.incidents.listing()["incidents"]]
+        return {"incidents": sorted(listed, key=lambda e: e["created"], reverse=True)[:30],
+                "delivery": engine.incidents.listing()["delivery"]}
+
+    def incident_store(identity):
+        """The arm whose store holds this report (404 if none does, or it is still saving)."""
+        for member in engines.values():
+            try:
+                member.incidents.metadata(identity)
+                return member.incidents
+            except (ValueError, OSError, KeyError):
+                continue
+        raise HTTPException(404, "Incident not found or still saving")
 
     @app.get("/api/incidents/{identity}")
     def incident(identity: str):
-        try:
-            engine.incidents.metadata(identity)
-            path = engine.incidents.path(identity)
-            if not path.is_file():
-                raise FileNotFoundError(identity)
-        except (ValueError, FileNotFoundError) as exc:
-            raise HTTPException(404, "Incident not found or still saving") from exc
+        path = incident_store(identity).path(identity)
+        if not path.is_file():
+            raise HTTPException(404, "Incident not found or still saving")
         return FileResponse(path, media_type="application/json", filename=f"orchid-incident-{identity}.json")
 
     @app.post("/api/incidents/{identity}/report")
     def report_incident(identity: str, report: IncidentReport):
         # CSRF protection applies; motor ownership/health is deliberately unrelated.
         try:
-            return engine.incidents.request_report(identity, report.note)
+            return incident_store(identity).request_report(identity, report.note)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(404, "Incident not found or still saving") from exc
         except OSError as exc:
