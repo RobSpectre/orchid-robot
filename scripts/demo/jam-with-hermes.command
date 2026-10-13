@@ -9,12 +9,13 @@ cat <<'TEXT'
    Start Orchid first, and play one key and one chord button in orchid-robot
    so both arms are holding. Then ask Hermes for music, for example:
 
-       Play a 20-minute chill set
-       Play something dark and slow
-       Play a dnb set at 170 bpm
+       Pump up the jam: play a 20-minute house set
+       Play a chill lo-fi set for 30 minutes
+       Play drum and bass at 170 bpm
 
    Hermes asks what you think of each part: answer in your own words and it learns.
-   Type  stop  to end the set: the arms go to rest and the music fades out.
+   Type  stop playing  to end the set: Hermes parks the arms and fades the music out.
+   Always do that before tearing down for the night. More prompts: Read Me First.
 
 TEXT
 cd "$HOME/workspace" || exit 1
