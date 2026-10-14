@@ -12,13 +12,17 @@ from pathlib import Path
 import re
 
 from . import layout
+from .motion import fingerprint
 
 _GEOMETRY = json.loads(re.search(r"const joints = (\[.*?\]);", (Path(__file__).with_name("static") / "arm-geometry.js")
                                  .read_text(), re.S).group(1))
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
-# Centre-line distance below which a chord is refused. The taught chord-button motions were checked by eye to stay clear
-# of Orchid and the Keys Arm, where the model puts the closest pair (Sus with C) 56 mm apart; this floor only catches a
-# pose taught into the other arm's way (e.g. after a re-teach). The links are about 45 mm wide and the model can be 2 cm off.
+# Centre-line distance below which a chord is refused. On the old plate the taught chord-button motions were checked by
+# eye to stay clear of Orchid and the Keys Arm, where the model put the closest pair (Sus with C) 56 mm apart; this floor
+# only catches a pose taught into the other arm's way (e.g. after a re-teach). On FRAME V2 the bases are 265 mm apart and
+# both arms reach to Orchid's middle, where C and C# meet the chord buttons: with the measured pan corrections
+# (layout.PAN_CORRECTION_DEG) the model puts C and C# with Sus, and C# with Dim, Min or Maj, closer than this.
+# The links are about 45 mm wide and the model can be 2 cm off.
 CLEARANCE_MM = 40.0
 # A direct move from one key's hover to the next (the Keys Arm between notes) may dip at most this far below the lower
 # of the two hovers; deeper and it goes by way of home instead (engine.hop).
@@ -41,8 +45,14 @@ def _point(frame, p=(0.0, 0.0, 0.0)):
     return tuple(frame[i][0] * p[0] + frame[i][1] * p[1] + frame[i][2] * p[2] + frame[i][3] for i in range(3))
 
 
+def pan_correction(calibration: dict) -> float:
+    """The measured correction to this follower's modelled shoulder_pan zero, degrees (layout.PAN_CORRECTION_DEG)."""
+    return layout.PAN_CORRECTION_DEG.get(fingerprint(calibration)[:12], 0.0) if calibration else 0.0
+
+
 def urdf_angles(pose: dict, calibration: dict) -> dict:
-    """LeRobot degrees (gripper 0..100) -> the model's joint radians, as telemetry.pose_angles does for raw ticks."""
+    """LeRobot degrees (gripper 0..100) -> the model's joint radians, as telemetry.pose_angles does for raw ticks, with
+    the follower's measured pan correction."""
     angles = {}
     for name in JOINTS:
         low, high = calibration[name]["range_min"], calibration[name]["range_max"]
@@ -51,6 +61,7 @@ def urdf_angles(pose: dict, calibration: dict) -> dict:
         else:
             raw = pose[name] * 4095 / 360 + (low + high) / 2
             angles[name] = (raw - 2047) * math.tau / 4096
+    angles["shoulder_pan"] += math.radians(pan_correction(calibration))
     return angles
 
 

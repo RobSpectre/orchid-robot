@@ -491,7 +491,8 @@ def test_recentering_the_wrist_roll_keeps_every_taught_motion_on_the_same_physic
 
 def test_recentering_needs_both_arms_resting(engine):
     following(engine)
-    assert "not available" in reject(engine, "recenter_wrist_roll", supported=True)["message"]
+    assert reject(engine, "recenter_wrist_roll", supported=True)["message"].startswith(
+        "Cannot recenter wrist roll while the arm is following the leader. Release torque first")
 
 
 def test_the_wrist_rotates_with_the_leader_for_keys_and_chord_buttons(engine):

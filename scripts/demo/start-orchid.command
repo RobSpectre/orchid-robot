@@ -204,8 +204,9 @@ ${green}${bold}   Orchid is running.${off}
    ${bold}3.${off} To start a jam, double-click ${bold}Jam with Hermes${off} on the desktop.
    ${bold}4.${off} Lost the arms after plugging or unplugging a USB cable? Press ${bold}R${off} in this window
       to restart orchid-robot, then connect again. This happens from time to time.
-   ${bold}5.${off} When you're done: in orchid-robot, send the arms to rest, then
-      ${bold}Release or disconnect → Disconnect${off} with a hand on the arm. Then close this window.
+   ${bold}5.${off} When you're done: type ${bold}stop playing${off} in the Hermes chat and wait for it to park the arms.
+      Then in orchid-robot, ${bold}Release or disconnect → Disconnect${off} with a hand on the arm, and close this window.
+   ${dim}Don't change the sound output while this runs: it can crash Pistil, the synth.${off}
 
    ${dim}Pages: orchid-robot http://127.0.0.1:$ROBOT_PORT · Studio http://127.0.0.1:$STUDIO_PORT · visualizer http://127.0.0.1:$VIZ_PORT
    Logs:  $LOGS${off}

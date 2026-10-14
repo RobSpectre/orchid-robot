@@ -50,6 +50,9 @@
   .note { background: var(--accent-soft); border-color: var(--accent); }
   .warn { background: var(--warn-bg); border-color: var(--warn-line); }
   .stop { background: var(--stop-bg); border-color: var(--stop-line); }
+  .charge { background: var(--warn-bg); border: 2px solid var(--warn-line); border-left-width: 8px; border-radius: 12px;
+            padding: 14px 18px; margin: 16px 0; font-size: 18px; }
+  .charge p { margin: 0; }
   .note > :first-child, .warn > :first-child, .stop > :first-child { margin-top: 0; }
   .note > :last-child, .warn > :last-child, .stop > :last-child { margin-bottom: 0; }
   kbd { background: var(--kbd); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px;
@@ -110,6 +113,7 @@
     <div class="stop">
       <p><strong>Stopping the arms, fast.</strong> Turn the Orchid's big <strong>voicing dial</strong> any amount, or press <kbd>Esc</kbd> or <span class="btn">Stop motion</span> in orchid-robot. The arms freeze where they are. In an emergency, switch off the arms' power supply.</p>
     </div>
+    <div class="charge"><p><strong>🔋 The Orchid does not charge while it's connected to the laptop.</strong> It runs on its battery all day, so it <strong>must be charged every night</strong> with the USB-C charger. Make sure it's actually charging: <strong>switch the Orchid on first, then plug in the charger</strong>.</p></div>
 
     <section id="inventory">
       <h2><span class="n">1</span> Inventory check</h2>
@@ -122,19 +126,21 @@
         <li><label><input type="checkbox" data-item="3"><span><b>Two (2)</b> 12-volt DC adapters</span></label></li>
         <li><label><input type="checkbox" data-item="4"><span><b>Two (2)</b> 5-volt DC adapters</span></label></li>
         <li><label><input type="checkbox" data-item="5"><span><b>Four (4)</b> SO101 microcontrollers</span></label></li>
-        <li><label><input type="checkbox" data-item="6"><span><b>Four (4)</b> USB-C to USB-C cables, 20 ft</span></label></li>
-        <li><label><input type="checkbox" data-item="7"><span><b>One (1)</b> USB-C charger</span></label></li>
-        <li><label><input type="checkbox" data-item="8"><span><b>One (1)</b> USB-C</span></label></li>
-        <li><label><input type="checkbox" data-item="9"><span><b>Two (2)</b> mounting plates for SO101 arms and Orchid</span></label></li>
-        <li><label><input type="checkbox" data-item="10"><span><b>One (1)</b> demo laptop with demo stack and Pistil installed</span></label></li>
-        <li><label><input type="checkbox" data-item="11"><span><b>One (1)</b> electronics repair kit</span></label></li>
-        <li><label><input type="checkbox" data-item="12"><span><b>Two (2)</b> US power strips</span></label></li>
-        <li><label><input type="checkbox" data-item="13"><span><b>Four (4)</b> EU → US outlet converters</span></label></li>
-        <li><label><input type="checkbox" data-item="14"><span><b>Eight (8)</b> black zinc M5 screws</span></label></li>
-        <li><label><input type="checkbox" data-item="15"><span><b>One (1)</b> robotic component spares kit</span></label></li>
-        <li><label><input type="checkbox" data-item="16"><span><b>One (1)</b> electronics repair kit</span></label></li>
+        <li><label><input type="checkbox" data-item="6"><span><b>Three (3)</b> USB-C to USB-C cables, 10 ft</span></label></li>
+        <li><label><input type="checkbox" data-item="7"><span><b>One (1)</b> HDMI cable, 20 ft</span></label></li>
+        <li><label><input type="checkbox" data-item="8"><span><b>One (1)</b> USB-C charger</span></label></li>
+        <li><label><input type="checkbox" data-item="9"><span><b>One (1)</b> registration plate for the SO101 arms and Orchid</span></label></li>
+        <li><label><input type="checkbox" data-item="10"><span><b>One (1)</b> demo laptop with the demo stack and Pistil installed</span></label></li>
+        <li><label><input type="checkbox" data-item="11"><span><b>One (1)</b> demo laptop power supply</span></label></li>
+        <li><label><input type="checkbox" data-item="12"><span><b>One (1)</b> electronics repair kit</span></label></li>
+        <li><label><input type="checkbox" data-item="13"><span><b>One (1)</b> US power strip</span></label></li>
+        <li><label><input type="checkbox" data-item="14"><span><b>Four (4)</b> EU → US outlet converters</span></label></li>
+        <li><label><input type="checkbox" data-item="15"><span><b>Eight (8)</b> black zinc M5 screws</span></label></li>
+        <li><label><input type="checkbox" data-item="16"><span><b>One (1)</b> robotic component spares kit</span></label></li>
         <li><label><input type="checkbox" data-item="17"><span><b>Two (2)</b> PLA printed Nebius branded SO101 arm piece sets</span></label></li>
-        <li><label><input type="checkbox" data-item="18"><span><b>Three (3)</b> C clamps</span></label></li>
+        <li><label><input type="checkbox" data-item="18"><span><b>Eight (8)</b> gripper tip gloves</span></label></li>
+        <li><label><input type="checkbox" data-item="19"><span><b>Three (3)</b> C clamps</span></label></li>
+        <li><label><input type="checkbox" data-item="20"><span><b>One (1)</b> bag of registration plate screws (4 screws)</span></label></li>
       </ul>
       <p class="muted">Ticks are remembered in this browser until you clear them. Anything missing or damaged: tell the project owner before the demo.</p>
     </section>
@@ -143,12 +149,12 @@
       <h2><span class="n">2</span> Before you start</h2>
       <ol class="steps">
         <li>Check that both arms and the Orchid sit on their marks on the plate, and that the arms' rubber fingertips are on firmly.</li>
-        <li>Plug the <strong>Orchid's USB cable</strong> into the laptop and switch the Orchid on.</li>
+        <li>Unplug the Orchid from its charger, plug the <strong>Orchid's USB cable</strong> into the laptop and switch the Orchid on. It was charged overnight; it won't charge from the laptop.</li>
         <li>Plug in the <strong>arms' USB-C cables</strong> and switch on the arms' power. The arms stay limp until the software takes hold of them.</li>
         <li>Plug the <strong>PA</strong> into the laptop's headphone jack.</li>
         <li>Keep the arms' power switch within reach the whole time the arms are powered.</li>
       </ol>
-      <div class="note"><p>Plug in <strong>every</strong> cable <strong>before</strong> starting the software, and try not to touch them while it runs. Studio looks for the Orchid only when it starts, and plugging or unplugging a USB-C cable can lose the connection to the arms (see <a href="#lost-arms">Lost the arms?</a>).</p></div>
+      <div class="note"><p>Plug in <strong>every</strong> cable <strong>before</strong> starting the software, and try not to touch them while it runs. Studio looks for the Orchid only when it starts, plugging or unplugging a USB-C cable can lose the connection to the arms (see <a href="#lost-arms">Lost the arms?</a>), and changing the sound output can crash Pistil (see <a href="#pistil">If Pistil crashes</a>).</p></div>
     </section>
 
     <section id="start">
@@ -163,6 +169,7 @@
         <p><strong>Keep the orchid-robot window open.</strong> The arms only move while it's open. If it closes, they stop and hold where they are within five seconds.</p>
       </div>
       <p>The Terminal window also shows the PA's volume. The keyboard's volume keys don't work with this output, so set the level on the PA itself.</p>
+      <div class="warn"><p><strong>Don't change the sound output while the demo runs.</strong> Unplugging the PA, plugging in headphones, connecting a Bluetooth speaker or picking another output in Control Center makes Pistil, the synth, much more likely to crash. To change it, stop the jam, close the Start Orchid window, connect the new output, and start again.</p></div>
     </section>
 
     <section id="parts">
@@ -214,15 +221,17 @@
 
     <section id="calibrate">
       <h2><span class="n">6</span> Calibrate (only when needed)</h2>
-      <p>Calibration teaches the software where each joint's middle and limits are. The arms keep their calibration, so you only need this for a <strong>new or repaired arm</strong>, or when orchid-robot asks for it. Calibrating means re-teaching that arm's keys afterwards.</p>
+      <p>Calibration teaches the software where each joint's middle and limits are. The arms keep their calibration, so you only need this for a <strong>new or repaired arm</strong>, or when orchid-robot asks for it.</p>
+      <div class="warn"><p><strong>Recalibrating an arm clears everything taught on it.</strong> Its keys or chord buttons, its home and its rest all need teaching again afterwards, so set aside time for it. It also resets that arm's measured correction for the chord safety check: until the project owner measures it again, chords near the middle of the keyboard (C to D♯, and anything with Sus) may be refused as too close.</p></div>
       <ol class="steps">
         <li>Select the arm in the sidebar, open <strong>02 Calibrate motors</strong> and pick <strong>Follower</strong> (the arm that plays) or <strong>Leader</strong> (the arm you move by hand).</li>
         <li>Rest the arm clear of the Orchid and <strong>hold its weight</strong>: its motors are about to go limp. Confirm and begin.</li>
         <li><strong>Midpoint:</strong> put every joint roughly in the middle of its travel, gripper half open, and hold still while it captures.</li>
-        <li><strong>Ranges:</strong> the 3D view highlights one joint at a time (base, shoulder, elbow, wrist bend, gripper). Move that joint gently to both ends of its comfortable travel, without forcing it, then press <span class="btn">Save range &amp; continue</span>.</li>
+        <li><strong>Ranges:</strong> the 3D view highlights one joint at a time (base, shoulder, elbow, wrist bend, gripper). Move that joint gently <strong>all the way to both of its stops</strong>, without forcing them, then press <span class="btn">Save range &amp; continue</span>. For the shoulder and elbow, the low end is where the joint comes to rest when the arm hangs limp: go right down to it.</li>
         <li>Review and save. Then do the other arm if it also needs it.</li>
       </ol>
       <p>Changed your mind half-way? <strong>Reset or reload calibration</strong> below the step starts again or puts back the last saved calibration.</p>
+      <div class="warn"><p><strong>A range that stops short of a joint's stop causes trouble later.</strong> When the arm is switched off or let go, that joint sinks onto its stop, past the end of its saved range, and its motor then refuses commands. orchid-robot says so by name, for example <em>Motor 2 (shoulder lift) reads 1072, 21 ticks below its calibrated range</em>, and tells you to recalibrate. Do recalibrate that arm, sweeping that joint all the way down this time. Nudging the joint back by hand only gets you connected again: it comes back the next time the arm goes limp.</p></div>
     </section>
 
     <section id="train">
@@ -280,58 +289,93 @@
         <li><strong>Get both arms holding.</strong> In orchid-robot, select the Keys Arm and <span class="btn">Play</span> any key, then select the Chord Arm and play any chord button. Each arm now holds at home, ready.</li>
         <li>Check the visualizer's status page says all systems go (the WhatsApp line doesn't matter).</li>
         <li>Double-click <strong>Jam with Hermes</strong> on the desktop. A chat opens in Terminal.</li>
-        <li>Ask for music in plain words, and press <kbd>Return</kbd>:
-          <ul>
-            <li><code>Play a 20-minute chill set</code></li>
-            <li><code>Play something dark and slow</code></li>
-            <li><code>Play a dnb set at 170 bpm</code></li>
-          </ul>
-          Moods like <em>dark</em>, <em>ambient</em> or <em>dnb</em> set the start; <em>chill</em> and <em>banger</em> slow it down or speed it up; a number of bpm (60–180) sets the tempo.
-        </li>
+        <li>Ask for music in plain words, and press <kbd>Return</kbd>. See <a href="#prompts">prompts to kick off the demo</a> below, for example <code>Pump up the jam: play a 20-minute house set</code>.</li>
         <li>The drums and loops start in Studio, and the arms play on the beat. Hermes improvises a new song in each part of the set.</li>
         <li>Hermes sometimes asks what you think of what it's trying. Answer in your own words: it learns what this audience likes.</li>
-        <li>Type <code>stop</code> to end the set. The arms go to rest and the music fades out over a few loops.</li>
+        <li>Type <code>stop playing</code> to end the set. Hermes parks both arms at rest and fades the music out over a few loops, then tells you it's quiet.</li>
       </ol>
+      <h3 id="prompts">Prompts to kick off the demo</h3>
+      <p>The words in a prompt pick where the set starts. Each line below starts in a different style:</p>
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Type this</th><th>What you get</th></tr></thead>
+        <tbody>
+          <tr><td><code>Pump up the jam: play a 20-minute house set</code></td><td>Classic pumping house, about 125 bpm. A good opener.</td></tr>
+          <tr><td><code>Play a happy, upbeat party set</code></td><td>Bright and energetic, 124–140 bpm.</td></tr>
+          <tr><td><code>Play a chill lo-fi set for 30 minutes</code></td><td>Warm, laid-back lo-fi, 82–92 bpm. Good for quiet moments.</td></tr>
+          <tr><td><code>Play something dark and moody</code></td><td>Deep, night-time lo-fi in a minor key.</td></tr>
+          <tr><td><code>Play a calm ambient set</code></td><td>Slow and floating, around 70 bpm.</td></tr>
+          <tr><td><code>Play drum and bass at 170 bpm</code></td><td>Fast and rushing, 150–170 bpm. The arms work hardest here.</td></tr>
+          <tr><td><code>Play something weird and experimental</code></td><td>Playful, quirky harmony.</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>Add <em>banger</em> or <em>fast</em> to push the tempo up, <em>chill</em> or <em>slow</em> to bring it down, or a number like <em>140 bpm</em> (60–180) to set it exactly, and <em>for 30 minutes</em> to set the length. Asking for a new style starts a new set from the top.</p>
+      <p>While it plays, talk to Hermes the way you'd talk to a DJ:</p>
+      <ul>
+        <li><code>Love this, more like it</code> or <code>Too busy, calm it down</code>: your opinion steers what it plays next and what it learns.</li>
+        <li><code>What are you trying in this part?</code>: each part tries something new, and Hermes explains it.</li>
+        <li><code>Switch to drum and bass</code>: a new style, starting a new set.</li>
+        <li><code>stop playing</code>: ends the set and parks the arms.</li>
+      </ul>
       <div class="note"><p>If Hermes says an arm needs attention (for example <em>check the arm</em> after a wrong key), look at orchid-robot: it says what happened. The music in Studio keeps going while you fix it.</p></div>
       <div class="warn"><p>After you stop the arms with the voicing dial, Hermes can't move them until you do something in orchid-robot (play a key, or send an arm home). That's on purpose.</p></div>
     </section>
 
     <section id="stopping">
       <h2><span class="n">10</span> Stopping safely</h2>
+      <div class="stop"><p><strong>Always type <code>stop playing</code> in the Hermes chat before tearing down for the night</strong>, and wait until Hermes says the music has stopped and the arms are parked. Never unplug cables, switch off power or close windows while the arms are playing.</p></div>
       <ol class="steps">
-        <li>In the Hermes chat, type <code>stop</code> and wait for the music to fade. Close the chat window.</li>
-        <li>In orchid-robot, for each arm: <span class="btn">Go to rest</span>.</li>
+        <li>In the Hermes chat, type <code>stop playing</code>. Wait for Hermes to park both arms at rest and confirm the music has faded out. Then close the chat window.</li>
+        <li>In orchid-robot, check both arms are at rest. If one isn't, select it and press <span class="btn">Go to rest</span>.</li>
         <li>With a hand under the arm, open <span class="btn">Release or disconnect</span>, confirm, and choose <span class="btn">Disconnect</span>. The arm goes limp, so support it as it settles.</li>
         <li>Close the <strong>Start Orchid</strong> Terminal window and choose <strong>Terminate</strong>. That stops Studio, orchid-robot and the visualizer.</li>
-        <li>Switch off the arms' power, then the Orchid.</li>
+        <li>Switch off the arms' power.</li>
+        <li><strong>Charge the Orchid for the night.</strong> Unplug it from the laptop, <strong>check it's switched on</strong>, then plug in the USB-C charger. It only charges this way, never from the laptop.</li>
       </ol>
       <div class="warn"><p>Closing the programs doesn't make the arms go limp: powered arms keep holding where they are. Always disconnect in orchid-robot, or switch off their power, with the arm supported.</p></div>
     </section>
 
     <section id="trouble">
       <h2><span class="n">11</span> If something goes wrong</h2>
+      <div class="charge"><p><strong>🔋 The Orchid does not charge while it's connected to the laptop.</strong> It runs on its battery all day, so it <strong>must be charged every night</strong> with the USB-C charger. Make sure it's actually charging: <strong>switch the Orchid on first, then plug in the charger</strong>.</p></div>
       <div class="table-scroll">
       <table>
         <thead><tr><th>What you see</th><th>What to do</th></tr></thead>
         <tbody>
           <tr><td>No sound</td><td>Is the PA plugged into the headphone jack and turned up? The Start Orchid window should say <em>Sound goes to the PA</em>. If it said the PA wasn't plugged in, close it and start again with the PA connected.</td></tr>
+          <tr><td>Drums play but no synth, or a "quit unexpectedly" message about <em>OrchidStudioPistil</em></td><td>Pistil, the synth, has crashed. See <a href="#pistil">If Pistil crashes</a> below.</td></tr>
+          <tr><td>The Orchid goes dark or stops responding mid-demo</td><td>Its battery is probably flat: it doesn't charge from the laptop. Type <code>stop playing</code> in the Hermes chat, unplug the Orchid from the laptop, switch it on and plug in the USB-C charger. When it has some charge, plug it back into the laptop, then close the Start Orchid window and start again so Studio finds it.</td></tr>
           <tr><td>Studio doesn't react to the Orchid, or red "The Orchid" alert</td><td>The Orchid was plugged in after Studio started. Close the Start Orchid window (Terminate) and double-click Start Orchid again.</td></tr>
           <tr><td>Arms disconnected, or not found, after a USB-C cable was plugged or unplugged</td><td>Expected from time to time. Press <kbd>R</kbd> in the Start Orchid window, reload orchid-robot with <kbd>⌘</kbd> <kbd>R</kbd>, and press <span class="btn">Find and connect all arms</span>. See <a href="#lost-arms">Lost the arms?</a></td></tr>
           <tr><td>Arms stopped: "operator connection lost"</td><td>The orchid-robot window was closed or the Mac slept. Open <a href="http://127.0.0.1:8081/">127.0.0.1:8081</a> again (one window only) and press <span class="btn">Find and connect all arms</span>.</td></tr>
           <tr><td>orchid-robot says <em>Read-only window</em></td><td>Another orchid-robot window has control. Close the extra one and wait five seconds.</td></tr>
           <tr><td><em>Check the arm: wrong key</em> or a missed note</td><td>Look at the arm and the key. Play the key once more on its own; if it still misses, re-teach it (section 7).</td></tr>
+          <tr><td>Connecting says a motor is <em>missing</em> or <em>answered with an error flag</em>, or an arm stops with <em>Failed to write … on id_=2</em></td><td>orchid-robot names the joint and how far it sits past its calibrated range. To connect, hold the arm's weight and move that joint a few degrees back by hand. Then <strong>recalibrate that arm</strong> (<a href="#calibrate">section 6</a>), sweeping that joint right to its stop, and re-teach its home, rest and keys. If it says the motor <em>did not answer</em>, check that arm's cables and power instead.</td></tr>
+          <tr><td>Chords refused: <em>would bring the arms within … mm of each other</em></td><td>orchid-robot's model of the two arms says they would come too close. Single keys still play. After an arm was recalibrated, the arms or the frame were moved, or the arms were swapped, tell the project owner: the model needs measuring again.</td></tr>
           <tr><td>Arm shivers or buzzes while holding</td><td>Send it to rest, or disconnect it with the arm supported. Then re-teach its home or rest a little further from the end of a joint's travel.</td></tr>
           <tr><td>A program shows ✗ in the Start Orchid window</td><td>It shows the end of that program's log. Close the window and start again; if it fails twice, note the message for the project owner. Full logs are in <code>~/Library/Logs/Orchid</code>.</td></tr>
           <tr><td>Hermes says the arms or Studio aren't ready</td><td>Do step 1 of <a href="#jam">Start a jam</a> again (play one key and one chord button), and check the status page.</td></tr>
         </tbody>
       </table>
       </div>
+
+      <h3 id="pistil">If Pistil crashes</h3>
+      <p>Pistil is the synth inside Orchid Studio that makes the Orchid's sounds. If it crashes, the drums keep playing but the synth goes silent, and macOS may say <em>OrchidStudioPistil quit unexpectedly</em>. It's more likely to happen if the sound output changes while the demo runs, so leave the PA plugged in.</p>
+      <ol class="steps">
+        <li>In the Hermes chat, type <code>stop playing</code> and wait for the arms to park.</li>
+        <li>If macOS shows a <em>quit unexpectedly</em> message, click <strong>Ignore</strong> (or close it). Don't click <em>Reopen</em>: Studio restarts Pistil itself.</li>
+        <li>In the <strong>Orchid Studio</strong> window, press <span class="btn">Restart audio</span> at the top. It only works while nothing is playing. Your sounds come back as they were.</li>
+        <li>Press a key on the Orchid by hand: you should hear it through the PA.</li>
+        <li>Start the jam again in the Hermes chat.</li>
+      </ol>
+      <p>If there's still no synth, or <span class="btn">Restart audio</span> isn't there, close the Start Orchid window (<strong>Terminate</strong>) and double-click <strong>Start Orchid</strong> again. Then do step 1 of <a href="#jam">Start a jam</a> before asking Hermes for music.</p>
     </section>
   </main>
 </div>
 <script>
   (() => {
-    const KEY = 'orchid-inventory';
+    const KEY = 'orchid-inventory-2026-10-13';  // a new list: ticks from the old one do not carry over
     const boxes = [...document.querySelectorAll('ul.inventory input')];
     const count = document.getElementById('inv-count');
     let saved = {};

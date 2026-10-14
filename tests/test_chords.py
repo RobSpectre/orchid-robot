@@ -1,5 +1,6 @@
 """Chords: Chord Arm holds a chord button while Keys Arm plays a key, run by orchid-robot from one API call (simulation)."""
 from copy import deepcopy
+import re
 import threading
 import time
 from uuid import uuid4
@@ -7,7 +8,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 import pytest
 
-from orchid_demo import kinematics
+from orchid_demo import kinematics, layout
 from orchid_demo import motion as m
 from orchid_demo.api import create_app
 from orchid_demo.engine import Engine, WAYPOINT_FORMAT
@@ -121,7 +122,7 @@ def test_chords_in_a_sequence_and_refusals(plate, monkeypatch):
     assert wrong.status_code == 409 and "Choose a key" in wrong.json()["detail"]
     monkeypatch.setattr(kinematics, "CLEARANCE_MM", 10_000)
     close = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
-    assert close.status_code == 409 and "would bring the arms within 0 mm" in close.json()["detail"]
+    assert close.status_code == 409 and re.search(r"would bring the arms within \d+ mm", close.json()["detail"])
     assert b.phase == "teach_hold" and b.chord_held is None  # nothing moved
 
 
@@ -141,6 +142,45 @@ def test_a_failed_key_lets_the_chord_button_go(plate, monkeypatch):
     while time.monotonic() < until and not (b.phase == "teach_hold" and b.parked_now[0]):
         time.sleep(0.01)
     assert b.chord_held is None and b.parked_now[0] and a.rig.chord is None  # B let go and went home
+
+
+def test_refusals_say_what_the_operator_does_next(plate):
+    client, a, b, command, auth = plate
+    # A stopped arm in a chord: the operator's step is Hold & keep playing (it cannot be sent home)
+    b.phase, b.error = "fault", "Failed to write 'Torque_Enable' on id_=2 with '0' after 1 tries."
+    refused = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
+    detail = refused.json()["detail"]
+    assert refused.status_code == 409 and detail.startswith("A chord needs both arms. Chord Arm is stopped (Failed to write")
+    assert "presses Hold & keep playing" in detail and "send it home" not in detail
+    arms = client.get("/api/controls").json()["arms"]  # what an agent reads before it starts a set
+    assert arms["b"]["state"] == "stopped after a fault" and "Hold & keep playing" in arms["b"]["problem"]
+    assert arms["a"]["problem"] is None and arms["a"]["name"] == "Keys Arm"
+    b.phase, b.error = "teach_hold", None
+    command(b, "release", supported=True)  # torque off, calibrated, with a home: a performance takes its hold itself
+    assert client.get("/api/controls").json()["arms"]["b"]["problem"] is None
+    # Both arms' error reports are listed, each with its arm
+    b.report_error("fault", RuntimeError("Chord Arm test fault"))
+    until = time.monotonic() + 5
+    while time.monotonic() < until and not any(i["state"] == "saved" for i in b.incidents.listing()["incidents"]):
+        time.sleep(0.01)
+    listed = client.get("/api/incidents").json()["incidents"]
+    mine = [i for i in listed if i["message"] == "Chord Arm test fault"]
+    assert mine and mine[0]["arm"] == "b" and mine[0]["arm_name"] == "Chord Arm"
+    assert client.get(f"/api/incidents/{mine[0]['id']}").status_code == 200  # downloadable from the Chord Arm's store
+
+
+def test_an_arm_that_settled_just_off_its_home_is_named_with_its_joint(plate):
+    from orchid_demo import rig
+    _, a, b, command, auth = plate
+    assert rig.park_step("moving") == "Wait until it holds still."
+    assert rig.park_step("position unknown: no home set or not calibrated").startswith("Teach its home and rest first")
+    assert "Go to home once more" in rig.park_step("5.4° from home on its shoulder lift")
+    joints = dict(b.arm.joint_action(b.current))
+    home = b.shared_teach_home()["measured"]
+    b.teach.measured = {**joints, **{j: home[j] for j in ("shoulder_pan", "elbow_flex", "wrist_flex")},
+                        "shoulder_lift": home["shoulder_lift"] + 7.25}
+    parked, why = b.parked()
+    assert not parked and why == "7.2° from home on its shoulder lift"
 
 
 def test_the_rig_refuses_other_moves_while_a_chord_holds_and_only_releases_a_held_button(plate):
@@ -186,9 +226,22 @@ def test_the_model_keeps_two_arms_apart_and_measures_them():
     calibration = {name: {"range_min": 0, "range_max": 4094} for name in m.MOTORS}
     pose = dict.fromkeys(m.MOTORS, 0.0)
     near = kinematics.clearance([pose], calibration, [pose], calibration)
-    assert 0 < near < 1000  # the mounts are 400 mm apart
+    assert 0 < near < 1000  # the mounts are 265 mm apart
     assert kinematics._segment_distance((0, 0, 0), (10, 0, 0), (5, 5, 0), (5, 10, 0)) == pytest.approx(5)
     assert kinematics._segment_distance((0, 0, 0), (10, 0, 0), (20, 0, 0), (30, 0, 0)) == pytest.approx(10)
+
+
+def test_a_measured_pan_correction_turns_only_that_followers_model(monkeypatch):
+    calibration = {name: {"range_min": 0, "range_max": 4094} for name in m.MOTORS}
+    other = {**calibration, "gripper": {"range_min": 1, "range_max": 4094}}
+    pose = {**dict.fromkeys(m.MOTORS, 0.0), "shoulder_lift": 30.0}
+    tip, _ = kinematics.fingertip(pose, calibration, "b")
+    monkeypatch.setitem(layout.PAN_CORRECTION_DEG, m.fingerprint(calibration)[:12], 10.0)
+    assert kinematics.pan_correction(calibration) == 10.0 and kinematics.pan_correction(other) == 0.0
+    # the same as the follower turned 10 deg further at its shoulder_pan (to the model's 4095/4096 tick rounding)
+    assert kinematics.fingertip(pose, calibration, "b")[0] == pytest.approx(
+        kinematics.fingertip({**pose, "shoulder_pan": 10.0}, other, "b")[0], abs=0.05)
+    assert kinematics.fingertip(pose, calibration, "b")[0] != pytest.approx(tip, abs=1.0)
 
 
 def test_a_chord_sweeps_on_for_bars(plate):
@@ -199,6 +252,71 @@ def test_a_chord_sweeps_on_for_bars(plate):
     assert played.status_code == 200, played.text
     assert played.json()["duration"] == {"beats": 8.0, "seconds": 4.0}  # two 4/4 bars at 120 BPM
     assert time.monotonic() - started >= 4.0 and b.parked_now[0]  # held the whole time; the Chord Arm let go long before
+
+
+def last_event(engine):
+    return engine.repo.events(1)[0]["id"]
+
+
+def played_after(engine, last):
+    """What the arm started playing after its event `last`."""
+    return [e["message"] for e in engine.repo.events(200) if e["id"] > last and e["message"].startswith(("Playing ", "Pressing "))]
+
+
+def test_stop_in_the_middle_of_a_note_ends_the_whole_performance(plate):
+    client, a, b, command, auth = plate
+    steps = [{"control": "C", "duration": "4bars"}, {"control": "D"}, {"control": "D", "chord": "chord.min"}]
+    out = {}
+    performing = threading.Thread(target=lambda: out.update(r=client.post("/api/sequence", json={"steps": steps}, headers=auth)))
+    performing.start()
+    until = time.monotonic() + 10
+    while time.monotonic() < until and not (a.phase == "teach_play" and a.play_t):
+        time.sleep(0.005)
+    time.sleep(0.3)  # C is down and held
+    seen = (last_event(a), last_event(b))
+    assert client.post("/api/stop", json={}, headers=auth).status_code == 200
+    performing.join(30)
+    assert out["r"].status_code == 409 and "Stopped during" in out["r"].json()["detail"], out["r"].text
+    time.sleep(0.3)  # anything wrongly sent after the Stop would have started by now
+    assert played_after(a, seen[0]) == [] and played_after(b, seen[1]) == []  # D and D + Min never started
+    assert a.phase == b.phase == "teach_hold" and b.chord_held is None
+
+
+def test_a_dial_stop_between_two_notes_ends_the_whole_performance(plate):
+    client, a, b, command, auth = plate
+    seen = {}
+    original = a.transition
+
+    def transition(phase, message):  # the voicing dial turns just as C finishes, before the chord starts
+        original(phase, message)
+        if message.startswith("Played C") and not seen:
+            seen.update(a=last_event(a), b=last_event(b))
+            for member in (a, b):
+                member.request_stop("Stopped by Orchid's voicing dial (the operator's stop)")
+    a.transition = transition
+    played = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "D", "chord": "chord.min"}]},
+                         headers=auth)
+    assert played.status_code == 409, played.text
+    time.sleep(0.3)
+    assert seen and played_after(a, seen["a"]) == [] and played_after(b, seen["b"]) == []
+    assert b.chord_held is None
+
+
+def test_after_the_consoles_stop_programs_wait_until_the_operator_acts_in_the_console(plate):
+    client, a, b, command, auth = plate
+    assert client.post("/api/stop", json={}, headers=auth).status_code == 200  # a program's own Stop: no lockout
+    assert client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth).status_code == 200
+    stop = client.post("/api/commands", json={"id": str(uuid4()), "action": "stop", "revision": a.revision, "args": {}, "arm": "a"},
+                       headers={**auth, "x-orchid-operator": a.owner, "origin": "http://127.0.0.1"})
+    assert stop.status_code == 202, stop.text
+    refused = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
+    assert refused.status_code == 409 and "Stopped by the operator in the console" in refused.json()["detail"]
+    assert client.post("/api/home", headers=auth).status_code == 409  # nor may a program send them home
+    arms = client.get("/api/controls", headers=auth).json()["arms"]
+    assert all("stopped by the operator in the console" in arm["problem"] for arm in arms.values())
+    command(a, "teach_settings", speed=3.0)  # the operator acts in the console: programs may play again
+    assert client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth).status_code == 200
+    assert client.get("/api/controls", headers=auth).json()["arms"]["a"]["problem"] is None
 
 
 def test_a_score_of_chords_and_keys_is_planned_then_played_and_reports_each_note(plate):

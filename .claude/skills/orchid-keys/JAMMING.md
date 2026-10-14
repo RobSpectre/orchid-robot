@@ -1,5 +1,8 @@
 # Jamming with Orchid: writing music that moves
 
+To start a jam now, don't read on: `cd ~/.hermes/skills/orchid/orchid-robot-jam && python3 scripts/set.py go "<their words>"`
+has music playing within seconds (SKILL.md, Start here). This file is for composing your own scores with `orchid.py`.
+
 Read this before writing scores for a jam. You are the composer and arranger of a long, live, looping piece played
 by two robot arms on Orchid, a chord instrument, through Orchid Studio. A good jam keeps evolving: it travels
 through keys and moods, changes sound and texture, builds and releases. Repeating the same four chords in one key,

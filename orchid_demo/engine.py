@@ -17,7 +17,7 @@ from . import motion as m
 from . import music
 from . import home
 from .controls import CATALOG, group_members
-from .devices import HardwareArm, HardwareLeader, SimulatedArm, validate_calibration
+from .devices import HardwareArm, HardwareLeader, SimulatedArm, motor_error_advice, motor_error_diagnosis, validate_calibration
 from .discovery import discover_arms, follower_problem, leader_problem, matches
 from .diagnostics import EventLogger
 from .incidents import ERROR_KINDS, IncidentStore
@@ -35,6 +35,13 @@ LEASE_SECONDS = 5.0
 TEACHING_WORKFLOW_VERSION = "leader-record-replay-v1"
 CALIBRATION_SETUP_PHASES = ("connected", "ready", "calibration_midpoint", "calibration_range", "calibration_review")
 TEACH_SESSION_PHASES = ("teach_hold", "teach_follow", "teach_play")
+# What each phase means to the operator, for refusals that say why an action has to wait.
+PHASE_WORDS = {
+    "disconnected": "not connected", "connected": "connected with torque off", "ready": "calibrated with torque off",
+    "fault": "stopped after a fault", "teach_hold": "holding", "teach_follow": "following the leader",
+    "teach_play": "moving", "calibration_midpoint": "calibrating", "calibration_range": "calibrating",
+    "calibration_review": "calibrating", "arming": "taking its hold", "holding": "holding",
+}
 WAYPOINT_FORMAT = "leader_waypoints_v1"
 # Neighbouring steps must stay close (a far one means it was captured in the wrong place).
 STROKE_PAIRS = (("hover", "touch"), ("touch", "press"))
@@ -345,7 +352,10 @@ class Engine:
         joints = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex")
         off = {name: max(abs(pose[j] - point["measured"][j]) for j in joints) for name, point in poses.items() if point}
         name = min(off, key=off.get)
-        return (True, f"at {name}") if off[name] <= PARKED_DEG else (False, f"{off['home']:.0f}° from home")
+        if off[name] <= PARKED_DEG:
+            return True, f"at {name}"
+        worst = max(joints, key=lambda j: abs(pose[j] - poses["home"]["measured"][j]))
+        return False, f"{off['home']:.1f}° from home on its {worst.replace('_', ' ')}"
 
     def publish(self):
         if self.selected not in self.owns:  # e.g. Chord Arm's first start: never default to the other arm's control
@@ -405,6 +415,7 @@ class Engine:
                 "recording_error": self.recording_error,
                 "simulated_leader_input": self.simulated_leader_input is not None,
                 "calibration_id": m.fingerprint(self.calibration)[:12] if self.calibration else None,
+                "model_pan_deg": kinematics.pan_correction(self.calibration),
                 "discovery": deepcopy(self.discovery),
                 "fixture": deepcopy(self.fixture), "selected": self.selected,
                 "position": deepcopy(self.current), "torque": deepcopy(self.torque),
@@ -451,7 +462,8 @@ class Engine:
         s = self.snapshot()
         return {"arm": self.arm_id, "phase": s["phase"], "connected": s["connected"], "calibrated": s["calibrated"],
                 "message": s["message"], "parked": s["parked"], "parked_reason": s["parked_reason"],
-                "pose_angles": s.get("pose_angles"), "leader": s["leader"]["connected"], "owns": s["owns"],
+                "pose_angles": s.get("pose_angles"), "model_pan_deg": s.get("model_pan_deg", 0.0),
+                "leader": s["leader"]["connected"], "owns": s["owns"],
                 "powered": any(v == 1 for v in (s.get("torque") or {}).values()),
                 "tuning": bool(s.get("tune_queue")) or (s.get("tune") or {}).get("status") == "running"}
 
@@ -538,8 +550,66 @@ class Engine:
                             "No motor settings or torque commands were sent during connection.")
             raise m.SafetyError(message) from exc
 
+    def phase_words(self, phase=None):
+        phase = phase or self.phase
+        if phase in PHASE_WORDS:
+            return PHASE_WORDS[phase]
+        if phase.startswith("home_"):
+            return "setting up its home"
+        return "registering a note" if phase.startswith("note_") else phase.replace("_", " ")
+
     def require_phase(self, *phases):
-        m.require(self.phase in phases, "That action is not available at this step.")
+        """Refuse an action the arm's state does not allow, naming the action, the state, and what comes first."""
+        if self.phase in phases:
+            return
+        action = (getattr(self, "dispatching", None) or "that action").replace("_", " ")
+        if set(phases) == {"disconnected"}:
+            first = "Disconnect it first (Release or disconnect)."
+        elif self.phase == "fault":
+            first = "It stopped after a fault: support it and press Hold & keep playing (or release it) first."
+        elif self.phase == "disconnected":
+            first = "Connect the arm first (Find and connect all arms)."
+        elif self.phase in ("teach_play", "arming", "home_arrival"):
+            first = "Wait until it holds still."
+        elif self.phase.startswith("home_"):
+            first = "Finish or cancel setting its home first."
+        elif set(phases) <= set(TEACH_SESSION_PHASES) and self.phase in CALIBRATION_SETUP_PHASES:
+            first = "Start teaching, or press Play on a taught control once, so it holds first."
+        elif set(phases) <= set(CALIBRATION_SETUP_PHASES) and self.phase in TEACH_SESSION_PHASES:
+            first = "Release torque first (with the arm supported)."
+        else:
+            first = f"It needs to be {' or '.join(dict.fromkeys(self.phase_words(p) for p in phases))}."
+        raise m.SafetyError(f"Cannot {action} while the arm is {self.phase_words()}. {first}")
+
+    @property
+    def display_name(self):
+        """What the operator calls this arm: Keys Arm / Chord Arm with two followers, else the follower."""
+        return ARM_NAMES[self.arm_id] if self.rig else "The follower"
+
+    def program_problem(self, who="The follower"):
+        """What keeps a program from playing this arm, for listings: None when it can play, including an arm that is
+        connected with torque off, calibrated and with a home, which a performance takes into its hold itself
+        (api hold_arms → performance_hold; if that needs a hand on the arm, the play's refusal says so)."""
+        if self.arm is not None and self.phase in ("connected", "ready"):
+            if not self.calibrated:
+                return f"{who} is not calibrated. The operator calibrates it in the console (02 Calibrate motors)."
+            if not self.shared_teach_home():
+                return f"{who} has no home taught yet. The operator teaches it in the console (03 Train controls)."
+            return None
+        return self.hold_problem(who)
+
+    def hold_problem(self, who="The follower"):
+        """Why a program cannot move this arm now, and the operator's step; None while it is in a teaching session."""
+        if self.phase in TEACH_SESSION_PHASES:
+            return None
+        if self.phase == "disconnected":
+            return (f"No arm is connected{f' as the {who}' if self.rig else ''}. The operator connects it in the console "
+                    "(Find and connect all arms).")
+        if self.phase == "fault":
+            return (f"{who} is stopped ({self.error or 'no reason recorded'}). In the operator console, the operator "
+                    "supports it and presses Hold & keep playing; programs cannot restart a stopped arm.")
+        return (f"{who} is not holding (it is {self.phase_words()}). In the operator console, the operator selects a taught "
+                "control and presses Play, or ⌂ Home → Go to home, once; then programs can play it.")
 
     def stable(self, enforce_limits=True):
         if isinstance(self.controller, LeaderController) and self.controller.enabled:
@@ -1147,13 +1217,9 @@ class Engine:
             m.require(self.owner is not None and self.lease_until > time.monotonic(),
                       "Open the operator console (http://127.0.0.1:8081) and connect; the API only acts while it is in control.")
             # Moves need a holding follower, and only the console can start or restore that hold.
-            if action in ("teach_play", "teach_sequence", "teach_go_home", "teach_go_rest", "chord_press", "chord_release") \
-                    and self.phase not in TEACH_SESSION_PHASES:
-                m.require(self.phase != "disconnected", "No arm is connected. Connect the follower in the operator console.")
-                m.require(self.phase != "fault", f"The arm is stopped ({self.error or 'no reason recorded'}). In the operator console, "
-                          "support the follower and press Hold & keep playing; the API cannot restart a stopped arm.")
-                raise m.SafetyError(f"The follower is not holding (phase: {self.phase}). In the operator console, select a taught "
-                                    "control and press Play, or ⌂ Home → Go to home, once; then the API can play.")
+            if action in ("teach_play", "teach_sequence", "teach_go_home", "teach_go_rest", "chord_press", "chord_release"):
+                problem = self.hold_problem(self.display_name)
+                m.require(problem is None, problem or "")
             owner, revision = self.owner, self.revision
         return self.submit(owner, uuid.uuid4().hex, action, revision, args)
 
@@ -1704,8 +1770,19 @@ class Engine:
             except (m.SafetyError, ValueError) as exc:
                 self.tune_end("failed", f"Correcting stopped: {exc}")
 
-    def fault(self, exc):
-        message = str(exc) or type(exc).__name__
+    def motor_note(self, exc):
+        """Plain words for a motor error from LeRobot: a motor last read outside its calibrated range (recalibrate), an
+        unnamed error flag, or no reply (from what was already read; never probes the motors)."""
+        if isinstance(exc, m.SafetyError) or self.calibrating:  # while calibrating, joints may run past the saved range
+            return ""
+        try:
+            return motor_error_advice(exc, self.calibration, self.current)
+        except Exception:  # explaining an error must never become one
+            return ""
+
+    def fault(self, exc, note=None):
+        """note: motor_note(exc), computed before anything here changes (ending a calibration changes it)."""
+        message = (str(exc) or type(exc).__name__).strip() + (self.motor_note(exc) if note is None else note)
         if self.tuning:
             self.tune_stop(f"Stopped by a fault: {message}. Nothing was saved.")
         context = self.error_context()
@@ -1739,6 +1816,13 @@ class Engine:
         self.publish()
 
     def dispatch(self, action, args):
+        outer, self.dispatching = getattr(self, "dispatching", None), action  # require_phase names it in a refusal
+        try:
+            return self.dispatch_action(action, args)
+        finally:
+            self.dispatching = outer
+
+    def dispatch_action(self, action, args):
         if self.tuning:
             # Supported release and disconnect stay available; they end correcting like Stop motion.
             m.require(action in ("tune_stop", "release", "disconnect", "forget_connection"), "Keys are being corrected. Stop correcting first.")
@@ -2674,15 +2758,29 @@ class Engine:
             m.require(self.arm is not None, "No arm is connected")
             self.supported(args)
             self.actuating = True
-            try:
-                self.arm.release()
-                if self.leader:
-                    self.leader.release()
-            except Exception as exc:
-                raise m.SafetyError("Torque release could not be verified. If USB was unplugged or the arm was replaced, "
-                                    "support BOTH arms, disconnect their motor power, then use "
-                                    "01 · Connect the arm → Forget unavailable connection. "
-                                    f"Connection error: {exc}") from exc
+            way_out = ("If it still will not release, support BOTH arms, disconnect their motor power, then use "
+                       "01 · Connect the arm → Forget unavailable connection.")
+            for device, which in ((self.arm, "follower"), (self.leader, "leader")):
+                if device is None:
+                    continue
+                try:
+                    device.release()
+                except Exception as exc:
+                    # A follower motor that answered with a flag (past its range): say so. A motor that did not answer,
+                    # or the leader (its calibration is not the follower's), keeps the USB / power advice.
+                    kind = None
+                    if which == "follower" and not self.calibrating:
+                        try:
+                            kind, advice = motor_error_diagnosis(exc, self.calibration, self.current)
+                        except Exception:
+                            kind = None
+                    if kind in ("range", "flag"):
+                        raise m.SafetyError(f"Torque release could not be verified.{advice} Keep supporting the arm. "
+                                            f"{way_out} Connection error: {exc}") from exc
+                    raise m.SafetyError(f"Torque release could not be verified on the {which}. If USB was unplugged or the "
+                                        "arm was replaced, support BOTH arms, disconnect their motor power, then use "
+                                        "01 · Connect the arm → Forget unavailable connection. "
+                                        f"Connection error: {exc}") from exc
             if self.controller:
                 self.controller.enabled = False
             if self.calibrating:
@@ -2729,11 +2827,18 @@ class Engine:
         except Exception as exc:
             # Invalid requests stay on the same step. Hardware/protocol failures
             # stop; callbacks handling active motion already establish a hold.
-            if (self.actuating or not isinstance(exc, m.SafetyError)) and self.arm is not None and self.phase != "fault":
-                self.fault(exc)
-            receipt.update(status="rejected", message=str(exc))
-            self.error = str(exc)
-            self.event("rejected", str(exc), {"action": command["action"], "command_id": command["id"]}, exc=exc)
+            faulted = (self.actuating or not isinstance(exc, m.SafetyError)) and self.arm is not None and self.phase != "fault"
+            note = self.motor_note(exc)  # before fault(): it may end a calibration, which changes the advice
+            if faulted:
+                self.fault(exc, note)  # one fault row and one error report; no second row with the same text
+            message = self.error if faulted and self.error else str(exc).strip() + note  # fault's own words, suffixes included
+            receipt.update(status="rejected", message=message)
+            self.error = message
+            if not faulted:
+                # The app saying no (a refusal) is Session activity, not an error report; a hardware failure behind it is.
+                hardware = not isinstance(exc, m.SafetyError) or (exc.__cause__ is not None and not isinstance(exc.__cause__, m.SafetyError))
+                self.event("rejected" if hardware else "refused", message, {"action": command["action"], "command_id": command["id"]},
+                           exc=exc)
         finally:
             with self.lock:
                 self.pending = False

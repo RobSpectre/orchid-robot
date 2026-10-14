@@ -47,7 +47,7 @@ def test_diagnostics_are_explicit_idle_only_reads(engine):
     assert all(v['voltage_v'] == 12 and v['temperature_c'] == 25 for v in snapshot['motor_status'].values())
     assert engine.arm.enabled is False
     command(engine, 'calibrate', supported=True)
-    with pytest.raises(m.SafetyError, match='not available'):
+    with pytest.raises(m.SafetyError, match='Cannot refresh diagnostics while the arm is'):
         engine.dispatch('refresh_diagnostics', {})
     command(engine, 'disconnect', supported=True)
     assert engine.snapshot()['diagnostics_at'] is None
@@ -75,7 +75,7 @@ def test_powered_targets_and_fault_telemetry(engine):
     status = engine.snapshot()['motor_status']
     assert all(v['torque_enabled'] is True and v['target_ticks'] is not None for v in status.values())
     assert all(v['tracking_error_ticks'] == 0 for v in status.values())
-    with pytest.raises(m.SafetyError, match='not available'):
+    with pytest.raises(m.SafetyError, match='Cannot refresh diagnostics while the arm is'):
         engine.dispatch('refresh_diagnostics', {})
     engine.fault(m.SafetyError('test feedback lost'))
     status = engine.snapshot()['motor_status']

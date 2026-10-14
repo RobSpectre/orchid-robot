@@ -1,9 +1,23 @@
 ---
 name: orchid-keys
-description: Play and compose music (jams that evolve: see JAMMING.md) on the taught Orchid synth controls (12 keys, chord buttons) through orchid-robot's performance API, including chords (a key played with a chord button held, using both arms) and whole scores on Orchid Studio's beat. Use when the user asks to play a key, a chord, a melody, a rhythm, a chord progression or a set, to send the arms home or to rest, or to stop them. How the arms move (holding, speed, hardness, the order of moves, safety) is orchid-robot's and the operator console's, never this skill's.
+description: Play and compose music (jams that evolve: see JAMMING.md) on the taught Orchid synth controls (12 keys, chord buttons) through orchid-robot's performance API, including chords (a key played with a chord button held, using both arms) and whole scores on Orchid Studio's beat. Use when the user asks to play a key, a chord, a melody, a rhythm, a chord progression or a set, to send the arms home or to rest, or to stop them. How the arms move (holding, speed, hardness, the order of moves, safety) is orchid-robot's and the operator console's, never this skill's. A jam or live set starts with one command (Start here).
 ---
 
 # Orchid keys
+
+## Start here
+
+- **A jam or a live set** (a style, an artist, a vibe, "play something"), with Orchid Studio's drums and loops: one
+  command, from any directory, has music playing within seconds:
+  `cd ~/.hermes/skills/orchid/orchid-robot-jam && python3 scripts/set.py go "<their words>" --minutes 30`.
+  It prints `NEW SONG …` (playing: say what in a line) or `NOT PLAYING: <reason>` (act on that line or tell the
+  operator). Steer it with `set.py skip "<their words>"`, `rate`, `go "<new words>"` and `stop`; that skill's
+  SKILL.md has the rest, once music plays.
+- **A key, a chord, a phrase or a score you write**: `python3 ~/workspace/orchid-robot/scripts/orchid.py status`, then
+  `play`, `chord`, `seq` or `score` (Commands, below). Paths in this file are relative to `~/workspace/orchid-robot`.
+- **These two scripts are the interface.** A refusal prints orchid-robot's or Studio's own reason: act on it or tell the
+  operator. Never read orchid-robot's source or call its HTTP API by hand to work something out; the API table at the
+  end documents what `orchid.py` sends, for changing `orchid.py`.
 
 The SO101 follower plays controls that were taught in the operator console (home → hover → touch → press for
 keys and chord buttons). The arms never play Orchid's voicing dial: a score's `voicing` is set in software (by Orchid
@@ -245,11 +259,13 @@ like the others.
 
 ## HTTP API (what the script calls)
 
+For changing `scripts/orchid.py`. To play, run the script: it sends these, and prints the reason for any refusal.
+
 Base `http://127.0.0.1:8081`. POSTs need header `X-Orchid-Token` from `GET /api/session` → `token`.
 
 | Method & path | Body | Result |
 |---|---|---|
-| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, performing:{what, since}\|null, controls:[{id,name,kind,group,arm,status,press_s?}]}`; with two arms `ready_to_play` is `{a, b}` |
+| `GET /api/controls` | — | `{phase, ready_to_play, settings:{speed,duration,press_hardness}, performing:{what, since}\|null, controls:[{id,name,kind,group,arm,status,press_s?}], arms:{a:{name,phase,state,problem}, …}, dial_stop}`; with two arms `ready_to_play` is `{a, b}`. `arms.*.problem` is null when a program can play that arm, else the operator's step (pass it on) |
 | `GET /api/clock` | — | `{bpm, beat_s, grid}`: `grid` is set while Studio's transport runs (notes land on its beat) |
 | `POST /api/controls/{id}/play` | `{duration? ("1/4", "2bars", "1bar+1/2"), wait=true}` | `{status, phase, message, error, duration:{beats,seconds}, rhythm, key_check?}` after it finishes |
 | `POST /api/sequence` | `{steps:[{control ("rest" for a rest), chord?, duration?}], wait=true}` | `{…, rhythm:{bpm, grid, steps:[{control, strike_at, slipped_beats}]}}` |

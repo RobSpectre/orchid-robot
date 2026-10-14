@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from orchid_demo import motion as m
-from orchid_demo.devices import HardwareArm, HardwareLeader, validate_calibration
+from orchid_demo.devices import HardwareArm, HardwareLeader, out_of_range, range_advice, validate_calibration
 
 
 @dataclass
@@ -107,6 +107,104 @@ def test_open_only_reads_and_disconnect_never_drops_torque(arm):
     assert arm.calibration_matches
     arm.close()
     assert not arm.bus.is_connected
+
+
+class Handler:
+    """scservo_sdk's packet handler: replies is {id: (comm, error, position)}."""
+    def __init__(self, replies):
+        self.replies, self.calls = replies, []
+
+    def ping(self, port, motor_id):
+        self.calls.append(("ping", motor_id))
+        comm, error, _ = self.replies.get(motor_id, (0, 0, 2047))
+        return 777, comm, error
+
+    def read2ByteTxRx(self, port, motor_id, address):
+        self.calls.append(("read", motor_id, address))
+        comm, error, position = self.replies.get(motor_id, (0, 0, 2047))
+        return position, comm, error
+
+
+def missing(*ids):
+    def connect():
+        raise RuntimeError("FeetechMotorsBus motor check failed on port 'x':\n\nMissing motor IDs:\n"
+                           + "".join(f"  - {i} (expected model: 777)\n" for i in ids))
+    return connect
+
+
+def test_a_motor_resting_past_its_calibrated_range_is_named_and_recalibration_suggested(arm, monkeypatch):
+    # The shoulder settled on its stop, past the bottom of its calibrated range: it answers, flagged, so LeRobot calls it missing.
+    arm.bus.packet_handler = Handler({2: (0, 16, 990)})
+    monkeypatch.setattr(arm.bus, "connect", missing(2))
+    with pytest.raises(RuntimeError) as failed:
+        arm.open()
+    text = str(failed.value)
+    assert text.startswith("Motor 2 (shoulder lift) answered with an error flag, so LeRobot reported it missing. "
+                           "Motor 2 (shoulder lift) reads 990, 10 ticks below its calibrated range 1000..3100.")
+    assert "this arm's calibration no longer covers its travel" in text
+    assert "To connect, support the arm and move that joint a few degrees back inside the range by hand." in text
+    assert "Recalibrate this follower (Calibrate motors → Reset calibration)" in text and "teaching again" in text
+    assert arm.bus.writes == [] and {c[0] for c in arm.bus.packet_handler.calls} == {"ping", "read"}  # read only
+
+
+def test_a_flagged_motor_in_range_is_a_motor_fault_and_a_silent_one_a_cable(arm, monkeypatch):
+    arm.bus.packet_handler = Handler({4: (0, 4, 2047)})  # overheat flag, position fine
+    monkeypatch.setattr(arm.bus, "connect", missing(4))
+    with pytest.raises(RuntimeError, match=r"Motor 4 \(wrist flex\) answered .* reports a fault .* inside its calibrated range"):
+        arm.open()
+    arm.bus.packet_handler = Handler({4: (-3001, 0, 0)})  # no status packet: really not there
+    with pytest.raises(RuntimeError, match=r"^Motor 4 \(wrist flex\) did not answer: check its cable and the arm's power"):
+        arm.open()
+    arm.bus.packet_handler = None  # the SDK does not cooperate: LeRobot's own error stands
+    with pytest.raises(RuntimeError, match="Missing motor IDs"):
+        arm.open()
+
+
+def test_lerobots_wrong_model_details_stay_in_the_connect_message(arm, monkeypatch):
+    arm.bus.packet_handler = Handler({2: (0, 16, 990)})
+    def connect():
+        raise RuntimeError("FeetechMotorsBus motor check failed on port 'x':\n\nMissing motor IDs:\n  - 2 (expected model: 777)\n"
+                           "\nMotors with incorrect model numbers:\n  - 3 (elbow_flex): expected 777, found 1060\n"
+                           "\nFull expected motor list (id: model_number):\n{1: 777, 2: 777, 3: 777}")
+    monkeypatch.setattr(arm.bus, "connect", connect)
+    with pytest.raises(RuntimeError) as failed:
+        arm.open()
+    assert "Motor 2 (shoulder lift) answered with an error flag" in str(failed.value)
+    assert "Also, motors with the wrong model number: 3 (elbow_flex): expected 777, found 1060." in str(failed.value)
+    assert {c[1] for c in arm.bus.packet_handler.calls} == {2}  # only the missing motor was asked
+
+
+def test_out_of_range_motors_are_explained_in_words():
+    calibration = {name: {"range_min": 1093, "range_max": 3449} for name in m.MOTORS}
+    pose = {**dict.fromkeys(m.MOTORS, 2000), "shoulder_lift": 1072, "gripper": 3500}
+    problems = out_of_range(calibration, pose)
+    assert problems == [("shoulder_lift", 1072, 1093, 3449), ("gripper", 3500, 1093, 3449)]
+    text = range_advice(problems)
+    assert "Motor 2 (shoulder lift) reads 1072, 21 ticks below its calibrated range 1093..3449; motor 6 (gripper) reads 3500, 51 ticks above" in text
+    assert "To connect" not in text and "Recalibrate this follower" in text
+    assert range_advice(out_of_range(calibration, dict.fromkeys(m.MOTORS, 2000))) == ""
+
+
+def test_a_motor_error_says_what_it_means(tmp_path):
+    from orchid_demo.engine import Engine
+    engine = Engine(tmp_path)
+    engine.calibration = {name: {"id": i, "drive_mode": 0, "homing_offset": 0, "range_min": 1093, "range_max": 3449}
+                          for i, name in enumerate(m.MOTORS, 1)}
+    engine.current = {**dict.fromkeys(m.MOTORS, 2000), "shoulder_lift": 1072}
+    failed = RuntimeError("Failed to write 'Torque_Enable' on id_=2 with '0' after 1 tries. ")
+    note = engine.motor_note(failed)
+    assert note.startswith(" Motor 2 (shoulder lift) reads 1072, 21 ticks below") and "Recalibrate this follower" in note
+    assert engine.motor_note(m.SafetyError("Choose a key.")) == ""  # the app's own refusals are about something else
+    assert engine.motor_note(OSError("read failed: [Errno 6] Device not configured")) == ""  # the USB port, not the motor
+    engine.calibrating = True  # the range being recorded can run past the saved one
+    assert engine.motor_note(failed) == ""
+    engine.calibrating, engine.current = False, dict.fromkeys(m.MOTORS, 2000)
+    assert engine.motor_note(failed).startswith(" Motor 2 (shoulder lift) answered with an error flag LeRobot does not name.")
+    assert "If it happens again, recalibrate this follower" in engine.motor_note(failed)
+    silent = RuntimeError("Failed to read 'Present_Position' on id_=5 after 1 tries. [TxRxResult] There is no status packet!")
+    assert engine.motor_note(silent) == " Motor 5 (wrist roll) did not answer: check its cable and the arm's power, then connect again."
+    loud = RuntimeError("Failed to write 'Lock' on id_=3 with '0' after 1 tries. [RxPacketError] Overload error!")
+    assert engine.motor_note(loud) == ""  # LeRobot already names it
 
 
 def test_failed_calibration_read_keeps_prior_motor_voltages_without_extra_io(arm, monkeypatch):

@@ -20,6 +20,7 @@ from . import score
 from .controls import CATALOG
 from .dialstop import DialStop
 from .engine import Engine
+from .rig import NAMES as ARM_NAMES
 from .motion import SafetyError
 
 STATIC = Path(__file__).with_name("static")
@@ -180,6 +181,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     token = secrets.token_urlsafe(32)
 
     dial_stopped = {}  # set by a dial stop: programs may not play again until the operator acts in the console
+    console_stopped = {}  # set by the console's Stop motion: likewise, programs wait for the operator
 
     def stop_by_dial(turn):
         """A hand on Orchid's voicing dial: every arm holds where it is, as with the console's Stop (dialstop.py), and
@@ -272,15 +274,35 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 except HTTPException as exc:
                     raise HTTPException(exc.status_code, f"{NAMES[member.arm_id]}: {exc.detail}") from exc
 
+    def stop_counts():
+        return {arm: getattr(member, "stops", 0) for arm, member in engines.items()}
+
+    def still_performing():
+        """A Stop during a performance (the console's, a program's or Orchid's voicing dial) ends all of it: the arms hold
+        where it put them and no later note or chord is played. Each arm's worker counts the Stops it carries out, and the
+        performance compares them with the count it started with, so a Stop between two notes counts too."""
+        before = now_playing.get("stops")
+        if before is None:
+            return
+        for arm, count in stop_counts().items():
+            if count != before.get(arm, count):
+                state = ("stopped in a fault: the operator acts in the console" if engines[arm].phase == "fault" else
+                         "holding where Stop put it")
+                raise HTTPException(409, f"Stopped during {now_playing.get('what')}: {NAMES[arm]} is {state}. The rest of "
+                                         "the performance is not played.")
+
     @contextmanager
     def performance(what):
         if dial_stopped:
             raise HTTPException(409, f"Stopped by Orchid's voicing dial at {dial_stopped['at']}: programs may not move the "
                                      "arms until the operator resumes in the console.")
+        if console_stopped:
+            raise HTTPException(409, f"Stopped by the operator in the console at {console_stopped['at']}: programs may not "
+                                     "move the arms until the operator resumes in the console.")
         if not performing.acquire(blocking=False):
             raise HTTPException(409, f"orchid-robot is already performing ({now_playing.get('what')}, since "
                                      f"{now_playing.get('since')}). One performance at a time: wait until it returns.")
-        now_playing.update(what=what, since=time.strftime("%H:%M:%S"))
+        now_playing.update(what=what, since=time.strftime("%H:%M:%S"), stops=stop_counts())
         try:
             hold_arms()
             yield
@@ -388,6 +410,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         console(request)
         if command.action != "stop":
             dial_stopped.clear()  # the operator is acting in the console: programs may play again
+            console_stopped.clear()
+        else:  # the operator's Stop: programs wait until the operator acts again (a program's own /api/stop does not)
+            console_stopped.update(at=time.strftime("%H:%M:%S"))
         target = pick(command.arm)
         try:
             if command.action == "stop":  # Stop motion stops every follower
@@ -395,8 +420,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                             for member in engines.values()]
                 return receipts[list(engines).index(command.arm)]
             return target.submit(operator(request), str(command.id), command.action, command.revision, command.args)
-        except SafetyError as exc:
-            target.report_error("rejected", exc, {"action": command.action, "command_id": str(command.id), "source": "http"})
+        except SafetyError as exc:  # refused before reaching the worker: logged, not an error report
+            target.event_log.emit("refused", str(exc), {"action": command.action, "command_id": str(command.id), "source": "http"})
             raise HTTPException(409, str(exc)) from exc
 
     # --- Control API: list, configure and play taught controls --------------------------------------
@@ -413,6 +438,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         return engines[Rig.control_arm(control)]
 
     def run(action, args, wait, engine=engine):
+        if action != "stop":
+            still_performing()
         plays_before = (engine.snapshot()["key_check"] or {}).get("play", 0)
         try:
             receipt = engine.api_submit(action, {k: v for k, v in args.items() if v is not None})
@@ -434,6 +461,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         moving = action in ("teach_play", "teach_sequence", "teach_go_home", "teach_go_rest")
         while wait and moving and time.monotonic() < deadline and engine.snapshot()["phase"] == "teach_play":
             time.sleep(0.1)
+        if action != "stop":
+            still_performing()  # a play cut short by Stop is not reported as played
         snap = engine.snapshot()
         checked = wait and action in ("teach_play", "teach_sequence") and engine.key_checker and done.get("status") == "complete"
         until = time.monotonic() + 3  # the note check reads Orchid Studio just after the play ends
@@ -458,10 +487,16 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         snap = engine.snapshot()
         ready = {arm: s["phase"] in ("teach_hold", "teach_follow") and s["lease_live"]
                  for arm, s in ((arm, member.snapshot()) for arm, member in engines.items())}
-        return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready,
+        # Each arm: why a program cannot play it now and the operator's step (None when it can), in words.
+        held = (f"stopped by the operator in the console at {console_stopped['at']}; the operator resumes in the console"
+                if console_stopped else None)
+        arms = {arm: {"name": ARM_NAMES[arm], "phase": member.phase, "state": member.phase_words(),
+                      "problem": (member.program_problem(ARM_NAMES[arm]) if rig is not None else member.program_problem()) or held}
+                for arm, member in engines.items()}
+        return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready, "arms": arms,
                 "settings": snap["teach_settings"], "controls": listing,
                 # A performance already running (one at a time): {what, since}, or None.
-                "performing": dict(now_playing) or None,
+                "performing": {k: v for k, v in now_playing.items() if k != "stops"} or None,
                 # Orchid's voicing dial stops the arms: whether it is being watched, and the stops it made.
                 "dial_stop": {**watcher.state, "stopped": dict(dial_stopped) or None} if watcher else
                 {"armed": False, "error": "not watching: start with --studio-port"}}
@@ -539,6 +574,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             if control not in Rig.CONTROLS:
                 raise HTTPException(404, f"Unknown control {control!r}.")
         plays_before = (engine.snapshot()["key_check"] or {}).get("play", 0)
+        still_performing()  # rig.play_chord counts Stops from its own start, so one before it is caught here
         try:
             played = rig.play_chord(key, chord, speed, {**timed(step, clock, at, bar, align), **({"stay": True} if stay else {})})
         except SafetyError as exc:
@@ -930,24 +966,35 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
 
     @app.get("/api/incidents")
     def incidents():
-        return engine.incidents.listing()
+        """Both arms' error reports, newest first, each with the arm it came from."""
+        listed = []
+        for arm, member in engines.items():
+            listed += [{**item, "arm": arm, "arm_name": ARM_NAMES[arm]} for item in member.incidents.listing()["incidents"]]
+        return {"incidents": sorted(listed, key=lambda e: e["created"], reverse=True)[:30],
+                "delivery": engine.incidents.listing()["delivery"]}
+
+    def incident_store(identity):
+        """The arm whose store holds this report (404 if none does, or it is still saving)."""
+        for member in engines.values():
+            try:
+                member.incidents.metadata(identity)
+                return member.incidents
+            except (ValueError, OSError, KeyError):
+                continue
+        raise HTTPException(404, "Incident not found or still saving")
 
     @app.get("/api/incidents/{identity}")
     def incident(identity: str):
-        try:
-            engine.incidents.metadata(identity)
-            path = engine.incidents.path(identity)
-            if not path.is_file():
-                raise FileNotFoundError(identity)
-        except (ValueError, FileNotFoundError) as exc:
-            raise HTTPException(404, "Incident not found or still saving") from exc
+        path = incident_store(identity).path(identity)
+        if not path.is_file():
+            raise HTTPException(404, "Incident not found or still saving")
         return FileResponse(path, media_type="application/json", filename=f"orchid-incident-{identity}.json")
 
     @app.post("/api/incidents/{identity}/report")
     def report_incident(identity: str, report: IncidentReport):
         # CSRF protection applies; motor ownership/health is deliberately unrelated.
         try:
-            return engine.incidents.request_report(identity, report.note)
+            return incident_store(identity).request_report(identity, report.note)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(404, "Incident not found or still saving") from exc
         except OSError as exc:

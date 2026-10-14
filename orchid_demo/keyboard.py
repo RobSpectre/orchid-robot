@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 
-from . import kinematics
+from . import kinematics, layout
 
 SLOTS = {"C": (0.0, 0), "C#": (0.5, 1), "D": (1.0, 0), "D#": (1.5, 1), "E": (2.0, 0), "F": (3.0, 0), "F#": (3.5, 1),
          "G": (4.0, 0), "G#": (4.5, 1), "A": (5.0, 0), "A#": (5.5, 1), "B": (6.0, 0)}  # (slot along the row, row: 1 black)
@@ -37,12 +37,13 @@ class Keyboard:
             self.pitch = math.hypot(*v) or NOMINAL["pitch_mm"]
             self.along = (v[0] / self.pitch, v[1] / self.pitch)
             self.origin = (mean_p[0] - v[0] * mean_s, mean_p[1] - v[1] * mean_s)
-        else:  # one key or none: Orchid's keyboard runs along the plate's x axis (layout.ORCHID)
-            self.pitch, self.along = NOMINAL["pitch_mm"], (1.0, 0.0)
+        else:  # one key or none: Orchid's keyboard runs low to high toward the player's right (layout.ORCHID)
+            facing = math.radians(layout.ORCHID["facing_deg"])
+            self.pitch, self.along = NOMINAL["pitch_mm"], (-math.sin(facing), math.cos(facing))
             anchor = next(iter(self.tips.values()), (0.0, 0.0, 0.0))
             key = next(iter(self.tips), "C")
             self.origin = (anchor[0] - SLOTS[key][0] * self.pitch, anchor[1])
-        self.back = (-self.along[1], self.along[0])  # +90 deg: away from the plate's front edge, toward the arms
+        self.back = (-self.along[1], self.along[0])  # +90 deg: away from Orchid's front edge, toward the arms
         offsets = {row: [self._local(k)[1] for k in keys if SLOTS[k][1] == row] for row in (0, 1)}
         if offsets[0] and offsets[1]:
             self.black_back = sum(offsets[1]) / len(offsets[1]) - sum(offsets[0]) / len(offsets[0])

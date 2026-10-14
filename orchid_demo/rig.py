@@ -41,6 +41,16 @@ GOES_HOME = ("teach_go_home", "chord_release")
 # connected, calibrated or swapped), it cannot be parked; this arm may still be taught as long as the other holds still.
 FOLLOWS = ("teach_follow", "leader_resume")
 UNPLACED = "position unknown"  # Engine.parked's reason when the arm has no home or rest to be parked at
+
+
+def park_step(why):
+    """What gets the other arm parked, given Engine.parked's reason it is not."""
+    if why == "moving":
+        return "Wait until it holds still."
+    if why.startswith(UNPLACED):
+        return "Teach its home and rest first (03 Train controls)."
+    return (f"Send it home or to rest first (parked means holding still within {PARKED_DEG:g}° of either). If it is "
+            "already there and has settled just off it, Go to home once more, or re-teach its home where it holds.")
 CHORD_TIMEOUT_S = 60.0
 RELEASE_AFTER_S = 0.1  # recording seconds past the key reaching its press before the chord button lets go
 SETTLE_AFTER_S = 8.0  # after a chord, how long to wait for both arms to settle and report parked (not a failure if not)
@@ -114,11 +124,11 @@ class Rig:
                 self.holder = arm
                 return
             if self.holder not in (None, arm) and self.holder == other.arm_id and not parked:
-                raise m.SafetyError(f"{name} is away from its home ({why}). Send it home before moving this arm.")
+                raise m.SafetyError(f"{name} is away from its home ({why}). {park_step(why)}")
             if action in GOES_HOME:
                 m.require(why != "moving", f"{name} is moving. Wait until it holds still before sending this arm home.")
             else:
-                m.require(parked, f"{name} is not parked at its home or rest ({why}). The arms can touch, so send it home or to rest first.")
+                m.require(parked, f"{name} is not parked at its home or rest ({why}). The arms can touch: {park_step(why)}")
             self.holder = arm
 
     def update(self, arm, parked):
@@ -202,9 +212,10 @@ class Rig:
         m.require(chord in CATALOG and CATALOG[chord]["kind"] == "button", "Choose a chord button (dim, min, maj, sus, 6, m7, M7, 9).")
         keys, chords = self.engines["a"], self.engines["b"]
         for engine in (keys, chords):
-            m.require(engine.arm is not None, f"{NAMES[engine.arm_id]} is not connected. A chord needs both arms.")
-            m.require(engine.phase == "teach_hold", f"{NAMES[engine.arm_id]} is not holding (phase: {engine.phase}). "
-                      "In the operator console, send it home first.")
+            problem = engine.hold_problem(NAMES[engine.arm_id])
+            m.require(problem is None, f"A chord needs both arms. {problem}")
+            m.require(engine.phase == "teach_hold", f"{NAMES[engine.arm_id]} is busy ({engine.phase_words()}): wait until "
+                      "it holds still, then play the chord.")
         try:
             gap = self.chord_clearance(key, chord)
             if gap < kinematics.CLEARANCE_MM and not keys.parked_now[0]:

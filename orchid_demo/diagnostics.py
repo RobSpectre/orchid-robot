@@ -28,7 +28,8 @@ class EventLogger:
         if exc is not None:
             record["exception"] = type(exc).__name__
             record["traceback"] = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        level = logging.ERROR if kind in ("fault", "rejected", "connection_failed", "hold_failed", "worker_failed", "cleanup_failed") else logging.INFO
+        level = logging.ERROR if kind in ("fault", "rejected", "connection_failed", "hold_failed", "worker_failed", "cleanup_failed") \
+            else logging.WARNING if kind == "refused" else logging.INFO
         self.logger.log(level, json.dumps(record, allow_nan=False))
 
     def close(self):
