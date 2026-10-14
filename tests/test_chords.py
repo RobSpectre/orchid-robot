@@ -302,6 +302,23 @@ def test_a_dial_stop_between_two_notes_ends_the_whole_performance(plate):
     assert b.chord_held is None
 
 
+def test_after_the_consoles_stop_programs_wait_until_the_operator_acts_in_the_console(plate):
+    client, a, b, command, auth = plate
+    assert client.post("/api/stop", json={}, headers=auth).status_code == 200  # a program's own Stop: no lockout
+    assert client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth).status_code == 200
+    stop = client.post("/api/commands", json={"id": str(uuid4()), "action": "stop", "revision": a.revision, "args": {}, "arm": "a"},
+                       headers={**auth, "x-orchid-operator": a.owner, "origin": "http://127.0.0.1"})
+    assert stop.status_code == 202, stop.text
+    refused = client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth)
+    assert refused.status_code == 409 and "Stopped by the operator in the console" in refused.json()["detail"]
+    assert client.post("/api/home", headers=auth).status_code == 409  # nor may a program send them home
+    arms = client.get("/api/controls", headers=auth).json()["arms"]
+    assert all("stopped by the operator in the console" in arm["problem"] for arm in arms.values())
+    command(a, "teach_settings", speed=3.0)  # the operator acts in the console: programs may play again
+    assert client.post("/api/chords/play", json={"key": "C", "chord": "chord.maj"}, headers=auth).status_code == 200
+    assert client.get("/api/controls", headers=auth).json()["arms"]["a"]["problem"] is None
+
+
 def test_a_score_of_chords_and_keys_is_planned_then_played_and_reports_each_note(plate):
     client, a, b, command, auth = plate
     events = [{"bar": 1, "beat": 1, "key": "C", "chord": "chord.maj", "duration": "1/2"},

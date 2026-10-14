@@ -181,6 +181,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
     token = secrets.token_urlsafe(32)
 
     dial_stopped = {}  # set by a dial stop: programs may not play again until the operator acts in the console
+    console_stopped = {}  # set by the console's Stop motion: likewise, programs wait for the operator
 
     def stop_by_dial(turn):
         """A hand on Orchid's voicing dial: every arm holds where it is, as with the console's Stop (dialstop.py), and
@@ -295,6 +296,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if dial_stopped:
             raise HTTPException(409, f"Stopped by Orchid's voicing dial at {dial_stopped['at']}: programs may not move the "
                                      "arms until the operator resumes in the console.")
+        if console_stopped:
+            raise HTTPException(409, f"Stopped by the operator in the console at {console_stopped['at']}: programs may not "
+                                     "move the arms until the operator resumes in the console.")
         if not performing.acquire(blocking=False):
             raise HTTPException(409, f"orchid-robot is already performing ({now_playing.get('what')}, since "
                                      f"{now_playing.get('since')}). One performance at a time: wait until it returns.")
@@ -406,6 +410,9 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         console(request)
         if command.action != "stop":
             dial_stopped.clear()  # the operator is acting in the console: programs may play again
+            console_stopped.clear()
+        else:  # the operator's Stop: programs wait until the operator acts again (a program's own /api/stop does not)
+            console_stopped.update(at=time.strftime("%H:%M:%S"))
         target = pick(command.arm)
         try:
             if command.action == "stop":  # Stop motion stops every follower
@@ -481,13 +488,15 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         ready = {arm: s["phase"] in ("teach_hold", "teach_follow") and s["lease_live"]
                  for arm, s in ((arm, member.snapshot()) for arm, member in engines.items())}
         # Each arm: why a program cannot play it now and the operator's step (None when it can), in words.
+        held = (f"stopped by the operator in the console at {console_stopped['at']}; the operator resumes in the console"
+                if console_stopped else None)
         arms = {arm: {"name": ARM_NAMES[arm], "phase": member.phase, "state": member.phase_words(),
-                      "problem": member.program_problem(ARM_NAMES[arm]) if rig is not None else member.program_problem()}
+                      "problem": (member.program_problem(ARM_NAMES[arm]) if rig is not None else member.program_problem()) or held}
                 for arm, member in engines.items()}
         return {"phase": snap["phase"], "ready_to_play": ready["a"] if rig is None else ready, "arms": arms,
                 "settings": snap["teach_settings"], "controls": listing,
                 # A performance already running (one at a time): {what, since}, or None.
-                "performing": dict(now_playing) or None,
+                "performing": {k: v for k, v in now_playing.items() if k != "stops"} or None,
                 # Orchid's voicing dial stops the arms: whether it is being watched, and the stops it made.
                 "dial_stop": {**watcher.state, "stopped": dict(dial_stopped) or None} if watcher else
                 {"armed": False, "error": "not watching: start with --studio-port"}}
