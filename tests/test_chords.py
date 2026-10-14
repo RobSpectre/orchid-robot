@@ -254,6 +254,54 @@ def test_a_chord_sweeps_on_for_bars(plate):
     assert time.monotonic() - started >= 4.0 and b.parked_now[0]  # held the whole time; the Chord Arm let go long before
 
 
+def last_event(engine):
+    return engine.repo.events(1)[0]["id"]
+
+
+def played_after(engine, last):
+    """What the arm started playing after its event `last`."""
+    return [e["message"] for e in engine.repo.events(200) if e["id"] > last and e["message"].startswith(("Playing ", "Pressing "))]
+
+
+def test_stop_in_the_middle_of_a_note_ends_the_whole_performance(plate):
+    client, a, b, command, auth = plate
+    steps = [{"control": "C", "duration": "4bars"}, {"control": "D"}, {"control": "D", "chord": "chord.min"}]
+    out = {}
+    performing = threading.Thread(target=lambda: out.update(r=client.post("/api/sequence", json={"steps": steps}, headers=auth)))
+    performing.start()
+    until = time.monotonic() + 10
+    while time.monotonic() < until and not (a.phase == "teach_play" and a.play_t):
+        time.sleep(0.005)
+    time.sleep(0.3)  # C is down and held
+    seen = (last_event(a), last_event(b))
+    assert client.post("/api/stop", json={}, headers=auth).status_code == 200
+    performing.join(30)
+    assert out["r"].status_code == 409 and "Stopped during" in out["r"].json()["detail"], out["r"].text
+    time.sleep(0.3)  # anything wrongly sent after the Stop would have started by now
+    assert played_after(a, seen[0]) == [] and played_after(b, seen[1]) == []  # D and D + Min never started
+    assert a.phase == b.phase == "teach_hold" and b.chord_held is None
+
+
+def test_a_dial_stop_between_two_notes_ends_the_whole_performance(plate):
+    client, a, b, command, auth = plate
+    seen = {}
+    original = a.transition
+
+    def transition(phase, message):  # the voicing dial turns just as C finishes, before the chord starts
+        original(phase, message)
+        if message.startswith("Played C") and not seen:
+            seen.update(a=last_event(a), b=last_event(b))
+            for member in (a, b):
+                member.request_stop("Stopped by Orchid's voicing dial (the operator's stop)")
+    a.transition = transition
+    played = client.post("/api/sequence", json={"steps": [{"control": "C"}, {"control": "D", "chord": "chord.min"}]},
+                         headers=auth)
+    assert played.status_code == 409, played.text
+    time.sleep(0.3)
+    assert seen and played_after(a, seen["a"]) == [] and played_after(b, seen["b"]) == []
+    assert b.chord_held is None
+
+
 def test_a_score_of_chords_and_keys_is_planned_then_played_and_reports_each_note(plate):
     client, a, b, command, auth = plate
     events = [{"bar": 1, "beat": 1, "key": "C", "chord": "chord.maj", "duration": "1/2"},

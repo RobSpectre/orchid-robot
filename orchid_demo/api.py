@@ -273,6 +273,23 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
                 except HTTPException as exc:
                     raise HTTPException(exc.status_code, f"{NAMES[member.arm_id]}: {exc.detail}") from exc
 
+    def stop_counts():
+        return {arm: getattr(member, "stops", 0) for arm, member in engines.items()}
+
+    def still_performing():
+        """A Stop during a performance (the console's, a program's or Orchid's voicing dial) ends all of it: the arms hold
+        where it put them and no later note or chord is played. Each arm's worker counts the Stops it carries out, and the
+        performance compares them with the count it started with, so a Stop between two notes counts too."""
+        before = now_playing.get("stops")
+        if before is None:
+            return
+        for arm, count in stop_counts().items():
+            if count != before.get(arm, count):
+                state = ("stopped in a fault: the operator acts in the console" if engines[arm].phase == "fault" else
+                         "holding where Stop put it")
+                raise HTTPException(409, f"Stopped during {now_playing.get('what')}: {NAMES[arm]} is {state}. The rest of "
+                                         "the performance is not played.")
+
     @contextmanager
     def performance(what):
         if dial_stopped:
@@ -281,7 +298,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         if not performing.acquire(blocking=False):
             raise HTTPException(409, f"orchid-robot is already performing ({now_playing.get('what')}, since "
                                      f"{now_playing.get('since')}). One performance at a time: wait until it returns.")
-        now_playing.update(what=what, since=time.strftime("%H:%M:%S"))
+        now_playing.update(what=what, since=time.strftime("%H:%M:%S"), stops=stop_counts())
         try:
             hold_arms()
             yield
@@ -414,6 +431,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         return engines[Rig.control_arm(control)]
 
     def run(action, args, wait, engine=engine):
+        if action != "stop":
+            still_performing()
         plays_before = (engine.snapshot()["key_check"] or {}).get("play", 0)
         try:
             receipt = engine.api_submit(action, {k: v for k, v in args.items() if v is not None})
@@ -435,6 +454,8 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
         moving = action in ("teach_play", "teach_sequence", "teach_go_home", "teach_go_rest")
         while wait and moving and time.monotonic() < deadline and engine.snapshot()["phase"] == "teach_play":
             time.sleep(0.1)
+        if action != "stop":
+            still_performing()  # a play cut short by Stop is not reported as played
         snap = engine.snapshot()
         checked = wait and action in ("teach_play", "teach_sequence") and engine.key_checker and done.get("status") == "complete"
         until = time.monotonic() + 3  # the note check reads Orchid Studio just after the play ends
@@ -544,6 +565,7 @@ def create_app(directory: Path, mode="simulation", *, engine=None, engines=None,
             if control not in Rig.CONTROLS:
                 raise HTTPException(404, f"Unknown control {control!r}.")
         plays_before = (engine.snapshot()["key_check"] or {}).get("play", 0)
+        still_performing()  # rig.play_chord counts Stops from its own start, so one before it is caught here
         try:
             played = rig.play_chord(key, chord, speed, {**timed(step, clock, at, bar, align), **({"stay": True} if stay else {})})
         except SafetyError as exc:
